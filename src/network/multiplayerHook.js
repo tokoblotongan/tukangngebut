@@ -7,8 +7,8 @@
    ===================================================================== */
 import * as THREE from 'three';
 import { createClient } from '@supabase/supabase-js';
-import { loadVehicle, setVehicleUnderglow } from '../entities/assetFactory.js';
-import { VEHICLES, getVehicleDef } from '../config/gameConfig.js';
+import { loadVehicle, setVehicleUnderglow, createNeonRibbonTrail } from '../entities/assetFactory.js';
+import { VEHICLES, SLOT_COLORS, getVehicleDef } from '../config/gameConfig.js';
 
 export const PUBLIC_ROOMS = Object.freeze([
   { id: 'salatiga-1', label: 'Salatiga-1', tag: 'Umum' },
@@ -25,7 +25,7 @@ const NAMES = [
   'Nona Salatiga', 'Mas Blotongan', 'Juragan Kopi', 'Pembalap Merbabu',
 ];
 const VEHICLE_EMOJIS = { angkot: '🚐', bemo: '🛺', l300: '🛻', ojol: '🏍️' };
-const SLOT_GLOW_COLORS = ['#00e5ff', '#ff007f', '#39ff14', '#ffe600', '#a855f7', '#ff6b00'];
+const SLOT_GLOW_COLORS = [...SLOT_COLORS, '#a855f7', '#ff6b00'];
 
 export function getSlotGlowColor(peerId) {
   const str = String(peerId || 'p0');
@@ -166,6 +166,7 @@ export function createMultiplayerHook({
 
   function disposeGhostEntry(entry) {
     if (!entry) return;
+    entry.ribbon?.dispose?.();
     if (entry.root) scene?.remove(entry.root);
     if (entry.nameplate?.userData) {
       entry.nameplate.userData.tex?.dispose();
@@ -491,10 +492,16 @@ export function createMultiplayerHook({
     root.visible = peer.state === 'PLAYING' || peer.state === 'PAUSED';
     scene.add(root);
 
+    const color = getSlotGlowColor(peer.id);
+    const ribbon = createNeonRibbonTrail(scene, color, 0.50);
+    ribbon.reset(peer.x, peer.y + 0.34, peer.z + 1.3);
+    ribbon.setVisible(root.visible);
+
     const entry = {
       root,
       vehicleMesh: null,
       nameplate: null,
+      ribbon,
       plateName: peer.name,
       target: new THREE.Vector3(peer.x, peer.y, peer.z),
       roll: peer.rollAngle || 0,
@@ -542,6 +549,7 @@ export function createMultiplayerHook({
 
       const showVehicle = p.state === 'PLAYING' || p.state === 'PAUSED';
       entry.root.visible = showVehicle;
+      entry.ribbon?.setVisible(showVehicle);
       entry.target.set(p.x, p.y, p.z);
 
       if (!showVehicle) {
@@ -577,6 +585,15 @@ export function createMultiplayerHook({
           }
         }
       }
+      const ry = entry.vehicleMesh?.rotation?.y || 0;
+      entry.ribbon?.update(
+        entry.root.position.x,
+        entry.root.position.y + 0.34,
+        entry.root.position.z + 1.3,
+        Math.cos(ry),
+        Math.sin(entry.roll),
+        -Math.sin(ry)
+      );
     }
   }
 

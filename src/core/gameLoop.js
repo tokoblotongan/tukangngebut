@@ -2,11 +2,12 @@
    gameLoop.js — Satu loop render (renderer.setAnimationLoop), state
    machine MENU / PLAYING / PAUSED / GAMEOVER, dt clamp, skor & jarak,
    nyawa, combo rantai stunt, checkpoint 500 m, tabrakan lalu lintas,
-   kamera sinematik menu, auto-pause saat tab tersembunyi, rekor lokal.
+   pita neon P1-P4, klasemen langsung 4 pembalap, & pemulihan jurang.
    ===================================================================== */
 import * as THREE from 'three';
-import { STATES, PHYSICS, SCORE, getVehicleDef } from '../config/gameConfig.js';
-import { getTrackHeight } from '../world/trackGenerator.js';
+import { STATES, PHYSICS, SCORE, SLOT_COLORS, getVehicleDef } from '../config/gameConfig.js';
+import { createNeonRibbonTrail } from '../entities/assetFactory.js';
+import { getTrackHeight, getTrackSurfaceAt } from '../world/trackGenerator.js';
 
 const BEST_KEY = 'jg_best';
 const MENU_Z = -72; // spot etalase: Pasar Raya II tepat di depan
@@ -29,9 +30,45 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
   let running = false, airHintShown = false, firstRun = true;
   let menuAngle = 0.6;
   const camTarget = new THREE.Vector3();
+  const _tailOff = new THREE.Vector3();
+
+  const playerRibbon = createNeonRibbonTrail(ctx.scene, SLOT_COLORS[0], 0.56);
+  playerRibbon.setVisible(false);
 
   function loadBest() { const v = parseFloat(localStorage.getItem(BEST_KEY)); return Number.isFinite(v) ? v : 0; }
   function saveBest(v) { try { localStorage.setItem(BEST_KEY, String(Math.round(v))); } catch {} }
+
+  function buildStandings(ps) {
+    const list = [];
+    const pName = network?.identity?.name || 'Kamu';
+    list.push({
+      id: network?.identity?.id || 'player',
+      name: pName,
+      type: ps.type,
+      z: ps.pos.z,
+      score: Math.round(score),
+      slotColor: SLOT_COLORS[0],
+      isPlayer: true,
+    });
+    for (const p of network?.getRemotePlayers?.() || []) {
+      if (p.state === 'PLAYING' || p.state === 'PAUSED') {
+        list.push({
+          id: p.id,
+          name: p.name || 'Juragan',
+          type: p.vehicleType || 'angkot',
+          z: p.z || 0,
+          score: Math.round(p.score || 0),
+          slotColor: SLOT_COLORS[1],
+          isRemote: true,
+        });
+      }
+    }
+    for (const ai of traffic.getAIRacersSnapshot?.() || []) {
+      list.push(ai);
+    }
+    list.sort((a, b) => (a.z - b.z) || (b.score - a.score));
+    return list.slice(0, 4);
+  }
 
   /* ---------------- Input ---------------- */
   const onKeyDown = (e) => {
@@ -73,9 +110,12 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
     combo = 1; comboTimer = 0; rollsTotal = 0;
     nextCheckpoint = 500; invuln = 0; airHintShown = false;
     player.reset();
-    traffic.reset();
+    const pType = player.getState().type;
+    traffic.reset(pType);
     track.resetCollectibles?.();
     const pos = player.getState().pos;
+    playerRibbon.reset(pos.x, pos.y + 0.34, pos.z + 1.4);
+    playerRibbon.setVisible(true);
     track.updateTrack(pos.z, elapsed);
     landmarks.update(pos.z);
     ctx.snapCamera(pos);
@@ -85,9 +125,9 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
     state = STATES.PLAYING;
     if (firstRun) {
       firstRun = false;
-      hud.toast('Hajar ramp, lalu tahan ←/→ di udara! 🌀', 'good');
+      hud.toast('Hajar ramp & loop 360°, tahan ←/→ di udara! 🌀', 'good');
     }
-    hud.toast(`${getVehicleDef(player.getState().type).label} meluncur! 🏁`, 'good');
+    hud.toast(`${getVehicleDef(pType).label} meluncur! 🏁`, 'good');
   }
 
   function pause() {
@@ -107,7 +147,8 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
     state = STATES.MENU;
     coins = 0; coinStreak = 0; coinStreakTimer = 0;
     player.reset();
-    traffic.reset();
+    traffic.reset(player.getState().type);
+    playerRibbon.setVisible(false);
     track.resetCollectibles?.();
     hud.hideGameOver(); hud.setPaused(false); hud.hideHUD();
     hud.showMenu(best);
@@ -117,12 +158,46 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
   }
   function gameOver() {
     state = STATES.GAMEOVER;
+    if (player.group) player.group.visible = true;
     const newRecord = score > best;
     if (newRecord) { best = score; saveBest(best); }
+    const standings = buildStandings(player.getState());
+    const rank = Math.max(1, standings.findIndex((r) => r.isPlayer) + 1);
     hud.sfx.setEngine(false);
     hud.sfx.gameover();
     ctx.addShake(0.9);
-    hud.showGameOver({ score, distance, rolls: rollsTotal, coins, best, newRecord });
+    hud.showGameOver({
+      score, distance, rolls: rollsTotal, coins, best, newRecord,
+      rank, totalRacers: standings.length, standings,
+    });
+  }
+
+  function onAbyssFall(kind) {
+    if (state !== STATES.PLAYING) return;
+    hearts = Math.max(0, hearts - 1);
+    invuln = 2.4;
+    combo = 1;
+    comboTimer = 0;
+    ctx.addShake(0.9);
+    hud.flashCrash();
+    const label = kind === 'ramp' ? 'Terjun ke jurang lompatan!' : 'Keluar jalur melayang!';
+    hud.toast(hearts > 0 ? `${label} Sisa ${hearts} nyawa 💥` : `${label} Nyawa habis! 💥`, 'bad');
+  }
+
+  function onAbyssRecover() {
+    if (state !== STATES.PLAYING) return;
+    invuln = Math.max(invuln, 1.8);
+    if (hearts <= 0) {
+      gameOver();
+      return;
+    }
+    hud.toast('Kembali ke tengah trek! Gas terus! 🏁', 'warn');
+  }
+
+  function onLoopComplete() {
+    if (state !== STATES.PLAYING) return;
+    hud.showStunt('LOOP 360°!', SCORE.loopBonus);
+    hud.toast('Putaran 360° Sempurna! +300 TURBO 🔥', 'good');
   }
 
   function addRolls(n) { if (n > 0) rollsTotal += n; }
@@ -140,7 +215,13 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
     landmarks.update(pos.z);
 
     const pressure = d.pressure * (1 + Math.min(0.55, distance / 3500));
-    traffic.update(dt * pressure, pos.z, elapsed, pos.x);
+    traffic.update(dt * pressure, pos.z, elapsed, pos.x, {
+      rawDt: dt,
+      playerType: player.getState().type,
+      remotePlayers: network.getRemotePlayers(),
+      track,
+      raceActive: true,
+    });
 
     /* Jarak & skor dasar */
     const newDist = Math.max(distance, -pos.z);
@@ -156,7 +237,7 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
       comboTimer = SCORE.comboWindow;
     }
 
-    /* Koin & Permata Pelangi */
+    /* Koin, Buah & Permata Pelangi */
     if (coinStreakTimer > 0) {
       coinStreakTimer = Math.max(0, coinStreakTimer - dt);
       if (coinStreakTimer <= 0) coinStreak = 0;
@@ -219,7 +300,10 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
 
     /* Tabrakan */
     invuln = Math.max(0, invuln - dt);
-    if (invuln <= 0 && !res.airborne) {
+    if (player.group) {
+      player.group.visible = invuln <= 0 || Math.sin(elapsed * 28) > -0.35;
+    }
+    if (invuln <= 0 && !res.airborne && !res.inLoop && !res.falling && !res.respawning) {
       const def = getVehicleDef(player.getState().type);
       const hit = traffic.checkCollision(pos, { x: def.targetSize.x * 0.4, z: def.targetSize.z * 0.4 });
       if (hit && player.hitObstacle()) {
@@ -231,21 +315,51 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
       }
     }
 
+    /* Pita neon P1 */
+    if (res.falling) {
+      playerRibbon.setVisible(false);
+    } else {
+      playerRibbon.setVisible(true);
+      _tailOff.set(0, 0.34, 1.32);
+      if (player.group) _tailOff.applyQuaternion(player.group.quaternion);
+      const rv = res.rightVec;
+      playerRibbon.update(
+        pos.x + _tailOff.x,
+        pos.y + _tailOff.y,
+        pos.z + _tailOff.z,
+        rv.x, rv.y, rv.z
+      );
+    }
+
     /* Petunjuk udara sekali per lompatan pertama */
-    if (res.airborne && !airHintShown) { airHintShown = true; }
-    hud.setAirHint(res.airborne && Math.abs(res.rollAngle) < 0.4);
+    if (res.airborne && !res.falling && !res.respawning && !airHintShown) { airHintShown = true; }
+    hud.setAirHint(res.airborne && !res.falling && !res.respawning && Math.abs(res.rollAngle) < 0.4);
 
     /* Kamera & atmosphere */
-    const groundY = track.getTrackHeight(pos.z);
+    const surf = getTrackSurfaceAt(pos.x, pos.z);
     ctx.setAnchor(pos.x, pos.y, pos.z);
-    ctx.followCamera(pos, dt, { speedRatio: res.speed / PHYSICS.maxSpeed, turbo: res.turbo });
-    ctx.updateContactShadow(pos.x, groundY, pos.z, Math.max(0, pos.y - groundY), 3.4);
+    ctx.followCamera(pos, dt, {
+      speedRatio: res.speed / PHYSICS.maxSpeed,
+      turbo: res.turbo,
+      inLoop: res.inLoop,
+      loopCenterZ: res.loopCenterZ,
+      falling: res.falling,
+    });
+    ctx.updateContactShadow(
+      pos.x, surf.groundY, pos.z,
+      Math.max(0, pos.y - surf.groundY),
+      3.4,
+      !res.inLoop && !res.falling && surf.onTrack
+    );
+
+    const standings = buildStandings(player.getState());
+    const rank = Math.max(1, standings.findIndex((r) => r.isPlayer) + 1);
 
     hud.updateHUD({
       score, distance, coins, hearts, maxHearts: d.hearts, combo,
       speed: res.speed, speedRatio: res.speed / (PHYSICS.maxSpeed * PHYSICS.turbo.multiplier),
       turbo: player.getState().turboTimer / PHYSICS.turbo.duration,
-      nextCheckpoint, invuln,
+      nextCheckpoint, invuln, rank, totalRacers: standings.length,
     });
     hud.sfx.setEngine(true, res.speed / PHYSICS.maxSpeed, res.turbo);
   }
@@ -334,6 +448,7 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
   function dispose() {
     running = false;
     ctx.renderer.setAnimationLoop(null);
+    playerRibbon.dispose();
     window.removeEventListener('keydown', onKeyDown);
     window.removeEventListener('keyup', onKeyUp);
     window.removeEventListener('blur', onBlur);
@@ -342,6 +457,7 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
 
   return {
     init, start, pause, resume, toMenu, dispose, setDifficulty, setVehicleLabel, addRolls,
+    onAbyssFall, onAbyssRecover, onLoopComplete,
     get state() { return state; },
     get best() { return best; },
     get stats() { return { score, distance, coins, hearts, combo, rollsTotal, difficulty: diff }; },

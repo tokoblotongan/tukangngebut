@@ -12,8 +12,8 @@ import { createTrafficManager } from './entities/trafficManager.js';
 import { createTrackGenerator } from './world/trackGenerator.js';
 import { createLandmarkManager } from './world/salatigaLandmark.js';
 import { createHUD } from './ui/hudManager.js';
-import { createMultiplayerHook, getSlotGlowColor } from './network/multiplayerHook.js';
-import { GAME, VEHICLES } from './config/gameConfig.js';
+import { createMultiplayerHook } from './network/multiplayerHook.js';
+import { GAME, VEHICLES, SLOT_COLORS } from './config/gameConfig.js';
 
 const LOAD_LINES = [
   'Merakit angkot…', 'Memanaskan bemo…', 'Mengisi bak L300…', 'Memarkir ojol…',
@@ -98,6 +98,9 @@ async function init() {
         } else hud.sfx.land();
       },
       onCrash: () => { /* feedback ditangani gameLoop (nyawa & flash) */ },
+      onAbyssFall: (kind) => loop?.onAbyssFall?.(kind),
+      onAbyssRecover: () => loop?.onAbyssRecover?.(),
+      onLoopComplete: () => loop?.onLoopComplete?.(),
     },
   });
 
@@ -110,7 +113,7 @@ async function init() {
     onStatusChange: ({ status, room, onlineCount }) => hud.setNetworkStatus(status, room, onlineCount),
     onLobbyChange: (counts) => hud.setLobbyCounts(counts),
   });
-  setVehicleUnderglow(vehicle, getSlotGlowColor(network.identity.id));
+  setVehicleUnderglow(vehicle, SLOT_COLORS[0]);
   hud.setPlayerName(network.identity.name);
   hud.setActiveRoom(network.room);
   hud.setLobbyCounts(network.lobbyCounts);
@@ -132,7 +135,7 @@ async function init() {
     try {
       const g = await loadVehicle(key);
       if (token !== vehicleSwapToken) return;
-      setVehicleUnderglow(g, getSlotGlowColor(network?.identity?.id));
+      setVehicleUnderglow(g, SLOT_COLORS[0]);
       player.setVehicle(g, key);
       hud.toast(`${VEHICLES[key].label} siap di garis start! ${VEHICLES[key].tagline}`, 'good');
     } catch (err) {

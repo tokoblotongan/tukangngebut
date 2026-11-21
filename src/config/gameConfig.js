@@ -39,6 +39,8 @@ export const PALETTE = Object.freeze({
   pastelButter: '#ffd166', pastelLavender: '#b583e0',
 });
 
+export const SLOT_COLORS = Object.freeze(['#00e5ff', '#ff007f', '#39ff14', '#ffe600']);
+
 /* ---------- Kunci renderer (Strict Visual Lock) ---------- */
 export const RENDERER = Object.freeze({
   exposure: 0.95,
@@ -91,6 +93,7 @@ export const TRACK = Object.freeze({
   segmentLength: 24, segmentsAhead: 10, segmentsBehind: 2,
   hill: { amp1: 2.6, freq1: 0.021, amp2: 1.1, freq2: 0.052 },
   rampEvery: 5, boostEvery: 7, bridgeEvery: 9,
+  loopRadius: 7.8, loopWidth: 6.4, narrowWidth: 5.5, forkWidthL: 4.3, forkWidthR: 5.5,
   landmarkEvery: 2, landmarkOffset: 18.0, archEvery: 8,
 });
 
@@ -107,7 +110,7 @@ export const TRAFFIC = Object.freeze({
 /* ---------- Skor & stunt ---------- */
 export const SCORE = Object.freeze({
   distancePerUnit: 1,
-  rollBonus: 250, boostPadBonus: 50, nearMissBonus: 25,
+  rollBonus: 250, loopBonus: 300, boostPadBonus: 50, nearMissBonus: 25,
   coinBonus: 35, fruitBonus: 95, gemBonus: 150,
   comboWindow: 4,
 });

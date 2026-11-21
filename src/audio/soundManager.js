@@ -200,6 +200,68 @@ export function createTeloletSynthesizer({ ensureContext, getMaster, isMuted }) 
     return true;
   }
 
+  /**
+   * Suara peluit jatuh komikal + hembusan angin saat kendaraan keluar jalur ke jurang.
+   */
+  function playAbyssWhistle() {
+    if (isMuted?.()) return false;
+    const ac = ensureContext?.();
+    const master = getMaster?.();
+    if (!ac || !master) return false;
+    if (ac.state === 'suspended') ac.resume().catch(() => {});
+
+    const now = ac.currentTime + 0.01;
+    const dur = 0.65;
+    const osc = ac.createOscillator();
+    const osc2 = ac.createOscillator();
+    const gain = ac.createGain();
+    const g2 = ac.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1180, now);
+    osc.frequency.exponentialRampToValueAtTime(185, now + dur);
+
+    osc2.type = 'triangle';
+    osc2.frequency.setValueAtTime(590, now);
+    osc2.frequency.exponentialRampToValueAtTime(110, now + dur);
+    g2.gain.setValueAtTime(0.32, now);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.26, now + 0.03);
+    gain.gain.setValueAtTime(0.22, now + dur * 0.65);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur + 0.04);
+
+    osc.connect(gain);
+    osc2.connect(g2);
+    g2.connect(gain);
+    gain.connect(master);
+
+    osc.start(now);
+    osc2.start(now);
+    osc.stop(now + dur + 0.06);
+    osc2.stop(now + dur + 0.06);
+    return true;
+  }
+
+  /**
+   * Suara whoosh naik cerah saat berhasil melibas putaran vertikal 360°.
+   */
+  function playLoopWhoosh() {
+    if (isMuted?.()) return false;
+    const ac = ensureContext?.();
+    const master = getMaster?.();
+    if (!ac || !master) return false;
+    if (ac.state === 'suspended') ac.resume().catch(() => {});
+
+    const notes = [523.25, 659.25, 783.99, 1046.5];
+    let t = ac.currentTime + 0.01;
+    for (const freq of notes) {
+      playAirHornNote(ac, master, t, freq, 0.095, 0.19, 1450);
+      t += 0.075;
+    }
+    return true;
+  }
+
   function dispose() {
     stopActiveVoices();
   }
@@ -207,6 +269,8 @@ export function createTeloletSynthesizer({ ensureContext, getMaster, isMuted }) 
   return {
     playTeloletHorn,
     playTeloletFlourish,
+    playAbyssWhistle,
+    playLoopWhoosh,
     dispose,
   };
 }

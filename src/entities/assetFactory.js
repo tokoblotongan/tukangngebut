@@ -1062,3 +1062,109 @@ export function disposeAssetCache() {
   geoCache.clear(); matCache.clear(); texCache.clear(); protoCache.clear();
   if (dracoLoader) { dracoLoader.dispose(); dracoLoader = null; gltfLoader = null; }
 }
+
+/** Pita neon 3D zero-GC di belakang kendaraan (untuk P1-P4) */
+export function createNeonRibbonTrail(scene, hexColor = '#00e5ff', halfWidth = 0.56) {
+  const N = 22;
+  const positions = new Float32Array(N * 2 * 3);
+  const colors = new Float32Array(N * 2 * 3);
+  const histPos = new Float32Array(N * 3);
+  const histRight = new Float32Array(N * 3);
+  const indices = [];
+  for (let i = 0; i < N - 1; i++) {
+    const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+    indices.push(a, b, c, b, d, c);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.setIndex(indices);
+
+  const mat = new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.72,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = 3;
+  scene.add(mesh);
+
+  const baseCol = new THREE.Color(hexColor);
+  let initialized = false;
+  let lastDistSq = 0;
+
+  function applyColor() {
+    for (let i = 0; i < N; i++) {
+      const fade = Math.pow(1 - i / (N - 1), 1.65);
+      const r = baseCol.r * fade, g = baseCol.g * fade, b = baseCol.b * fade;
+      const cIdx = i * 6;
+      colors[cIdx] = r; colors[cIdx + 1] = g; colors[cIdx + 2] = b;
+      colors[cIdx + 3] = r; colors[cIdx + 4] = g; colors[cIdx + 5] = b;
+    }
+    geo.attributes.color.needsUpdate = true;
+  }
+  applyColor();
+
+  function rebuildVertices() {
+    for (let i = 0; i < N; i++) {
+      const taper = halfWidth * (1 - (i / (N - 1)) * 0.78);
+      const cx = histPos[i * 3], cy = histPos[i * 3 + 1], cz = histPos[i * 3 + 2];
+      const rx = histRight[i * 3] * taper, ry = histRight[i * 3 + 1] * taper, rz = histRight[i * 3 + 2] * taper;
+      const vIdx = i * 6;
+      positions[vIdx] = cx - rx; positions[vIdx + 1] = cy - ry; positions[vIdx + 2] = cz - rz;
+      positions[vIdx + 3] = cx + rx; positions[vIdx + 4] = cy + ry; positions[vIdx + 5] = cz + rz;
+    }
+    geo.attributes.position.needsUpdate = true;
+  }
+
+  function reset(x = 0, y = 0, z = 0) {
+    initialized = true;
+    for (let i = 0; i < N; i++) {
+      histPos[i * 3] = x; histPos[i * 3 + 1] = y; histPos[i * 3 + 2] = z;
+      histRight[i * 3] = 1; histRight[i * 3 + 1] = 0; histRight[i * 3 + 2] = 0;
+    }
+    rebuildVertices();
+  }
+
+  function update(x, y, z, rx = 1, ry = 0, rz = 0) {
+    if (!initialized) { reset(x, y, z); return; }
+    const dx = x - histPos[0], dy = y - histPos[1], dz = z - histPos[2];
+    lastDistSq = dx * dx + dy * dy + dz * dz;
+    if (lastDistSq > 144) { reset(x, y, z); return; }
+    if (lastDistSq > 0.28) {
+      for (let i = N - 1; i > 0; i--) {
+        const dst = i * 3, src = (i - 1) * 3;
+        histPos[dst] = histPos[src]; histPos[dst + 1] = histPos[src + 1]; histPos[dst + 2] = histPos[src + 2];
+        histRight[dst] = histRight[src]; histRight[dst + 1] = histRight[src + 1]; histRight[dst + 2] = histRight[src + 2];
+      }
+      histPos[0] = x; histPos[1] = y; histPos[2] = z;
+      histRight[0] = rx; histRight[1] = ry; histRight[2] = rz;
+    } else {
+      histPos[0] = x; histPos[1] = y; histPos[2] = z;
+      histRight[0] = rx; histRight[1] = ry; histRight[2] = rz;
+    }
+    rebuildVertices();
+  }
+
+  function setColor(hex) {
+    baseCol.set(hex);
+    applyColor();
+  }
+
+  function setVisible(v) { mesh.visible = !!v; }
+
+  function dispose() {
+    scene.remove(mesh);
+    geo.dispose();
+    mat.dispose();
+  }
+
+  return { update, reset, setColor, setVisible, dispose };
+}
+

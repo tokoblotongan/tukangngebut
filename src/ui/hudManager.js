@@ -35,12 +35,13 @@ export function createHUD(opts = {}) {
     nameInput: /** @type {HTMLInputElement | null} */ ($('jg-name-input')),
     bestMenu: $('jg-best-menu'), btnStart: $('jg-start'),
     hud: $('jg-hud'), score: $('jg-score'), dist: $('jg-dist'), coins: $('jg-coins'), coinsWrap: $('jg-coins-wrap'),
+    rank: $('jg-rank'),
     hearts: $('jg-hearts'), combo: $('jg-combo'), speed: $('jg-speed'), speedBar: $('jg-speed-bar'),
     turboWrap: $('jg-turbo'), turboFill: $('jg-turbo-fill'),
     cpFill: $('jg-cp-fill'), cpLabel: $('jg-cp-label'), fleetTag: $('jg-fleet-tag'),
     banner: $('jg-banner'), bannerTitle: $('jg-banner-title'), bannerPts: $('jg-banner-pts'),
     airHint: $('jg-airhint'), toasts: $('jg-toasts'), net: $('jg-net'), netMenu: $('jg-net-menu'),
-    pause: $('jg-pause'), over: $('jg-over'),
+    pause: $('jg-pause'), over: $('jg-over'), podium: $('jg-podium'),
     overScore: $('jg-over-score'), overDist: $('jg-over-dist'), overRolls: $('jg-over-rolls'),
     overCoins: $('jg-over-coins'), overBest: $('jg-over-best'), overRecord: $('jg-over-record'), overTitle: $('jg-over-title'),
     btnAudio: $('jg-audio'), btnAudioMenu: $('jg-audio-menu'), btnAudioPause: $('jg-audio-pause'),
@@ -350,6 +351,14 @@ export function createHUD(opts = {}) {
       el.turboFill.style.width = `${Math.max(0, Math.min(1, s.turbo)) * 100}%`;
       el.cpFill.style.width = `${Math.min(100, (s.distance % 500) / 5)}%`;
       setText(el.cpLabel, 'cp', `Checkpoint ${s.nextCheckpoint} m`);
+      const rankNum = Math.max(1, Math.min(4, Math.round(s.rank || 1)));
+      const totalRacers = Math.max(1, Math.round(s.totalRacers || 4));
+      const rankMedals = ['🥇', '🥈', '🥉', '🏁'];
+      const ord = ['1ST', '2ND', '3RD', '4TH'][rankNum - 1] || `${rankNum}TH`;
+      if (el.rank) {
+        setText(el.rank, 'rank', `${rankMedals[rankNum - 1] || '🏁'} ${ord} / ${totalRacers}`);
+        el.rank.className = `jg-chip rank rank-${rankNum}`;
+      }
       el.hud.classList.toggle('invuln', s.invuln > 0);
       const isTurbo = s.turbo > 0;
       const lineStrength = isTurbo ? 1 : Math.max(0, (s.speedRatio - 0.68) / 0.32);
@@ -394,7 +403,11 @@ export function createHUD(opts = {}) {
       el.overCoins.textContent = Math.round(r.coins ?? 0).toLocaleString('id-ID');
       el.overBest.textContent = Math.round(r.best).toLocaleString('id-ID');
       el.overRecord.classList.toggle('show', r.newRecord);
-      el.overTitle.textContent = r.newRecord ? 'REKOR BARU, JURAGAN!' : 'MOGOK DI JALAN!';
+      const rank = r.rank || 1;
+      el.overTitle.textContent = r.newRecord
+        ? 'REKOR BARU, JURAGAN!'
+        : rank === 1 ? 'JUARA 1 DI SALATIGA!' : `FINIS POSISI #${rank}!`;
+      renderPodium(el.podium, r.standings || []);
       el.over.classList.add('show');
       clearSpeedLines();
       el.hud.classList.remove('show');
@@ -569,6 +582,12 @@ function createAudioEngine(onHorn) {
       if (ok) onHorn?.();
       return ok;
     },
+    playAbyssWhistle() {
+      return telolet.playAbyssWhistle();
+    },
+    playLoopWhoosh() {
+      return telolet.playLoopWhoosh();
+    },
     gameover() { [523, 440, 349, 262].forEach((f, i) => tone(f, 0.34, 'triangle', 0.26, null, i * 0.16)); },
     setMuted(m) {
       muted = m;
@@ -651,6 +670,7 @@ function TEMPLATE() {
       <div class="jg-score-lbl">SKOR</div>
       <div id="jg-score" class="jg-score">0</div>
       <div class="jg-row">
+        <span id="jg-rank" class="jg-chip rank rank-1">🥇 1ST / 4</span>
         <span id="jg-dist" class="jg-chip">0 m</span>
         <span id="jg-coins-wrap" class="jg-chip coin">🪙 <b id="jg-coins">0</b></span>
         <span id="jg-fleet-tag" class="jg-chip">🚐 Angkot</span>
@@ -695,9 +715,10 @@ function TEMPLATE() {
     </div>
   </div></div>
 
-  <div id="jg-over" class="jg-overlay jg-modal"><div class="jg-panel jg-modal-card">
-    <div class="jg-big-em">🏁</div><h2 id="jg-over-title">MOGOK DI JALAN!</h2>
+  <div id="jg-over" class="jg-overlay jg-modal"><div class="jg-panel jg-modal-card jg-over-card">
+    <div class="jg-big-em">🏆</div><h2 id="jg-over-title">HASIL BALAPAN!</h2>
     <div id="jg-over-record" class="jg-record">✨ REKOR BARU ✨</div>
+    <div id="jg-podium" class="jg-podium"></div>
     <div class="jg-stats">
       <div><b id="jg-over-score">0</b><span>SKOR</span></div>
       <div><b id="jg-over-dist">0 m</b><span>JARAK</span></div>
@@ -708,6 +729,57 @@ function TEMPLATE() {
     <button id="jg-over-restart" class="jg-btn primary big">GAS LAGI 🔁</button>
     <button id="jg-over-menu" class="jg-btn">🚐 Ganti Armada</button>
   </div></div>`;
+}
+
+function renderPodium(container, standings) {
+  if (!container) return;
+  container.replaceChildren();
+  if (!standings || standings.length === 0) return;
+
+  const stage = document.createElement('div');
+  stage.className = 'jg-podium-stage';
+
+  // Urutan visual podium: 2nd (kiri), 1st (tengah), 3rd (kanan)
+  const order = [1, 0, 2];
+  const medals = ['🥇', '🥈', '🥉'];
+  for (const idx of order) {
+    const r = standings[idx];
+    if (!r) continue;
+    const col = document.createElement('div');
+    col.className = `jg-pod-col pos-${idx + 1}${r.isPlayer ? ' me' : ''}`;
+
+    const racer = document.createElement('div');
+    racer.className = 'jg-pod-racer';
+    const em = document.createElement('div');
+    em.className = 'jg-pod-em';
+    em.textContent = EMOJI[r.type] || '🚐';
+    const nm = document.createElement('div');
+    nm.className = 'jg-pod-name';
+    nm.textContent = r.isPlayer ? `${r.name} (KAMU)` : r.name;
+    racer.append(em, nm);
+
+    const block = document.createElement('div');
+    block.className = 'jg-pod-block';
+    if (r.slotColor) block.style.setProperty('--slot-col', r.slotColor);
+    const medal = document.createElement('span');
+    medal.className = 'jg-pod-medal';
+    medal.textContent = medals[idx] || `#${idx + 1}`;
+    const num = document.createElement('b');
+    num.textContent = `#${idx + 1}`;
+    block.append(medal, num);
+
+    col.append(racer, block);
+    stage.appendChild(col);
+  }
+  container.appendChild(stage);
+
+  if (standings[3]) {
+    const r4 = standings[3];
+    const row4 = document.createElement('div');
+    row4.className = `jg-pod-fourth${r4.isPlayer ? ' me' : ''}`;
+    row4.textContent = `🏁 #4 • ${EMOJI[r4.type] || '🚐'} ${r4.isPlayer ? `${r4.name} (KAMU)` : r4.name}`;
+    container.appendChild(row4);
+  }
 }
 
 function injectStyles() {
@@ -880,15 +952,40 @@ function injectStyles() {
   .jg-crash{position:absolute;inset:0;opacity:0;background:radial-gradient(120% 90% at 50% 50%,transparent 40%,rgba(229,72,77,.55));pointer-events:none}
   .jg-crash.on{animation:jgCrash .45s ease-out}
 
-  /* Modal */
+  .jg-chip.rank{font-family:var(--jg-disp);font-weight:700;letter-spacing:.3px}
+  .jg-chip.rank-1{background:linear-gradient(135deg,#ffe066,#ffbe0b);color:#5c3400;border-color:#fb8500}
+  .jg-chip.rank-2{background:linear-gradient(135deg,#f1f5f9,#cbd5e1);color:#1e293b;border-color:#94a3b8}
+  .jg-chip.rank-3{background:linear-gradient(135deg,#fed7aa,#fb923c);color:#5a2200;border-color:#ea580c}
+  .jg-chip.rank-4{background:var(--jg-paper);color:var(--jg-soft)}
+
+  /* Modal & Rising Podium */
   .jg-modal{display:grid;place-items:center;background:rgba(59,47,47,.42);backdrop-filter:blur(4px);padding:18px}
-  .jg-modal-card{width:min(400px,100%);padding:26px;text-align:center;max-height:90vh;overflow-y:auto}
+  .jg-modal-card{width:min(420px,100%);padding:24px;text-align:center;max-height:92vh;overflow-y:auto}
+  .jg-over-card{width:min(470px,100%)}
   .jg-big-em{font-size:44px}
   .jg-modal-card h2{font-family:var(--jg-disp);font-weight:700;font-size:23px;margin:8px 0 6px;line-height:1.15}
   .jg-modal-card p{font-size:12.5px;color:var(--jg-soft);line-height:1.6;margin-bottom:15px}
   .jg-modal-card .jg-btn.primary{width:100%}
   .jg-record{display:none;font-family:var(--jg-disp);font-weight:700;font-size:14px;color:#fff;background:linear-gradient(135deg,var(--jg-amber),var(--jg-orange));border-radius:99px;padding:6px 14px;margin:0 auto 12px;width:fit-content}
   .jg-record.show{display:block;animation:jgPop .4s}
+  .jg-podium{margin:8px 0 14px;background:rgba(59,47,47,.05);border:1.5px solid var(--jg-line);border-radius:16px;padding:12px 10px 10px}
+  .jg-podium-stage{display:flex;align-items:flex-end;justify-content:center;gap:8px;min-height:132px;padding-top:6px}
+  .jg-pod-col{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:6px}
+  .jg-pod-racer{display:flex;flex-direction:column;align-items:center;gap:2px;animation:jgPop .45s backwards}
+  .jg-pod-col.pos-1 .jg-pod-racer{animation-delay:.18s}
+  .jg-pod-col.pos-2 .jg-pod-racer{animation-delay:.08s}
+  .jg-pod-col.pos-3 .jg-pod-racer{animation-delay:.28s}
+  .jg-pod-em{font-size:24px;line-height:1;filter:drop-shadow(0 3px 5px rgba(0,0,0,.18))}
+  .jg-pod-name{font-size:10.5px;font-weight:800;color:var(--jg-ink);line-height:1.2;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .jg-pod-col.me .jg-pod-name{color:var(--jg-orange)}
+  .jg-pod-block{width:100%;border-radius:12px 12px 8px 8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;border:2px solid var(--slot-col,var(--jg-amber));transform-origin:bottom;animation:jgPodiumRise .6s cubic-bezier(.2,.9,.3,1.2) backwards;box-shadow:0 6px 14px rgba(122,72,20,.16)}
+  .jg-pod-col.pos-1 .jg-pod-block{height:76px;background:linear-gradient(180deg,#ffe066,#ffbe0b);animation-delay:.12s}
+  .jg-pod-col.pos-2 .jg-pod-block{height:56px;background:linear-gradient(180deg,#f1f5f9,#cbd5e1);animation-delay:.02s}
+  .jg-pod-col.pos-3 .jg-pod-block{height:44px;background:linear-gradient(180deg,#fed7aa,#fb923c);animation-delay:.22s}
+  .jg-pod-medal{font-size:18px;line-height:1}
+  .jg-pod-block b{font-family:var(--jg-disp);font-size:13px;color:var(--jg-ink)}
+  .jg-pod-fourth{margin-top:8px;padding:5px 10px;border-radius:99px;background:var(--jg-paper);border:1px solid var(--jg-line);font-size:11px;font-weight:700;color:var(--jg-soft)}
+  .jg-pod-fourth.me{border-color:var(--jg-orange);color:var(--jg-orange)}
   .jg-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:15px}
   .jg-stats div{background:var(--jg-paper);border:1.5px solid var(--jg-line);border-radius:13px;padding:10px}
   .jg-stats .jg-stat-wide{grid-column:1 / -1;background:linear-gradient(135deg,#fff8eb,#ffefd6);border-color:var(--jg-amber)}
@@ -901,6 +998,7 @@ function injectStyles() {
   @keyframes jgBounce{0%,100%{transform:translateY(0) rotate(-2deg)}50%{transform:translateY(-13px) rotate(2deg)}}
   @keyframes jgRoad{to{background-position:-30px 0}}
   @keyframes jgPop{from{transform:scale(.7);opacity:0}to{transform:scale(1);opacity:1}}
+  @keyframes jgPodiumRise{from{transform:scaleY(.05);opacity:0}to{transform:scaleY(1);opacity:1}}
   @keyframes jgCoinPop{0%{transform:scale(1)}45%{transform:scale(1.18)}100%{transform:scale(1)}}
   @keyframes jgHornPop{0%{transform:translateX(-50%) scale(1)}35%{transform:translateX(-50%) scale(1.18) rotate(-4deg)}70%{transform:translateX(-50%) scale(1.08) rotate(3deg)}100%{transform:translateX(-50%) scale(1)}}
   @keyframes jgToastIn{from{transform:translateY(10px);opacity:0}to{transform:translateY(0);opacity:1}}

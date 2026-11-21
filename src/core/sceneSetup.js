@@ -281,7 +281,11 @@ export function createSceneContext(canvas) {
   contactShadow.renderOrder = 1;
   scene.add(contactShadow);
 
-  function updateContactShadow(x, groundY, z, airHeight = 0, footprint = PHYSICS.contactShadow.footprint) {
+  function updateContactShadow(x, groundY, z, airHeight = 0, footprint = PHYSICS.contactShadow.footprint, visible = true) {
+    if (!visible) {
+      contactShadow.visible = false;
+      return;
+    }
     const cs = PHYSICS.contactShadow;
     contactShadow.visible = true;
     contactShadow.position.set(x, groundY + cs.lift, z);
@@ -318,17 +322,27 @@ export function createSceneContext(canvas) {
   }
 
   /** Ikuti player tanpa pernah ikut roll — kamera chase 45° intim & horizon-locked */
-  function followCamera(pos, dt, { speedRatio = 0, turbo = false } = {}) {
+  function followCamera(pos, dt, { speedRatio = 0, turbo = false, inLoop = false, loopCenterZ = 0, falling = false } = {}) {
     if (!camInit) snapCamera(pos);
     const sr = THREE.MathUtils.clamp(speedRatio, 0, 1.6);
-    const kp = 1 - Math.exp(-CAMERA.posLerp * dt);
-    const ka = 1 - Math.exp(-CAMERA.aimLerp * dt);
-    desiredPos.set(
-      pos.x * 0.90,
-      pos.y + CAMERA.height - sr * 0.38,
-      pos.z + CAMERA.distance + sr * 0.45
-    );
-    desiredAim.set(pos.x * 0.96, pos.y + CAMERA.lookHeight, pos.z - CAMERA.lookAhead - sr * 1.6);
+    const kp = 1 - Math.exp(-(inLoop ? 4.8 : CAMERA.posLerp) * dt);
+    const ka = 1 - Math.exp(-(inLoop ? 6.5 : CAMERA.aimLerp) * dt);
+
+    if (inLoop) {
+      desiredPos.set(9.8, Math.max(pos.y * 0.45 + 6.5, 8.2), loopCenterZ + 19.5);
+      desiredAim.set(pos.x * 0.65, pos.y + 0.8, pos.z);
+    } else if (falling) {
+      desiredPos.set(pos.x * 0.85, Math.max(pos.y + 8.5, camPos.y - 3.5 * dt), pos.z + 10.5);
+      desiredAim.set(pos.x, pos.y - 0.6, pos.z);
+    } else {
+      desiredPos.set(
+        pos.x * 0.90,
+        pos.y + CAMERA.height - sr * 0.38,
+        pos.z + CAMERA.distance + sr * 0.45
+      );
+      desiredAim.set(pos.x * 0.96, pos.y + CAMERA.lookHeight, pos.z - CAMERA.lookAhead - sr * 1.6);
+    }
+
     camPos.lerp(desiredPos, kp);
     aim.lerp(desiredAim, ka);
     camera.position.copy(camPos);
@@ -338,8 +352,8 @@ export function createSceneContext(canvas) {
     camera.lookAt(aim);
     const maxFov = CAMERA.maxFov ?? 68;
     const baseGain = Math.min(1, sr) * (CAMERA.fovSpeedGain ?? 6.5);
-    const targetFov = turbo ? maxFov : Math.min(maxFov, CAMERA.fov + baseGain);
-    const fovLerp = 1 - Math.exp(-(turbo ? 7.5 : 4.5) * dt);
+    const targetFov = (turbo || inLoop) ? maxFov : Math.min(maxFov, CAMERA.fov + baseGain);
+    const fovLerp = 1 - Math.exp(-((turbo || inLoop) ? 7.5 : 4.5) * dt);
     currentFov += (targetFov - currentFov) * fovLerp;
     if (Math.abs(currentFov - camera.fov) > 0.01) {
       camera.fov = currentFov;

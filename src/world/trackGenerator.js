@@ -17,8 +17,19 @@ const L = TRACK.segmentLength;
 const W = TRACK.width;
 const BRIDGE_H = 4.6;
 const FLOOR_Y = -8.5;
-const RAMP_W = 7, RAMP_LEN = 5, RAMP_RISE = 1.5;
-const BOOST_W = 4, BOOST_LEN = 3;
+const RAMP_W = 7.4, RAMP_LEN = 5.2, RAMP_RISE = 1.5;
+const RAMP_GAP_START = -3.3; // lz (ramp ends around -2.6)
+const RAMP_GAP_END = -10.5;  // lz (rejoins road before -12 seam)
+const BOOST_W = 4.2, BOOST_LEN = 3.2;
+export const LOOP_RADIUS = TRACK.loopRadius ?? 7.8;
+export const LOOP_HALF_W = (TRACK.loopWidth ?? 6.4) * 0.5;
+const LOOP_HELIX = 3.55;
+export const LOOP_ARC_LEN = Math.PI * 2 * LOOP_RADIUS + 14;
+const LOOP_STEPS = 44;
+const NARROW_HALF_W = (TRACK.narrowWidth ?? 5.5) * 0.5;
+const FORK_HALF_L = (TRACK.forkWidthL ?? 4.3) * 0.5;
+const FORK_HALF_R = (TRACK.forkWidthR ?? 5.5) * 0.5;
+const RIBBON_STEPS = 16;
 const MAX_COLLECTIBLES = 14;
 const GRASS_PER_SEG = 34;
 const FLOWERS_PER_SEG = 18;
@@ -34,9 +45,14 @@ function smoothstep(a, b, x) {
 }
 export function getSegmentType(i) {
   if (i < 3) return 'plain';
-  if (i % TRACK.bridgeEvery === 0) return 'bridge';
-  if (i % TRACK.rampEvery === 0) return 'ramp';
-  if (i % TRACK.boostEvery === 0) return 'boost';
+  const m = ((i % 12) + 12) % 12;
+  if (m === 10) return 'loop';
+  if (m === 9) return 'boost'; // booster tepat di depan setiap loop 360°
+  if (m === 7) return 'fork';
+  if (m === 5) return 'narrow';
+  if (m === 4) return 'bridge';
+  if (m === 3 || m === 8) return 'ramp';
+  if (m === 6) return 'boost';
   return 'plain';
 }
 
@@ -57,6 +73,147 @@ export function getTrackSlope(z) {
   return (getTrackHeight(z + e) - getTrackHeight(z - e)) / (2 * e);
 }
 
+export function getNarrowHalfWidth(t) {
+  const shrink = smoothstep(0.02, 0.24, t) * (1 - smoothstep(0.76, 0.98, t));
+  return THREE.MathUtils.lerp(W / 2, NARROW_HALF_W, shrink);
+}
+
+export function getForkProfile(t) {
+  const split = smoothstep(0.05, 0.24, t) * (1 - smoothstep(0.76, 0.95, t));
+  return {
+    split,
+    cxL: -4.25 * split,
+    hwL: THREE.MathUtils.lerp(W / 2, FORK_HALF_L, split),
+    yOffL: 0.95 * split,
+    cxR: 3.95 * split,
+    hwR: THREE.MathUtils.lerp(W / 2, FORK_HALF_R, split),
+    yOffR: 0,
+  };
+}
+
+const _lpForward = new THREE.Vector3();
+const _lpInward = new THREE.Vector3();
+const _lpUp = new THREE.Vector3();
+const _lpRight = new THREE.Vector3();
+const _lpZAxis = new THREE.Vector3();
+const _lpMat = new THREE.Matrix4();
+
+export function evalLoopPose(zStart, zEnd, y0, y1, u, lateralX, outPos, outQuat, outRight = null) {
+  const clampedU = Math.min(1, Math.max(0, u));
+  const theta = clampedU * Math.PI * 2;
+  const sinT = Math.sin(theta);
+  const cosT = Math.cos(theta);
+  const baseY = THREE.MathUtils.lerp(y0, y1, clampedU);
+
+  const cx = LOOP_HELIX * sinT;
+  const cy = baseY + LOOP_RADIUS * (1 - cosT);
+  const cz = THREE.MathUtils.lerp(zStart, zEnd, clampedU) - LOOP_RADIUS * sinT;
+
+  const dTheta = Math.PI * 2;
+  const spanZ = zEnd - zStart; // -L
+  _lpForward.set(
+    LOOP_HELIX * cosT * dTheta,
+    LOOP_RADIUS * sinT * dTheta + (y1 - y0),
+    spanZ - LOOP_RADIUS * cosT * dTheta
+  ).normalize();
+
+  _lpInward.set(0, cosT, sinT);
+  const dot = _lpInward.dot(_lpForward);
+  _lpUp.copy(_lpInward).addScaledVector(_lpForward, -dot).normalize();
+  _lpRight.crossVectors(_lpForward, _lpUp).normalize();
+
+  if (outPos) {
+    outPos.set(
+      cx + _lpRight.x * lateralX,
+      cy + _lpRight.y * lateralX,
+      cz + _lpRight.z * lateralX
+    );
+  }
+  if (outQuat) {
+    _lpZAxis.copy(_lpForward).negate();
+    _lpMat.makeBasis(_lpRight, _lpUp, _lpZAxis);
+    outQuat.setFromRotationMatrix(_lpMat);
+  }
+  if (outRight) outRight.copy(_lpRight);
+}
+
+/** Kueri permukaan trek murni di (x, z) — dipakai Player & AI Racers */
+export function getTrackSurfaceAt(x, z) {
+  const i = Math.floor(-z / L);
+  const type = getSegmentType(i);
+  const z0 = -i * L;
+  const t = Math.min(1, Math.max(0, (z0 - z) / L));
+  const centerZ = -(i + 0.5) * L;
+  const lz = z - centerZ; // +L/2 at entry, -L/2 at exit
+  const baseY = getTrackHeight(z);
+  const slope = getTrackSlope(z);
+
+  if (type === 'narrow') {
+    const hw = getNarrowHalfWidth(t);
+    const onTrack = Math.abs(x) <= hw + 0.25;
+    return { type, segIndex: i, t, onTrack, groundY: baseY, slope, safeCenterX: 0, safeHalfW: hw, inGap: !onTrack, hasGuardrails: false };
+  }
+
+  if (type === 'fork') {
+    const fp = getForkProfile(t);
+    if (fp.split < 0.25) {
+      const onTrack = Math.abs(x) <= W / 2 + 0.35;
+      return { type, segIndex: i, t, onTrack, groundY: baseY, slope, safeCenterX: 0, safeHalfW: W / 2, inGap: !onTrack, hasGuardrails: false };
+    }
+    const onLeft = Math.abs(x - fp.cxL) <= fp.hwL + 0.25;
+    const onRight = Math.abs(x - fp.cxR) <= fp.hwR + 0.25;
+    const onTrack = onLeft || onRight;
+    const nearLeft = Math.abs(x - fp.cxL) <= Math.abs(x - fp.cxR);
+    return {
+      type,
+      segIndex: i,
+      t,
+      onTrack,
+      groundY: baseY + (onLeft ? fp.yOffL : 0),
+      slope,
+      safeCenterX: nearLeft ? fp.cxL : fp.cxR,
+      safeHalfW: nearLeft ? fp.hwL : fp.hwR,
+      inGap: !onTrack,
+      hasGuardrails: false,
+    };
+  }
+
+  if (type === 'ramp') {
+    const inChasm = lz <= RAMP_GAP_START && lz >= RAMP_GAP_END;
+    const onTrack = !inChasm && Math.abs(x) <= W / 2 + 0.45;
+    return {
+      type,
+      segIndex: i,
+      t,
+      onTrack,
+      groundY: baseY,
+      slope,
+      safeCenterX: 0,
+      safeHalfW: W / 2,
+      inGap: inChasm || !onTrack,
+      hasGuardrails: !inChasm,
+    };
+  }
+
+  if (type === 'loop') {
+    const onTrack = Math.abs(x) <= LOOP_HALF_W + 0.45;
+    return { type, segIndex: i, t, onTrack, groundY: baseY, slope, safeCenterX: 0, safeHalfW: LOOP_HALF_W, inGap: !onTrack, hasGuardrails: true };
+  }
+
+  return {
+    type,
+    segIndex: i,
+    t,
+    onTrack: Math.abs(x) <= W / 2 + 0.5,
+    groundY: baseY,
+    slope,
+    safeCenterX: 0,
+    safeHalfW: W / 2,
+    inGap: false,
+    hasGuardrails: true,
+  };
+}
+
 /* ---------- Deteksi ramp & boost pad (murni, dipakai playerController) ---------- */
 export function checkRampCollision(x, z) {
   const i = Math.floor(-z / L);
@@ -69,9 +226,14 @@ export function checkRampCollision(x, z) {
 }
 export function checkBoostCollision(x, z) {
   const i = Math.floor(-z / L);
-  if (getSegmentType(i) !== 'boost') return null;
-  const zc = -(i + 0.5) * L;
-  if (Math.abs(z - zc) < BOOST_LEN / 2 && Math.abs(x) < BOOST_W / 2) return { z: zc, x: 0, width: BOOST_W };
+  const type = getSegmentType(i);
+  if (type === 'boost') {
+    const zc = -(i + 0.5) * L;
+    if (Math.abs(z - zc) < BOOST_LEN / 2 && Math.abs(x) < BOOST_W / 2) return { z: zc, x: 0, width: BOOST_W };
+  } else if (type === 'loop') {
+    const zEntry = -i * L - 2.2;
+    if (Math.abs(z - zEntry) < 2.2 && Math.abs(x) < LOOP_HALF_W) return { z: zEntry, x: 0, width: LOOP_HALF_W * 2 };
+  }
   return null;
 }
 
@@ -589,6 +751,76 @@ export function createTrackGenerator(scene) {
     return g;
   }
 
+  /* Geometri ribbon dinamis untuk Narrow Bridge, Y-Split Fork, dan 360° Loop */
+  function makeRibbonGridGeo(steps) {
+    const pos = new Float32Array((steps + 1) * 2 * 3);
+    const uv = new Float32Array((steps + 1) * 2 * 2);
+    const idx = [];
+    for (let s = 0; s <= steps; s++) {
+      const v = s / steps;
+      uv[s * 4] = 0; uv[s * 4 + 1] = v * 2;
+      uv[s * 4 + 2] = 1; uv[s * 4 + 3] = v * 2;
+    }
+    for (let s = 0; s < steps; s++) {
+      const a = s * 2, b = a + 1, c = a + 2, d = a + 3;
+      idx.push(a, c, b, b, c, d);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setIndex(idx);
+    return g;
+  }
+
+  function makeGapRoadGeo(zStartLocal, zEndLocal, steps = 6) {
+    const len = zStartLocal - zEndLocal;
+    const g = new THREE.PlaneGeometry(W, len, 1, steps);
+    g.rotateX(-Math.PI / 2);
+    g.translate(0, 0, (zStartLocal + zEndLocal) * 0.5);
+    return g;
+  }
+
+  const matForkLeft = new THREE.MeshStandardMaterial({
+    map: roadTex.map,
+    normalMap: roadTex.normalMap,
+    normalScale: new THREE.Vector2(0.28, 0.28),
+    color: '#ff9068',
+    roughness: 0.26,
+    metalness: 0.08,
+  });
+  const matLoopSurface = new THREE.MeshStandardMaterial({
+    map: roadTex.map,
+    normalMap: roadTex.normalMap,
+    normalScale: new THREE.Vector2(0.28, 0.28),
+    roughness: 0.24,
+    metalness: 0.1,
+    side: THREE.DoubleSide,
+  });
+  const matGapCap = new THREE.MeshStandardMaterial({
+    color: P.connectorBlue, roughness: 0.26, metalness: 0.14,
+    emissive: '#0044aa', emissiveIntensity: 0.2,
+  });
+  const geoGapCap = new RoundedBoxGeometry(W + 0.5, 0.42, 0.52, 2, 0.08);
+  const geoLoopStrut = new THREE.CylinderGeometry(0.32, 0.45, 1, 10);
+  const geoForkSignPost = new THREE.CylinderGeometry(0.16, 0.2, 4.4, 8);
+  const geoForkSignBoard = new THREE.PlaneGeometry(6.8, 1.3);
+  const forkSignTex = (() => {
+    const c = document.createElement('canvas'); c.width = 512; c.height = 112;
+    const g = c.getContext('2d');
+    g.fillStyle = '#1b1b22';
+    g.beginPath(); g.roundRect(4, 4, 504, 104, 18); g.fill();
+    g.strokeStyle = '#ffbe0b'; g.lineWidth = 6; g.stroke();
+    g.font = '700 30px Fredoka, "Plus Jakarta Sans", sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillStyle = '#ff6b8b'; g.fillText('⬅️ RISIKO + BUAH', 140, 56);
+    g.fillStyle = '#38bdf8'; g.fillText('AMAN + KOIN ➡️', 380, 56);
+    const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  })();
+  const matForkSign = new THREE.MeshStandardMaterial({
+    map: forkSignTex, roughness: 0.45, emissive: '#ffffff', emissiveMap: forkSignTex, emissiveIntensity: 0.25,
+  });
+
   function buildCoinMesh() {
     const g = new THREE.Group();
     const body = new THREE.Mesh(geoCoinBody, matCoinGold);
@@ -668,8 +900,12 @@ export function createTrackGenerator(scene) {
     const group = new THREE.Group();
     const seg = {
       group, index: null, type: 'plain',
-      road: null, shoulders: [], skirts: [], edges: [], dashes: [],
+      road: null, rampRoads: [], rampCaps: [],
+      shoulders: [], skirts: [], edges: [], dashes: [],
       guardPosts: [], guardBeams: [], connector: null,
+      narrowRoad: null, narrowGroup: null,
+      forkGroup: null, forkLeftRoad: null, forkRightRoad: null, forkSign: null,
+      loopGroup: null, loopDeck: null, loopRailL: null, loopRailR: null, loopStruts: [],
       ramp: null, boost: null, boosterWheels: [], bridge: null, piers: [],
       floor: null, blocks: [], fences: [], arch: null,
       decor: [], grassInst: null, flowerInst: null,
@@ -713,10 +949,73 @@ export function createTrackGenerator(scene) {
       seg.fences.push(fg);
     }
 
-    /* Jalan aspal hand-painted + bahu rumput-trotoar blend + deck skirt */
+    /* Jalan plastik oranye + bahu rumput + deck skirt + potongan chasm ramp */
     seg.road = new THREE.Mesh(makeRoadGeo(W), matAsphalt);
     seg.road.receiveShadow = true;
     group.add(seg.road);
+
+    const rampApproach = new THREE.Mesh(makeGapRoadGeo(L / 2, RAMP_GAP_START, 8), matAsphalt);
+    rampApproach.receiveShadow = true; rampApproach.visible = false;
+    const rampExit = new THREE.Mesh(makeGapRoadGeo(RAMP_GAP_END, -L / 2, 2), matAsphalt);
+    rampExit.receiveShadow = true; rampExit.visible = false;
+    group.add(rampApproach, rampExit);
+    seg.rampRoads.push({ mesh: rampApproach, z0: L / 2, z1: RAMP_GAP_START }, { mesh: rampExit, z0: RAMP_GAP_END, z1: -L / 2 });
+    for (const cz of [RAMP_GAP_START, RAMP_GAP_END]) {
+      const cap = new THREE.Mesh(geoGapCap, matGapCap);
+      cap.visible = false;
+      group.add(cap);
+      seg.rampCaps.push({ mesh: cap, lz: cz });
+    }
+
+    /* Narrowing Beam Bridge (half normal width, guardrails terbuka!) */
+    const narrowGroup = new THREE.Group();
+    const narrowRoad = new THREE.Mesh(makeRibbonGridGeo(RIBBON_STEPS), matAsphalt);
+    narrowRoad.receiveShadow = true;
+    narrowGroup.add(narrowRoad);
+    narrowGroup.visible = false;
+    group.add(narrowGroup);
+    seg.narrowGroup = narrowGroup;
+    seg.narrowRoad = narrowRoad;
+
+    /* Y-Split Forked Paths (Kiri: buah risiko tinggi | Kanan: koin aman) */
+    const forkGroup = new THREE.Group();
+    const forkLeftRoad = new THREE.Mesh(makeRibbonGridGeo(RIBBON_STEPS), matForkLeft);
+    forkLeftRoad.receiveShadow = true;
+    const forkRightRoad = new THREE.Mesh(makeRibbonGridGeo(RIBBON_STEPS), matAsphalt);
+    forkRightRoad.receiveShadow = true;
+    const forkSign = new THREE.Group();
+    const fPost = new THREE.Mesh(geoForkSignPost, matConnectorBlue);
+    fPost.position.set(0, 2.2, 0); fPost.castShadow = true;
+    const fBoard = new THREE.Mesh(geoForkSignBoard, matForkSign);
+    fBoard.position.set(0, 4.15, 0);
+    forkSign.add(fPost, fBoard);
+    forkGroup.add(forkLeftRoad, forkRightRoad, forkSign);
+    forkGroup.visible = false;
+    group.add(forkGroup);
+    seg.forkGroup = forkGroup;
+    seg.forkLeftRoad = forkLeftRoad;
+    seg.forkRightRoad = forkRightRoad;
+    seg.forkSign = forkSign;
+
+    /* 360° Hot Wheels Vertical Loop */
+    const loopGroup = new THREE.Group();
+    const loopDeck = new THREE.Mesh(makeRibbonGridGeo(LOOP_STEPS), matLoopSurface);
+    loopDeck.receiveShadow = true;
+    const loopRailL = new THREE.Mesh(makeRibbonGridGeo(LOOP_STEPS), matCurb);
+    const loopRailR = new THREE.Mesh(makeRibbonGridGeo(LOOP_STEPS), matCurb);
+    loopGroup.add(loopDeck, loopRailL, loopRailR);
+    for (const [sx, sz] of [[-LOOP_HALF_W - 0.6, -2.5], [LOOP_HALF_W + 0.6, 2.5]]) {
+      const st = new THREE.Mesh(geoLoopStrut, matConnectorBlue);
+      st.castShadow = true;
+      loopGroup.add(st);
+      seg.loopStruts.push({ mesh: st, x: sx, z: sz });
+    }
+    loopGroup.visible = false;
+    group.add(loopGroup);
+    seg.loopGroup = loopGroup;
+    seg.loopDeck = loopDeck;
+    seg.loopRailL = loopRailL;
+    seg.loopRailR = loopRailR;
 
     for (const side of [-1, 1]) {
       const sh = new THREE.Mesh(makeShoulderBlendGeo(side), matShoulderBlend);
@@ -985,6 +1284,58 @@ export function createTrackGenerator(scene) {
     mesh.geometry.computeVertexNormals();
   }
 
+  function displaceRibbon(mesh, steps, evalFn) {
+    const pos = mesh.geometry.attributes.position;
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const { lx, rx, y, z } = evalFn(t);
+      const i0 = s * 2, i1 = i0 + 1;
+      pos.setXYZ(i0, lx, y, z);
+      pos.setXYZ(i1, rx, y, z);
+    }
+    pos.needsUpdate = true;
+    mesh.geometry.computeVertexNormals();
+  }
+
+  const _tmpLPos = new THREE.Vector3();
+  const _tmpRPos = new THREE.Vector3();
+  function displaceLoop(seg, centerZ) {
+    const z0 = L / 2, z1 = -L / 2;
+    const y0 = getTrackHeight(centerZ + z0);
+    const y1 = getTrackHeight(centerZ + z1);
+    const pos = seg.loopDeck.geometry.attributes.position;
+    const posRL = seg.loopRailL.geometry.attributes.position;
+    const posRR = seg.loopRailR.geometry.attributes.position;
+
+    for (let s = 0; s <= LOOP_STEPS; s++) {
+      const u = s / LOOP_STEPS;
+      evalLoopPose(z0, z1, y0, y1, u, -LOOP_HALF_W, _tmpLPos, null, _lpRight);
+      evalLoopPose(z0, z1, y0, y1, u, LOOP_HALF_W, _tmpRPos, null, _lpRight);
+      const i0 = s * 2, i1 = i0 + 1;
+      pos.setXYZ(i0, _tmpLPos.x, _tmpLPos.y, _tmpLPos.z);
+      pos.setXYZ(i1, _tmpRPos.x, _tmpRPos.y, _tmpRPos.z);
+
+      // Raised side rails along the loop
+      evalLoopPose(z0, z1, y0, y1, u, -LOOP_HALF_W - 0.15, _tmpLPos, null, _lpRight);
+      posRL.setXYZ(i0, _tmpLPos.x, _tmpLPos.y, _tmpLPos.z);
+      posRL.setXYZ(i1, _tmpLPos.x + _lpUp.x * 0.65, _tmpLPos.y + _lpUp.y * 0.65, _tmpLPos.z + _lpUp.z * 0.65);
+
+      evalLoopPose(z0, z1, y0, y1, u, LOOP_HALF_W + 0.15, _tmpRPos, null, _lpRight);
+      posRR.setXYZ(i0, _tmpRPos.x, _tmpRPos.y, _tmpRPos.z);
+      posRR.setXYZ(i1, _tmpRPos.x + _lpUp.x * 0.65, _tmpRPos.y + _lpUp.y * 0.65, _tmpRPos.z + _lpUp.z * 0.65);
+    }
+    pos.needsUpdate = true; seg.loopDeck.geometry.computeVertexNormals();
+    posRL.needsUpdate = true; seg.loopRailL.geometry.computeVertexNormals();
+    posRR.needsUpdate = true; seg.loopRailR.geometry.computeVertexNormals();
+
+    const midY = (y0 + y1) * 0.5 + LOOP_RADIUS * 1.4;
+    const h = Math.max(4, midY - FLOOR_Y);
+    for (const st of seg.loopStruts) {
+      st.mesh.scale.y = h;
+      st.mesh.position.set(st.x, FLOOR_Y + h * 0.5, st.z);
+    }
+  }
+
   function assignCollectibles(seg, i, centerZ) {
     for (const item of seg.collectibles) {
       item.active = false;
@@ -994,14 +1345,14 @@ export function createTrackGenerator(scene) {
     }
 
     let cursor = 0;
-    const placeItem = (kind, lx, lz, yOff) => {
+    const placeItem = (kind, lx, lz, yOff, absY = null) => {
       if (cursor >= MAX_COLLECTIBLES) return;
       const slot = seg.collectibles[cursor++];
       slot.kind = kind;
       slot.lx = lx;
       slot.lz = lz;
-      const trackY = getTrackHeight(centerZ + lz);
-      slot.baseY = trackY + yOff;
+      const trackY = absY !== null ? absY : getTrackHeight(centerZ + lz);
+      slot.baseY = absY !== null ? absY : (trackY + yOff);
       slot.phase = (i * 0.9 + cursor * 0.65);
       slot.active = true;
       slot.collected = false;
@@ -1011,7 +1362,7 @@ export function createTrackGenerator(scene) {
       slot.obj.position.set(lx, slot.baseY, lz);
       slot.obj.visible = true;
 
-      if (kind === 'fruit' || kind === 'gem') {
+      if (absY === null && (kind === 'fruit' || kind === 'gem')) {
         slot.groundRing.material = ringMats[kind === 'gem' ? 'gem' : slot.fruitType];
         slot.groundRing.position.set(lx, trackY + 0.06, lz);
         slot.groundRing.rotation.set(-Math.PI / 2 - getTrackSlope(centerZ + lz), 0, 0);
@@ -1025,10 +1376,45 @@ export function createTrackGenerator(scene) {
     const LANE_W = W / TRACK.lanes;
 
     if (i === 0) {
-      // Baris koin + buah mainan raksasa menyambut di depan start
       placeItem('coin', 0, -3.5, 0.95);
       placeItem('coin', 0, -6.0, 0.95);
       placeItem('fruit', 0, -9.2, 1.25);
+      return;
+    }
+
+    if (seg.type === 'loop') {
+      const z0 = L / 2, z1 = -L / 2;
+      const y0 = getTrackHeight(centerZ + z0);
+      const y1 = getTrackHeight(centerZ + z1);
+      const lp = new THREE.Vector3();
+      const loopUs = [0.18, 0.34, 0.5, 0.66, 0.82];
+      loopUs.forEach((u, idx) => {
+        evalLoopPose(z0, z1, y0, y1, u, 0, lp, null, _lpRight);
+        const kind = idx === 2 ? 'gem' : idx % 2 === 1 ? 'fruit' : 'coin';
+        placeItem(kind, lp.x, lp.z, 0, lp.y + (u > 0.25 && u < 0.75 ? -1.1 : 1.1));
+      });
+      return;
+    }
+
+    if (seg.type === 'fork') {
+      // Kiri: jalur risiko tinggi penuh buah glossy & permata! Kanan: jalur aman berderet koin
+      const ts = [0.22, 0.38, 0.54, 0.70, 0.82];
+      ts.forEach((t, idx) => {
+        const fp = getForkProfile(t);
+        const lz = L / 2 - t * L;
+        const kindL = idx === 2 ? 'gem' : 'fruit';
+        placeItem(kindL, fp.cxL, lz, fp.yOffL + 1.25);
+        placeItem('coin', fp.cxR, lz, 0.95);
+      });
+      return;
+    }
+
+    if (seg.type === 'narrow') {
+      for (let k = 0; k < 6; k++) {
+        const lz = 9.0 - k * 3.6;
+        const kind = k === 2 || k === 5 ? 'fruit' : 'coin';
+        placeItem(kind, Math.sin(k * 0.9) * 0.85, lz, kind === 'fruit' ? 1.25 : 0.95);
+      }
       return;
     }
 
@@ -1150,26 +1536,91 @@ export function createTrackGenerator(scene) {
       }
     });
 
-    displace(seg.road, centerZ);
-    for (const sh of seg.shoulders) displaceShoulder(sh.mesh, sh.side, centerZ);
-    for (const sk of seg.skirts) displaceSkirt(sk, centerZ);
-    for (const e of seg.edges) displace(e, centerZ, 0.02);
+    const isPlainDeck = seg.type !== 'narrow' && seg.type !== 'fork' && seg.type !== 'loop' && seg.type !== 'ramp';
+    seg.road.visible = isPlainDeck;
+    if (isPlainDeck) displace(seg.road, centerZ);
+
+    const showRampDeck = seg.type === 'ramp';
+    for (const rr of seg.rampRoads) {
+      rr.mesh.visible = showRampDeck;
+      if (showRampDeck) displace(rr.mesh, centerZ);
+    }
+    for (const rc of seg.rampCaps) {
+      rc.mesh.visible = showRampDeck;
+      if (showRampDeck) {
+        rc.mesh.position.set(0, getTrackHeight(centerZ + rc.lz) - 0.16, rc.lz);
+        rc.mesh.rotation.x = Math.atan(-getTrackSlope(centerZ + rc.lz));
+      }
+    }
+
+    seg.narrowGroup.visible = seg.type === 'narrow';
+    if (seg.narrowGroup.visible) {
+      displaceRibbon(seg.narrowRoad, RIBBON_STEPS, (t) => {
+        const lz = L / 2 - t * L;
+        const hw = getNarrowHalfWidth(t);
+        return { lx: -hw, rx: hw, y: getTrackHeight(centerZ + lz), z: lz };
+      });
+    }
+
+    seg.forkGroup.visible = seg.type === 'fork';
+    if (seg.forkGroup.visible) {
+      displaceRibbon(seg.forkLeftRoad, RIBBON_STEPS, (t) => {
+        const lz = L / 2 - t * L;
+        const fp = getForkProfile(t);
+        return { lx: fp.cxL - fp.hwL, rx: fp.cxL + fp.hwL, y: getTrackHeight(centerZ + lz) + fp.yOffL, z: lz };
+      });
+      displaceRibbon(seg.forkRightRoad, RIBBON_STEPS, (t) => {
+        const lz = L / 2 - t * L;
+        const fp = getForkProfile(t);
+        return { lx: fp.cxR - fp.hwR, rx: fp.cxR + fp.hwR, y: getTrackHeight(centerZ + lz) + fp.yOffR, z: lz };
+      });
+      seg.forkSign.position.set(0, getTrackHeight(centerZ + L * 0.34), L * 0.34);
+    }
+
+    seg.loopGroup.visible = seg.type === 'loop';
+    if (seg.loopGroup.visible) {
+      displaceLoop(seg, centerZ);
+    }
+
+    const showShoulders = isPlainDeck;
+    for (const sh of seg.shoulders) {
+      sh.mesh.visible = showShoulders;
+      if (showShoulders) displaceShoulder(sh.mesh, sh.side, centerZ);
+    }
+    for (const sk of seg.skirts) {
+      sk.visible = isPlainDeck;
+      if (isPlainDeck) displaceSkirt(sk, centerZ);
+    }
+    for (const e of seg.edges) {
+      e.visible = isPlainDeck;
+      if (isPlainDeck) displace(e, centerZ, 0.02);
+    }
     seg.dashes.forEach((d, k) => {
       const lz = -L / 2 + 2 + k * 4;
-      d.position.set(0, getTrackHeight(centerZ + lz) + 0.03, lz);
-      d.rotation.x = Math.atan(-getTrackSlope(centerZ + lz));
+      d.visible = isPlainDeck || (showRampDeck && (lz > RAMP_GAP_START || lz < RAMP_GAP_END));
+      if (d.visible) {
+        d.position.set(0, getTrackHeight(centerZ + lz) + 0.03, lz);
+        d.rotation.x = Math.atan(-getTrackSlope(centerZ + lz));
+      }
     });
 
+    const showGuards = isPlainDeck || showRampDeck;
     for (const gp of seg.guardPosts) {
       const lz = -L / 2 + 2 + gp.k * 4;
-      const y = getTrackHeight(centerZ + lz);
-      gp.mesh.position.set(gp.side * (W / 2 + 0.32), y + 0.36, lz);
+      gp.mesh.visible = showGuards && !(showRampDeck && lz <= RAMP_GAP_START + 0.5 && lz >= RAMP_GAP_END - 0.5);
+      if (gp.mesh.visible) {
+        const y = getTrackHeight(centerZ + lz);
+        gp.mesh.position.set(gp.side * (W / 2 + 0.32), y + 0.36, lz);
+      }
     }
     for (const gb of seg.guardBeams) {
       const lz = -L / 2 + 2 + gb.k * 4;
-      const y = getTrackHeight(centerZ + lz);
-      gb.mesh.position.set(gb.side * (W / 2 + 0.14), y + 0.32, lz);
-      gb.mesh.rotation.x = Math.atan(-getTrackSlope(centerZ + lz));
+      gb.mesh.visible = showGuards && !(showRampDeck && lz <= RAMP_GAP_START + 0.5 && lz >= RAMP_GAP_END - 0.5);
+      if (gb.mesh.visible) {
+        const y = getTrackHeight(centerZ + lz);
+        gb.mesh.position.set(gb.side * (W / 2 + 0.14), y + 0.32, lz);
+        gb.mesh.rotation.x = Math.atan(-getTrackSlope(centerZ + lz));
+      }
     }
     if (seg.connector) {
       const seamZ = L / 2;
@@ -1180,8 +1631,11 @@ export function createTrackGenerator(scene) {
     const roadMidY = getTrackHeight(centerZ);
     const pierH = Math.max(2, roadMidY - FLOOR_Y);
     for (const p of seg.piers) {
-      p.mesh.scale.y = pierH;
-      p.mesh.position.set(p.x, FLOOR_Y + pierH / 2, 0);
+      p.mesh.visible = seg.type !== 'loop' && seg.type !== 'fork';
+      if (p.mesh.visible) {
+        p.mesh.scale.y = pierH;
+        p.mesh.position.set(seg.type === 'narrow' ? p.x * 0.32 : p.x, FLOOR_Y + pierH / 2, 0);
+      }
     }
 
     seg.ramp.visible = seg.type === 'ramp';
@@ -1189,10 +1643,11 @@ export function createTrackGenerator(scene) {
       seg.ramp.position.set(0, getTrackHeight(centerZ) + 0.45, 0);
     }
 
-    seg.boost.visible = seg.type === 'boost';
+    seg.boost.visible = seg.type === 'boost' || seg.type === 'loop';
     if (seg.boost.visible) {
-      seg.boost.position.set(0, getTrackHeight(centerZ) + 0.07, 0);
-      seg.boost.rotation.x = Math.atan(-getTrackSlope(centerZ));
+      const bz = seg.type === 'loop' ? (L / 2 - 2.2) : 0;
+      seg.boost.position.set(0, getTrackHeight(centerZ + bz) + 0.07, bz);
+      seg.boost.rotation.x = Math.atan(-getTrackSlope(centerZ + bz));
     }
 
     seg.bridge.visible = seg.type === 'bridge';
@@ -1205,7 +1660,7 @@ export function createTrackGenerator(scene) {
       }
     }
 
-    seg.arch.visible = i >= 4 && i % (TRACK.archEvery || 8) === 0;
+    seg.arch.visible = i >= 4 && i % (TRACK.archEvery || 8) === 0 && seg.type !== 'loop';
     if (seg.arch.visible) seg.arch.position.set(0, roadMidY, 0);
 
     seg.decor.forEach((d, k) => {
@@ -1338,10 +1793,34 @@ export function createTrackGenerator(scene) {
     }
   }
 
+  function getCollectibleTargets(zMin, zMax, out = []) {
+    out.length = 0;
+    for (const seg of pool) {
+      if (seg.index === null) continue;
+      const centerZ = seg.group.position.z;
+      if (centerZ + L * 0.6 < zMin || centerZ - L * 0.6 > zMax) continue;
+      for (const item of seg.collectibles) {
+        if (!item.active || item.collected) continue;
+        const wz = centerZ + item.lz;
+        if (wz >= zMin && wz <= zMax) {
+          out.push({ x: item.lx, y: item.obj.position.y, z: wz, kind: item.kind });
+        }
+      }
+    }
+    return out;
+  }
+
   function dispose() {
     for (const seg of pool) {
       scene.remove(seg.group);
       seg.road.geometry.dispose();
+      for (const rr of seg.rampRoads) rr.mesh.geometry.dispose();
+      seg.narrowRoad.geometry.dispose();
+      seg.forkLeftRoad.geometry.dispose();
+      seg.forkRightRoad.geometry.dispose();
+      seg.loopDeck.geometry.dispose();
+      seg.loopRailL.geometry.dispose();
+      seg.loopRailR.geometry.dispose();
       for (const sh of seg.shoulders) sh.mesh.geometry.dispose();
       for (const sk of seg.skirts) sk.geometry.dispose();
       for (const e of seg.edges) e.geometry.dispose();
@@ -1352,6 +1831,7 @@ export function createTrackGenerator(scene) {
     [
       geoDash, geoRamp, geoRampRail, geoRampStripe, geoBoost, geoChevron,
       geoBoosterHousing, geoBoosterWheel, geoBoosterHub, geoConnectorBar, geoConnectorEar,
+      geoGapCap, geoLoopStrut, geoForkSignPost, geoForkSignBoard,
       geoPillar, geoGuardPost, geoGuardBeam, geoTrunk, geoCanopy, geoBushLobe, geoBerry,
       geoPlantShadow, geoGrassTuft, geoFlower, geoLampBase, geoLampPole,
       geoLampArm, geoLampHead, geoFloor, geoBlock, geoFencePost, geoFenceRail,
@@ -1359,7 +1839,8 @@ export function createTrackGenerator(scene) {
       geoCoinBody, geoCoinRim, geoCoinCore, geoGemStar, geoGemRing, geoGlowRing,
     ].forEach((g) => g.dispose());
     [
-      matAsphalt, matShoulderBlend, matDeckSide, matCurb, matLine, matConnectorBlue,
+      matAsphalt, matForkLeft, matLoopSurface, matGapCap, matForkSign,
+      matShoulderBlend, matDeckSide, matCurb, matLine, matConnectorBlue,
       matRamp, matRampStripe, matBoost, matChevron, matBoosterWheel, matBoosterHub,
       matPillar, ...matRailColors,
       matTrunk, matLeaf1, matLeaf2, matLeaf3, matBushEmerald, matBushPurple,
@@ -1369,15 +1850,16 @@ export function createTrackGenerator(scene) {
       matCoinRim, matGemHalo, ...Object.values(ringMats),
     ].forEach((m) => m.dispose());
     [
-      roadTex.map, roadTex.normalMap, plantShadowTex, glowRingTex,
+      roadTex.map, roadTex.normalMap, plantShadowTex, glowRingTex, forkSignTex,
       ...floorTextures, ...blockTextures, archBannerTex,
     ].forEach((t) => t.dispose());
     pool.length = 0;
   }
 
   return {
-    updateTrack, collectNearby, resetCollectibles, dispose,
-    getTrackHeight, getTrackSlope, checkRampCollision, checkBoostCollision, getSegmentType,
+    updateTrack, collectNearby, getCollectibleTargets, resetCollectibles, dispose,
+    getTrackHeight, getTrackSlope, getTrackSurfaceAt, evalLoopPose,
+    checkRampCollision, checkBoostCollision, getSegmentType,
     get segmentCount() { return pool.length; },
   };
 }
