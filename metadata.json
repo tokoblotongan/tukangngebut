@@ -1,0 +1,6 @@
+{
+  "name": "Juragan Ngebut — Mini Race Nusantara",
+  "description": "Game balap diorama 3D bergaya mainan hangat di jalanan Salatiga dengan armada Angkot, Bemo, L300, dan Ojol.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

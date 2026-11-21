@@ -1,0 +1,22 @@
+juragan-ngebut-nusantara/
+├── index.html                  # Entry point HTML (Importmap untuk Qwen / Vite untuk AI Studio)
+├── public/
+│   └── assets/                 # Folder khusus file .glb nanti (angkot.glb, bemo.glb, l300.glb, ojol.glb, dll.)
+└── src/
+    ├── config/
+    │   └── gameConfig.js       # Kunci palet warna Toy Story, parameter fisika, & daftar aset kendaraan/gedung
+    ├── core/
+    │   ├── sceneSetup.js       # Renderer ACESFilmic, kamera 45° horizon-locked, & pencahayaan hangat
+    │   └── gameLoop.js         # Pengatur waktu (dt), state mesin (MENU, PLAYING, PAUSED), & skor
+    ├── entities/
+    │   ├── assetFactory.js     # Pembuat model Toy-Beveled prosedural + GLTFLoader otomatis jika .glb tersedia
+    │   ├── playerController.js # Kontrol Kiri/Kanan, suspensi membal, lompatan ramp, & Barrel Roll udara
+    │   └── trafficManager.js   # Spawner & AI lalu lintas (Angkot ngetem, Bemo, L300, Ojol)
+    ├── world/
+    │   ├── trackGenerator.js   # Streaming segmen trek naik-turun, jembatan layang, boost pad, & ramp
+    │   └── salatigaLandmark.js # Bangunan ikonik pinggir trek (Koperasi Merah Putih, Pasar Raya II, Rumdin Walikota, Monas)
+    ├── ui/
+    │   └── hudManager.js       # HUD skor jarak, pemilih armada, banner stunt Barrel Roll, & kontrol sentuh
+    ├── network/
+    │   └── multiplayerHook.js  # Kerangka siap pakai (stub) untuk sinkronisasi Supabase Realtime tahap akhir
+    └── main.js                 # Penghubung utama seluruh modul

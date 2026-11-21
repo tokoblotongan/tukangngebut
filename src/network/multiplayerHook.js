@@ -1,0 +1,170 @@
+/* =====================================================================
+   multiplayerHook.js — Kerangka sinkronisasi siap-pakai.
+   Single-player tetap berjalan penuh tanpa jaringan apa pun.
+   Kontrak terkunci: syncLocalState(playerState), getRemotePlayers().
+
+   Menyambung ke Supabase Realtime nanti cukup satu panggilan:
+     const hook = createMultiplayerHook({ scene, room: 'nusantara-1' });
+     hook.connectSupabase(supabaseClient);   // client dari @supabase/supabase-js
+   atau transport generik apa pun:
+     hook.attachTransport({ send(ev, payload), subscribe(cb) -> unsubscribe });
+   ===================================================================== */
+import * as THREE from 'three';
+import { loadVehicle } from '../entities/assetFactory.js';
+import { VEHICLES } from '../config/gameConfig.js';
+
+const SEND_INTERVAL = 0.1;   // 10 Hz
+const PEER_TTL = 3.0;        // detik tanpa kabar → dianggap pergi
+const NAMES = ['Juragan Angkot', 'Bos Bemo', 'Sultan L300', 'Raja Ojol', 'Nona Salatiga', 'Mas Blotongan'];
+
+export function createMultiplayerHook({ scene = null, room = 'nusantara-1', enabled = false } = {}) {
+  const id = `p_${Math.random().toString(36).slice(2, 9)}`;
+  const identity = { id, name: NAMES[Math.floor(Math.random() * NAMES.length)] };
+  const peers = new Map();          // id -> { id, name, vehicle, x, y, z, score, state, seen }
+  const ghosts = new Map();         // id -> { group, target:Vector3, type }
+  let transport = null, unsubscribe = null, channel = null;
+  let status = enabled ? 'connecting' : 'solo';
+  let acc = 0, lastPayload = null, disposed = false;
+
+  function receive(payload) {
+    if (!payload || payload.id === id) return;
+    if (payload.leave) { removePeer(payload.id); return; }
+    const prev = peers.get(payload.id);
+    peers.set(payload.id, {
+      id: payload.id,
+      name: payload.name || 'Juragan',
+      vehicle: VEHICLES[payload.vehicle] ? payload.vehicle : 'angkot',
+      x: +payload.x || 0, y: +payload.y || 0, z: +payload.z || 0,
+      score: +payload.score || 0, state: payload.state || 'PLAYING',
+      seen: performance.now() / 1000,
+      isNew: !prev,
+    });
+  }
+
+  function removePeer(pid) {
+    peers.delete(pid);
+    const g = ghosts.get(pid);
+    if (g) { scene?.remove(g.group); ghosts.delete(pid); }
+  }
+
+  /* ---------- Transport generik ---------- */
+  function attachTransport(t) {
+    detach();
+    transport = t;
+    try {
+      unsubscribe = t.subscribe?.((msg) => receive(msg?.payload ?? msg)) || null;
+      status = 'live';
+    } catch { status = 'offline'; }
+    return status;
+  }
+  function detach() {
+    try { unsubscribe?.(); } catch {}
+    unsubscribe = null; transport = null;
+    for (const pid of [...peers.keys()]) removePeer(pid);
+  }
+
+  /* ---------- Adapter Supabase Realtime (dipakai tahap akhir) ---------- */
+  function connectSupabase(client, roomName = room) {
+    if (!client?.channel) { status = 'offline'; return status; }
+    try {
+      channel = client.channel(`juragan:${roomName}`, { config: { broadcast: { self: false }, presence: { key: id } } });
+      channel.on('broadcast', { event: 'state' }, ({ payload }) => receive(payload));
+      channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
+        for (const p of leftPresences || []) if (p.key) removePeer(p.key);
+      });
+      channel.subscribe((s) => {
+        status = s === 'SUBSCRIBED' ? 'live' : s === 'CHANNEL_ERROR' || s === 'TIMED_OUT' ? 'offline' : 'connecting';
+        if (s === 'SUBSCRIBED') channel.track({ key: id, name: identity.name });
+      });
+      transport = { send: (event, payload) => channel.send({ type: 'broadcast', event, payload }) };
+      status = 'connecting';
+    } catch { status = 'offline'; }
+    return status;
+  }
+
+  /* ---------- Kontrak: kirim state lokal (throttle 10 Hz) ---------- */
+  function syncLocalState(playerState) {
+    lastPayload = {
+      id, name: identity.name,
+      vehicle: playerState?.vehicle || 'angkot',
+      x: round(playerState?.x), y: round(playerState?.y), z: round(playerState?.z),
+      score: Math.round(playerState?.score || 0),
+      state: playerState?.state || 'MENU',
+    };
+    if (!transport || status !== 'live') return;
+    // dipanggil per frame; pengiriman sebenarnya diatur update(dt)
+  }
+  const round = (v) => Math.round((+v || 0) * 100) / 100;
+
+  /* ---------- Kontrak: daftar pemain jauh ---------- */
+  function getRemotePlayers() {
+    const now = performance.now() / 1000;
+    for (const [pid, p] of peers) if (now - p.seen > PEER_TTL) removePeer(pid);
+    return [...peers.values()];
+  }
+
+  /* ---------- Ghost visual (inert saat solo) ---------- */
+  async function ensureGhost(peer) {
+    if (!scene || ghosts.has(peer.id) || !VEHICLES[peer.vehicle]) return;
+    ghosts.set(peer.id, { group: null, target: new THREE.Vector3(peer.x, peer.y, peer.z), type: peer.vehicle });
+    try {
+      const g = await loadVehicle(peer.vehicle);
+      if (disposed || !peers.has(peer.id)) return;
+      g.traverse((o) => {
+        if (o.isMesh && o.material) {
+          o.material = o.material.clone();
+          o.material.transparent = true;
+          o.material.opacity = 0.45;
+          o.castShadow = false;
+        }
+      });
+      g.position.set(peer.x, peer.y, peer.z);
+      scene.add(g);
+      const entry = ghosts.get(peer.id);
+      if (entry) entry.group = g;
+    } catch { ghosts.delete(peer.id); }
+  }
+
+  function update(dt) {
+    acc += dt;
+    if (transport && status === 'live' && lastPayload && acc >= SEND_INTERVAL) {
+      acc = 0;
+      try { transport.send('state', lastPayload); } catch { status = 'offline'; }
+    }
+    const list = getRemotePlayers();
+    for (const p of list) {
+      if (!ghosts.has(p.id)) { ensureGhost(p); continue; }
+      const g = ghosts.get(p.id);
+      g.target.set(p.x, p.y, p.z);
+      if (g.group) {
+        const k = 1 - Math.exp(-10 * dt);
+        g.group.position.lerp(g.target, k);
+        for (const w of g.group.userData.wheels || []) w.rotation.x -= dt * 12;
+      }
+    }
+  }
+
+  function disconnect() {
+    try { transport?.send?.('state', { id, leave: true }); } catch {}
+    try { channel?.unsubscribe?.(); } catch {}
+    channel = null;
+    detach();
+    status = 'solo';
+  }
+
+  function dispose() {
+    disposed = true;
+    disconnect();
+    for (const [, g] of ghosts) if (g.group) scene?.remove(g.group);
+    ghosts.clear();
+  }
+
+  return {
+    syncLocalState, getRemotePlayers, update,
+    attachTransport, connectSupabase, disconnect, dispose,
+    get status() { return status; },
+    get room() { return room; },
+    get identity() { return identity; },
+    get peerCount() { return peers.size; },
+  };
+}

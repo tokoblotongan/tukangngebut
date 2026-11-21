@@ -1,0 +1,293 @@
+/* =====================================================================
+   trackGenerator.js — Trek streaming undulasi + object pooling.
+   Fungsi murni (tanpa scene): getTrackHeight, getTrackSlope,
+   checkRampCollision, checkBoostCollision, getSegmentType.
+   Visual streaming: createTrackGenerator(scene).updateTrack(playerZ, t).
+   Arah maju = -Z. Segmen i membentang z ∈ [-i*L, -(i+1)*L].
+   ===================================================================== */
+import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { TRACK, PHYSICS, PALETTE as P } from '../config/gameConfig.js';
+
+const L = TRACK.segmentLength;
+const W = TRACK.width;
+const BRIDGE_H = 4.6;
+const RAMP_W = 7, RAMP_LEN = 5, RAMP_RISE = 1.5;
+const BOOST_W = 4, BOOST_LEN = 3;
+
+/* ---------- Util deterministik ---------- */
+function hash(n) {
+  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+function smoothstep(a, b, x) {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+export function getSegmentType(i) {
+  if (i < 3) return 'plain';
+  if (i % TRACK.bridgeEvery === 0) return 'bridge';
+  if (i % TRACK.rampEvery === 0) return 'ramp';
+  if (i % TRACK.boostEvery === 0) return 'boost';
+  return 'plain';
+}
+
+/* ---------- Matematika ketinggian & kemiringan (kontrak terkunci) ---------- */
+export function getTrackHeight(z) {
+  const { amp1, freq1, amp2, freq2 } = TRACK.hill;
+  let h = amp1 * Math.sin(z * freq1) + amp2 * Math.sin(z * freq2 + 1.7);
+  const i = Math.floor(-z / L);
+  if (getSegmentType(i) === 'bridge') {
+    const z0 = -i * L, z1 = -(i + 1) * L;
+    const t = (z - z0) / (z1 - z0);
+    h += BRIDGE_H * (smoothstep(0, 0.28, t) - smoothstep(0.72, 1, t));
+  }
+  return h;
+}
+export function getTrackSlope(z) {
+  const e = 0.4;
+  return (getTrackHeight(z + e) - getTrackHeight(z - e)) / (2 * e);
+}
+
+/* ---------- Deteksi ramp & boost pad (murni, dipakai playerController) ---------- */
+export function checkRampCollision(x, z) {
+  const i = Math.floor(-z / L);
+  if (getSegmentType(i) !== 'ramp') return null;
+  const zc = -(i + 0.5) * L;
+  if (Math.abs(z - zc) < RAMP_LEN / 2 && Math.abs(x) < RAMP_W / 2) {
+    return { z: zc, x: 0, width: RAMP_W, launchVy: PHYSICS.ramp.launchVy, topY: getTrackHeight(zc) + RAMP_RISE };
+  }
+  return null;
+}
+export function checkBoostCollision(x, z) {
+  const i = Math.floor(-z / L);
+  if (getSegmentType(i) !== 'boost') return null;
+  const zc = -(i + 0.5) * L;
+  if (Math.abs(z - zc) < BOOST_LEN / 2 && Math.abs(x) < BOOST_W / 2) return { z: zc, x: 0, width: BOOST_W };
+  return null;
+}
+
+/* =====================================================================
+   VISUAL STREAMING — pool segmen tetap, didaur ulang tanpa alokasi baru
+   ===================================================================== */
+export function createTrackGenerator(scene) {
+  /* Material bersama */
+  const matAsphalt = new THREE.MeshStandardMaterial({ color: P.asphalt, roughness: 0.85 });
+  const matLine = new THREE.MeshStandardMaterial({ color: P.line, roughness: 0.6, emissive: P.line, emissiveIntensity: 0.08 });
+  const matRamp = new THREE.MeshStandardMaterial({ color: P.toyOrange, roughness: 0.55 });
+  const matRampStripe = new THREE.MeshStandardMaterial({ color: P.toyYellow, roughness: 0.5, emissive: P.toyYellow, emissiveIntensity: 0.25 });
+  const matBoost = new THREE.MeshStandardMaterial({ color: P.toyYellow, roughness: 0.45, emissive: P.toyYellow, emissiveIntensity: 0.6 });
+  const matChevron = new THREE.MeshStandardMaterial({ color: P.toyOrange, roughness: 0.5, emissive: P.toyOrange, emissiveIntensity: 0.4 });
+  const matPillar = new THREE.MeshStandardMaterial({ color: P.concrete, roughness: 0.8 });
+  const matRail = new THREE.MeshStandardMaterial({ color: P.warmWhite, roughness: 0.6 });
+  const matTrunk = new THREE.MeshStandardMaterial({ color: P.woodDark, roughness: 0.8 });
+  const matLeaf = new THREE.MeshStandardMaterial({ color: P.grass, roughness: 0.75 });
+  const matLeaf2 = new THREE.MeshStandardMaterial({ color: P.grassDark, roughness: 0.75 });
+  const matLampPole = new THREE.MeshStandardMaterial({ color: P.tire, roughness: 0.6 });
+  const matLampHead = new THREE.MeshStandardMaterial({ color: P.headlight, roughness: 0.4, emissive: P.headlight, emissiveIntensity: 1.4 });
+
+  /* Geometri bersama */
+  const geoDash = new THREE.BoxGeometry(0.28, 0.03, 1.7);
+  const geoRamp = new RoundedBoxGeometry(RAMP_W, 0.6, RAMP_LEN, 3, 0.14);
+  const geoRampStripe = new THREE.BoxGeometry(RAMP_W - 0.6, 0.06, 0.4);
+  const geoBoost = new RoundedBoxGeometry(BOOST_W, 0.12, BOOST_LEN, 3, 0.06);
+  const geoChevron = new THREE.BoxGeometry(2.6, 0.06, 0.35);
+  const geoPillar = new THREE.CylinderGeometry(0.5, 0.62, 1, 12);
+  const geoRailPost = new THREE.BoxGeometry(0.14, 0.9, 0.14);
+  const geoRailTop = new THREE.BoxGeometry(0.16, 0.12, L * 0.5);
+  const geoTrunk = new THREE.CylinderGeometry(0.13, 0.18, 1, 10);
+  const geoLeaf = new THREE.SphereGeometry(0.85, 14, 10);
+  const geoLampPole = new THREE.CylinderGeometry(0.06, 0.08, 2.6, 8);
+  const geoLampHead = new THREE.SphereGeometry(0.16, 12, 10);
+
+  const pool = [];
+  const POOL_SIZE = TRACK.segmentsAhead + TRACK.segmentsBehind + 2;
+
+  function makeRoadGeo(width) {
+    const g = new THREE.PlaneGeometry(width, L, 1, 14);
+    g.rotateX(-Math.PI / 2);
+    return g;
+  }
+
+  function buildSegment() {
+    const group = new THREE.Group();
+    const seg = { group, index: null, type: 'plain', road: null, edges: [], dashes: [], ramp: null, boost: null, bridge: null, decor: [] };
+
+    seg.road = new THREE.Mesh(makeRoadGeo(W), matAsphalt);
+    seg.road.receiveShadow = true;
+    group.add(seg.road);
+
+    for (const ex of [-W / 2 + 0.3, W / 2 - 0.3]) {
+      const e = new THREE.Mesh(makeRoadGeo(0.25), matLine);
+      e.position.x = ex; e.receiveShadow = true;
+      group.add(e); seg.edges.push(e);
+    }
+    for (let d = 0; d < 6; d++) {
+      const m = new THREE.Mesh(geoDash, matLine);
+      group.add(m); seg.dashes.push(m);
+    }
+
+    /* Ramp (terlihat hanya di segmen ramp) */
+    const ramp = new THREE.Group();
+    const slab = new THREE.Mesh(geoRamp, matRamp);
+    slab.castShadow = true; slab.receiveShadow = true;
+    ramp.add(slab);
+    for (let s = 0; s < 3; s++) {
+      const st = new THREE.Mesh(geoRampStripe, matRampStripe);
+      st.position.set(0, 0.32, -1.4 + s * 1.4);
+      ramp.add(st);
+    }
+    ramp.rotation.x = 0.27;
+    ramp.visible = false;
+    group.add(ramp); seg.ramp = ramp;
+
+    /* Boost pad */
+    const boost = new THREE.Group();
+    const pad = new THREE.Mesh(geoBoost, matBoost);
+    pad.receiveShadow = true;
+    boost.add(pad);
+    for (let c = 0; c < 3; c++) {
+      const ch = new THREE.Mesh(geoChevron, matChevron);
+      ch.position.set(0, 0.08, -0.9 + c * 0.9);
+      ch.rotation.y = c % 2 ? 0.35 : -0.35;
+      boost.add(ch);
+    }
+    boost.visible = false;
+    group.add(boost); seg.boost = boost;
+
+    /* Jembatan layang: pilar + pagar */
+    const bridge = new THREE.Group();
+    seg.pillars = [];
+    for (const px of [-W / 2 + 1, W / 2 - 1]) for (const pz of [-L * 0.22, L * 0.22]) {
+      const p = new THREE.Mesh(geoPillar, matPillar);
+      p.castShadow = true; p.position.set(px, 0, pz);
+      bridge.add(p); seg.pillars.push(p);
+    }
+    for (const rx of [-W / 2 + 0.2, W / 2 - 0.2]) {
+      for (let k = 0; k < 6; k++) {
+        const post = new THREE.Mesh(geoRailPost, matRail);
+        post.position.set(rx, 0, -L * 0.25 + k * (L * 0.5 / 5));
+        bridge.add(post);
+      }
+      const top = new THREE.Mesh(geoRailTop, matRail);
+      top.position.set(rx, 0.5, 0);
+      bridge.add(top);
+    }
+    bridge.visible = false;
+    group.add(bridge); seg.bridge = bridge;
+
+    /* Dekorasi pinggir: 3 pohon + 2 lampu */
+    for (let t = 0; t < 3; t++) {
+      const tree = new THREE.Group();
+      const trunk = new THREE.Mesh(geoTrunk, matTrunk); trunk.position.y = 0.5; trunk.castShadow = true;
+      const leaf = new THREE.Mesh(geoLeaf, matLeaf); leaf.position.y = 1.5; leaf.castShadow = true;
+      const leaf2 = new THREE.Mesh(geoLeaf, matLeaf2); leaf2.position.set(0.4, 1.9, 0.2); leaf2.scale.setScalar(0.6); leaf2.castShadow = true;
+      tree.add(trunk, leaf, leaf2);
+      group.add(tree); seg.decor.push({ obj: tree, kind: 'tree' });
+    }
+    for (let l = 0; l < 2; l++) {
+      const lamp = new THREE.Group();
+      const pole = new THREE.Mesh(geoLampPole, matLampPole); pole.position.y = 1.3; pole.castShadow = true;
+      const head = new THREE.Mesh(geoLampHead, matLampHead); head.position.y = 2.7;
+      lamp.add(pole, head);
+      group.add(lamp); seg.decor.push({ obj: lamp, kind: 'lamp' });
+    }
+
+    scene.add(group);
+    return seg;
+  }
+
+  function displace(mesh, centerZ) {
+    const pos = mesh.geometry.attributes.position;
+    for (let v = 0; v < pos.count; v++) {
+      pos.setY(v, getTrackHeight(centerZ + pos.getZ(v)));
+    }
+    pos.needsUpdate = true;
+    mesh.geometry.computeVertexNormals();
+  }
+
+  function assign(seg, i) {
+    seg.index = i;
+    seg.type = getSegmentType(i);
+    const centerZ = -(i + 0.5) * L;
+    seg.group.position.set(0, 0, centerZ);
+
+    displace(seg.road, centerZ);
+    for (const e of seg.edges) displace(e, centerZ);
+    seg.dashes.forEach((d, k) => {
+      const lz = -L / 2 + 2 + k * 4;
+      d.position.set(0, getTrackHeight(centerZ + lz) + 0.03, lz);
+      d.rotation.x = Math.atan(-getTrackSlope(centerZ + lz));
+    });
+
+    seg.ramp.visible = seg.type === 'ramp';
+    if (seg.ramp.visible) seg.ramp.position.set(0, getTrackHeight(centerZ) + 0.35, 0);
+
+    seg.boost.visible = seg.type === 'boost';
+    if (seg.boost.visible) seg.boost.position.set(0, getTrackHeight(centerZ) + 0.07, 0);
+
+    seg.bridge.visible = seg.type === 'bridge';
+    if (seg.bridge.visible) {
+      const plateauY = getTrackHeight(centerZ);
+      const groundY = plateauY - BRIDGE_H;
+      const h = plateauY - groundY + 2;
+      for (const p of seg.pillars) {
+        p.scale.y = h;
+        p.position.y = groundY - 1 + h / 2;
+      }
+      seg.bridge.children.forEach((c) => {
+        if (c.geometry === geoRailPost) c.position.y = plateauY + 0.45;
+        if (c.geometry === geoRailTop) c.position.y = plateauY + 0.9;
+      });
+    }
+
+    seg.decor.forEach((d, k) => {
+      const side = hash(i * 7 + k) > 0.5 ? 1 : -1;
+      const lz = -L / 2 + 3 + hash(i * 13 + k) * (L - 6);
+      const off = W / 2 + 2.5 + hash(i * 17 + k) * 4;
+      const y = getTrackHeight(centerZ + lz);
+      d.obj.position.set(side * off, y, lz);
+      if (d.kind === 'tree') d.obj.scale.setScalar(0.9 + hash(i * 23 + k) * 0.7);
+    });
+  }
+
+  for (let s = 0; s < POOL_SIZE; s++) pool.push(buildSegment());
+
+  /* ---------- Daur ulang segmen sesuai posisi player ---------- */
+  function updateTrack(playerZ, t = 0) {
+    const cur = Math.floor(-playerZ / L);
+    const min = cur - TRACK.segmentsBehind;
+    const max = cur + TRACK.segmentsAhead;
+    const needed = new Set();
+    for (let i = min; i <= max; i++) needed.add(i);
+
+    for (const seg of pool) if (seg.index !== null && !needed.has(seg.index)) seg.index = null;
+
+    const present = new Set(pool.filter((s) => s.index !== null).map((s) => s.index));
+    for (const i of needed) {
+      if (present.has(i)) continue;
+      const free = pool.find((s) => s.index === null);
+      if (free) { assign(free, i); present.add(i); }
+    }
+
+    matBoost.emissiveIntensity = 0.5 + Math.sin(t * 4) * 0.3;
+    matChevron.emissiveIntensity = 0.35 + Math.sin(t * 4 + 1) * 0.2;
+  }
+
+  function dispose() {
+    for (const seg of pool) {
+      scene.remove(seg.group);
+      seg.road.geometry.dispose();
+      for (const e of seg.edges) e.geometry.dispose();
+    }
+    [geoDash, geoRamp, geoRampStripe, geoBoost, geoChevron, geoPillar, geoRailPost, geoRailTop, geoTrunk, geoLeaf, geoLampPole, geoLampHead].forEach((g) => g.dispose());
+    [matAsphalt, matLine, matRamp, matRampStripe, matBoost, matChevron, matPillar, matRail, matTrunk, matLeaf, matLeaf2, matLampPole, matLampHead].forEach((m) => m.dispose());
+    pool.length = 0;
+  }
+
+  return {
+    updateTrack, dispose,
+    getTrackHeight, getTrackSlope, checkRampCollision, checkBoostCollision, getSegmentType,
+    get segmentCount() { return pool.length; },
+  };
+}

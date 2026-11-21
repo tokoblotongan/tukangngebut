@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#ffe5cc" />
+<title>Juragan Ngebut — Mini Race Nusantara</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚐</text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;700;800&display=swap" rel="stylesheet" />
+
+<!-- Importmap Three.js r160 + addons: jalan langsung tanpa bundler, tetap Vite-compatible -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<style>
+/* ============ Palet cermin dari src/config/gameConfig.js ============ */
+:root{
+  --cream:#fff3e0; --paper:#fff8eb; --ink:#3b2f2f; --ink-soft:#6b5a52;
+  --red:#e5484d; --amber:#ffc53d; --orange:#f76b15; --green:#3fa34d;
+  --blue:#3e63dd; --purple:#8e4ec6; --grass:#6ab04c;
+  --surface:rgba(255,248,235,.92); --line:rgba(59,47,47,.14);
+  --shadow:0 14px 38px rgba(122,72,20,.20); --radius:18px;
+  --font-display:"Fredoka","Plus Jakarta Sans",system-ui,sans-serif;
+  --font-body:"Plus Jakarta Sans",system-ui,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden}
+body{font-family:var(--font-body);color:var(--ink);background:var(--cream)}
+#scene-canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;outline:none}
+
+/* Scrollbar bergaya diorama (bukan default browser) */
+::-webkit-scrollbar{width:8px;height:6px}
+::-webkit-scrollbar-track{background:rgba(59,47,47,.06);border-radius:99px}
+::-webkit-scrollbar-thumb{background:linear-gradient(180deg,var(--amber),var(--orange));border-radius:99px}
+::-webkit-scrollbar-thumb:hover{background:var(--orange)}
+*{scrollbar-width:thin;scrollbar-color:var(--amber) rgba(59,47,47,.06)}
+
+/* ============ Overlay UI preview (pointer-events transparen) ============ */
+#preview-ui{position:fixed;inset:0;pointer-events:none;z-index:10;display:flex;flex-direction:column;justify-content:space-between}
+#preview-ui>*{pointer-events:none}
+#preview-ui button,#preview-ui .chip,#preview-ui .info-card{pointer-events:auto}
+
+/* Bar atas */
+.topbar{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:18px 20px 0}
+.brand{display:flex;align-items:center;gap:12px;animation:dropIn .7s cubic-bezier(.2,.9,.3,1.2) both}
+.brand-logo{width:52px;height:52px;flex:none;filter:drop-shadow(0 4px 8px rgba(122,72,20,.25))}
+.brand h1{font-family:var(--font-display);font-weight:700;font-size:clamp(20px,3.4vw,30px);line-height:1.02;letter-spacing:.5px;text-shadow:0 2px 0 rgba(255,255,255,.6)}
+.brand h1 em{font-style:normal;color:var(--red)}
+.brand .sub{display:inline-flex;align-items:center;gap:6px;margin-top:5px;font-size:10.5px;font-weight:800;letter-spacing:1.6px;color:var(--ink-soft);background:var(--surface);border:1.5px solid var(--line);padding:3px 10px;border-radius:99px;backdrop-filter:blur(8px)}
+.brand .sub b{color:var(--orange)}
+.topctrl{display:flex;gap:8px;animation:dropIn .7s .12s cubic-bezier(.2,.9,.3,1.2) both}
+.tbtn{width:44px;height:44px;border-radius:14px;border:2px solid var(--line);background:var(--surface);backdrop-filter:blur(8px);color:var(--ink);font-size:18px;font-weight:800;cursor:pointer;box-shadow:var(--shadow);transition:transform .15s,background .2s,border-color .2s;display:grid;place-items:center;font-family:var(--font-body)}
+.tbtn:hover{transform:translateY(-2px);border-color:var(--amber)}
+.tbtn:active{transform:scale(.94)}
+.tbtn[aria-pressed="true"]{background:linear-gradient(135deg,var(--amber),var(--orange));border-color:var(--orange);color:#fff}
+.tbtn.small-text{font-size:11px;letter-spacing:.5px}
+.tbtn:focus-visible,.chip:focus-visible,.info-close:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
+
+/* Dock bawah: pemilih armada & landmark */
+.dock{padding:0 20px 18px;display:flex;flex-direction:column;gap:8px;animation:riseIn .7s .2s cubic-bezier(.2,.9,.3,1.2) both}
+.dock-row{display:flex;align-items:center;gap:10px}
+.dock-label{flex:none;font-size:10px;font-weight:800;letter-spacing:1.8px;color:var(--ink-soft);background:var(--surface);border:1.5px solid var(--line);padding:5px 10px;border-radius:99px;backdrop-filter:blur(8px)}
+.chips{display:flex;gap:8px;overflow-x:auto;padding:4px 2px;pointer-events:auto}
+.chip{flex:none;display:inline-flex;align-items:center;gap:7px;font-family:var(--font-body);font-size:13px;font-weight:700;color:var(--ink);background:var(--surface);border:2px solid var(--line);border-radius:99px;padding:8px 15px;cursor:pointer;backdrop-filter:blur(8px);box-shadow:0 6px 16px rgba(122,72,20,.14);transition:transform .15s,background .2s,border-color .2s;animation:popIn .5s calc(.25s + var(--i)*.05s) cubic-bezier(.2,.9,.3,1.4) both}
+.chip:hover{transform:translateY(-3px);border-color:var(--amber)}
+.chip:active{transform:scale(.95)}
+.chip.active{background:linear-gradient(135deg,var(--amber),var(--orange));border-color:var(--orange);color:#fff;text-shadow:0 1px 2px rgba(120,60,0,.3)}
+.chip .em{font-size:16px}
+
+/* Kartu info */
+.info-card{position:absolute;right:20px;top:50%;transform:translateY(-50%) translateX(24px);width:308px;max-height:min(72vh,560px);overflow-y:auto;background:var(--surface);border:2px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);backdrop-filter:blur(12px);padding:18px;opacity:0;visibility:hidden;transition:opacity .3s,transform .35s cubic-bezier(.2,.9,.3,1.1),visibility .3s}
+.info-card.open{opacity:1;visibility:visible;transform:translateY(-50%) translateX(0)}
+.info-head{display:flex;align-items:flex-start;gap:11px;margin-bottom:10px}
+.info-emoji{font-size:34px;line-height:1;filter:drop-shadow(0 3px 5px rgba(122,72,20,.25))}
+.info-head h2{font-family:var(--font-display);font-weight:600;font-size:20px;line-height:1.1}
+.info-head .tag{font-size:12px;font-weight:700;color:var(--orange);margin-top:2px}
+.info-close{margin-left:auto;flex:none;width:30px;height:30px;border-radius:10px;border:1.5px solid var(--line);background:var(--paper);color:var(--ink-soft);font-size:14px;cursor:pointer;transition:background .2s,transform .15s}
+.info-close:hover{background:var(--red);color:#fff;border-color:var(--red)}
+.info-close:active{transform:scale(.9)}
+.info-desc{font-size:12.5px;line-height:1.55;color:var(--ink-soft);margin-bottom:12px}
+.stat{margin-bottom:9px}
+.stat .lbl{display:flex;justify-content:space-between;font-size:10.5px;font-weight:800;letter-spacing:1px;color:var(--ink-soft);margin-bottom:4px}
+.stat .track{height:9px;border-radius:99px;background:rgba(59,47,47,.09);overflow:hidden}
+.stat .fill{height:100%;width:0;border-radius:99px;transition:width .7s cubic-bezier(.2,.8,.2,1)}
+.facts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.fact{font-size:11px;font-weight:700;background:var(--paper);border:1.5px solid var(--line);border-radius:99px;padding:5px 10px;color:var(--ink-soft)}
+.fact b{color:var(--ink)}
+.src-badge{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:800;letter-spacing:.6px;border-radius:99px;padding:5px 11px}
+.src-badge.glb{background:rgba(63,163,77,.15);color:#2b7a38;border:1.5px solid rgba(63,163,77,.4)}
+.src-badge.proc{background:rgba(62,99,221,.12);color:#2f4db3;border:1.5px solid rgba(62,99,221,.35)}
+
+/* Petunjuk */
+.hint{position:absolute;left:20px;bottom:118px;font-size:11.5px;font-weight:700;color:var(--ink-soft);background:var(--surface);border:1.5px solid var(--line);border-radius:99px;padding:7px 14px;backdrop-filter:blur(8px);animation:riseIn .7s .4s both}
+.hint kbd{font-family:var(--font-body);background:var(--paper);border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:1px 5px;font-size:10px}
+
+/* ============ Layar muat ============ */
+#loader{position:fixed;inset:0;z-index:50;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0;background:linear-gradient(160deg,#ffd9a8 0%,#ffe5cc 34%,#fff3e0 68%,#ffe9d2 100%);transition:opacity .65s ease,visibility .65s}
+#loader.done{opacity:0;visibility:hidden}
+.loader-van{font-size:58px;animation:vanBounce 1s cubic-bezier(.3,.7,.4,1) infinite;filter:drop-shadow(0 10px 12px rgba(122,72,20,.3))}
+.loader-road{width:190px;height:5px;margin:10px 0 26px;border-radius:99px;background:repeating-linear-gradient(90deg,var(--ink-soft) 0 16px,transparent 16px 30px);opacity:.35;animation:roadScroll .5s linear infinite}
+#loader h1{font-family:var(--font-display);font-weight:700;font-size:clamp(30px,6vw,52px);letter-spacing:1px;text-align:center;line-height:1}
+#loader h1 em{font-style:normal;color:var(--red)}
+#loader .lsub{margin-top:8px;font-size:12px;font-weight:800;letter-spacing:3px;color:var(--ink-soft)}
+.load-track{width:min(320px,72vw);height:12px;margin-top:30px;border-radius:99px;background:rgba(59,47,47,.1);border:1.5px solid var(--line);overflow:hidden}
+.load-fill{height:100%;width:0%;border-radius:99px;background:linear-gradient(90deg,var(--amber),var(--orange),var(--red));transition:width .35s cubic-bezier(.2,.8,.2,1)}
+#load-status{margin-top:12px;font-size:12.5px;font-weight:700;color:var(--ink-soft);min-height:18px}
+.load-badge{margin-top:26px;font-size:10px;font-weight:800;letter-spacing:2px;color:var(--ink-soft);border:1.5px dashed rgba(59,47,47,.3);border-radius:99px;padding:6px 14px}
+
+/* Panel fatal (WebGL gagal) */
+#fatal{position:fixed;inset:0;z-index:60;display:none;place-items:center;background:linear-gradient(160deg,#ffd9a8,#fff3e0)}
+#fatal.show{display:grid}
+.fatal-card{max-width:380px;margin:20px;text-align:center;background:var(--surface);border:2px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:30px}
+.fatal-card .em{font-size:46px}
+.fatal-card h2{font-family:var(--font-display);font-size:22px;margin:10px 0 6px}
+.fatal-card p{font-size:13px;color:var(--ink-soft);line-height:1.6;margin-bottom:16px}
+.fatal-card button{font-family:var(--font-body);font-weight:800;font-size:13px;color:#fff;background:linear-gradient(135deg,var(--amber),var(--orange));border:none;border-radius:12px;padding:11px 22px;cursor:pointer;box-shadow:var(--shadow)}
+.fatal-card button:active{transform:scale(.95)}
+
+@keyframes dropIn{from{opacity:0;transform:translateY(-18px)}to{opacity:1;transform:none}}
+@keyframes riseIn{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+@keyframes popIn{from{opacity:0;transform:scale(.7)}to{opacity:1;transform:scale(1)}}
+@keyframes vanBounce{0%,100%{transform:translateY(0) rotate(-2deg)}50%{transform:translateY(-14px) rotate(2deg)}}
+@keyframes roadScroll{to{background-position:-30px 0}}
+
+@media (max-width:720px){
+  .brand .sub{display:none}
+  .brand-logo{width:42px;height:42px}
+  .hint{display:none}
+  .info-card{left:12px;right:12px;top:auto;bottom:128px;width:auto;max-height:42vh;transform:translateY(16px)}
+  .info-card.open{transform:translateY(0)}
+  .dock{padding:0 12px 12px}
+  .topbar{padding:12px 12px 0}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+</style>
+</head>
+<body>
+
+<canvas id="scene-canvas" aria-label="Diorama 3D Juragan Ngebut Nusantara"></canvas>
+
+<!-- ===== UI Diorama Preview (dilepas otomatis saat main.js mengambil alih) ===== -->
+<div id="preview-ui" data-preview hidden>
+  <div class="topbar">
+    <div class="brand">
+      <svg class="brand-logo" viewBox="0 0 64 64" aria-hidden="true">
+        <rect x="6" y="14" width="52" height="30" rx="9" fill="#2f9e44"/>
+        <rect x="6" y="27" width="52" height="7" fill="#ffd43b"/>
+        <rect x="11" y="18" width="12" height="9" rx="3" fill="#bfe0f5"/>
+        <rect x="26" y="18" width="12" height="9" rx="3" fill="#bfe0f5"/>
+        <rect x="41" y="18" width="12" height="9" rx="3" fill="#bfe0f5"/>
+        <rect x="4" y="40" width="56" height="6" rx="3" fill="#3b2f2f"/>
+        <circle cx="17" cy="48" r="7" fill="#2e2a33"/><circle cx="17" cy="48" r="3" fill="#f1e8d8"/>
+        <circle cx="47" cy="48" r="7" fill="#2e2a33"/><circle cx="47" cy="48" r="3" fill="#f1e8d8"/>
+        <rect x="8" y="8" width="48" height="6" rx="3" fill="#ffd43b"/>
+      </svg>
+      <div>
+        <h1>JURAGAN <em>NGEBUT</em></h1>
+        <span class="sub">MINI RACE NUSANTARA <b>•</b> SALATIGA <b>•</b> FONDASI P1</span>
+      </div>
+    </div>
+    <div class="topctrl">
+      <button class="tbtn" id="btn-rotate" aria-pressed="true" title="Putar otomatis (Spasi)" aria-label="Putar otomatis">↻</button>
+      <button class="tbtn" id="btn-reset" title="Reset kamera (R)" aria-label="Reset kamera">⌂</button>
+      <button class="tbtn small-text" id="btn-quality" aria-pressed="true" title="Kualitas render" aria-label="Kualitas render">HD</button>
+    </div>
+  </div>
+
+  <div class="hint">🖱️ Seret: putar &nbsp;•&nbsp; Scroll: zoom &nbsp;•&nbsp; <kbd>←</kbd><kbd>→</kbd> pilih &nbsp;•&nbsp; <kbd>Esc</kbd> reset</div>
+
+  <aside class="info-card" id="info-card" aria-live="polite">
+    <div class="info-head">
+      <span class="info-emoji" id="info-emoji">🚐</span>
+      <div><h2 id="info-name">—</h2><div class="tag" id="info-tag">—</div></div>
+      <button class="info-close" id="info-close" aria-label="Tutup info">✕</button>
+    </div>
+    <p class="info-desc" id="info-desc"></p>
+    <div id="info-stats"></div>
+    <div class="facts" id="info-facts"></div>
+    <span class="src-badge proc" id="info-src">⚙ Model prosedural</span>
+  </aside>
+
+  <div class="dock">
+    <div class="dock-row"><span class="dock-label">ARMADA</span><div class="chips" id="chips-vehicles"></div></div>
+    <div class="dock-row"><span class="dock-label">LANDMARK</span><div class="chips" id="chips-landmarks"></div></div>
+  </div>
+</div>
+
+<!-- ===== Layar muat ===== -->
+<div id="loader" data-preview>
+  <div class="loader-van">🚐</div>
+  <div class="loader-road"></div>
+  <h1>JURAGAN <em>NGEBUT</em></h1>
+  <div class="lsub">MINI RACE NUSANTARA</div>
+  <div class="load-track"><div class="load-fill" id="load-fill"></div></div>
+  <div id="load-status">Menyalakan golden hour…</div>
+  <div class="load-badge">PART 1 • FONDASI MODULAR • THREE.JS r160</div>
+</div>
+
+<!-- ===== Panel gagal ===== -->
+<div id="fatal" data-preview>
+  <div class="fatal-card">
+    <div class="em">🛠️</div>
+    <h2>Aduh, mesinnya mogok!</h2>
+    <p id="fatal-msg">Perangkat atau browser ini belum mendukung WebGL. Coba browser modern dengan akselerasi perangkat keras aktif.</p>
+    <button onclick="location.reload()">Coba Lagi</button>
+  </div>
+</div>
+
+<script type="module">
+/* =====================================================================
+   BOOTSTRAP — Juragan Ngebut: Mini Race Nusantara
+   • Bila src/main.js sudah ada (Part 3) → game penuh mengambil alih.
+   • Bila belum ada → Diorama Preview Part 1: etalase armada & landmark
+     Salatiga dengan pencahayaan golden-hour terkunci, orbit kamera,
+     dan pemilih armada yang nanti dipakai HUD gameplay.
+   ===================================================================== */
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createSceneContext } from './src/core/sceneSetup.js';
+import { loadVehicle, loadLandmark, preloadAll } from './src/entities/assetFactory.js';
+import { VEHICLES, LANDMARKS, PALETTE } from './src/config/gameConfig.js';
+
+const EMOJI = { angkot:'🚐', bemo:'🛺', l300:'🛻', ojol:'🏍️', koperasi:'🏪', pasarRaya:'🧺', rumdin:'🏛️', monas:'🗼' };
+const STATUS_LINES = ['Merakit angkot…','Memanaskan bemo…','Mengisi bak L300…','Memarkir ojol…','Mengecat Koperasi Merah Putih…','Menata Pasar Raya II…','Membuka gerbang Rumdin…','Mengilapkan emas Monas…'];
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const $ = (id) => document.getElementById(id);
+
+let bootStarted = false;
+(async () => {
+  if (bootStarted) return; bootStarted = true;
+  try {
+    await import('./src/main.js');                       // Part 3 mengambil alih penuh
+    document.querySelectorAll('[data-preview]').forEach(el => el.remove());
+  } catch {
+    console.info('[Juragan] main.js belum tersedia — menjalankan Diorama Preview Part 1.');
+    startPreview().catch(err => {
+      console.error(err);
+      $('loader').classList.add('done');
+      $('fatal').classList.add('show');
+    });
+  }
+})();
+
+async function startPreview() {
+  /* ---------- Konteks scene terkunci (renderer, cahaya, fog, langit) ---------- */
+  const canvas = $('scene-canvas');
+  const ctx = createSceneContext(canvas);
+  ctx.contactShadow.visible = false;                    // belum ada player di preview
+  const { scene, camera, renderer } = ctx;
+
+  const controls = new OrbitControls(camera, canvas);
+  controls.enableDamping = true; controls.dampingFactor = 0.06;
+  controls.enablePan = false;
+  controls.minDistance = 9; controls.maxDistance = 58;
+  controls.minPolarAngle = 0.32; controls.maxPolarAngle = 1.42;
+  controls.autoRotate = !reducedMotion; controls.autoRotateSpeed = 0.55;
+  camera.position.set(20, 15, 24);
+  controls.target.set(0, 2.2, 0);
+
+  canvas.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault();
+    $('fatal-msg').textContent = 'Konteks WebGL hilang di tengah jalan. Muat ulang untuk melanjutkan.';
+    $('fatal').classList.add('show');
+  });
+
+  /* ---------- Meja diorama + jalan + furnitur trek ---------- */
+  const woodTex = makeWoodTexture();
+  const tableMat = new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.72, metalness: 0.04 });
+  const table = new THREE.Mesh(new THREE.BoxGeometry(96, 2.4, 76), tableMat);
+  table.position.y = -1.2; table.receiveShadow = true; scene.add(table);
+  const legGeo = new THREE.BoxGeometry(2.4, 9, 2.4);
+  const legMat = new THREE.MeshStandardMaterial({ color: PALETTE.woodDark, roughness: 0.8 });
+  for (const [lx, lz] of [[-43,-33],[43,-33],[-43,33],[43,33]]) {
+    const leg = new THREE.Mesh(legGeo, legMat); leg.position.set(lx, -6.9, lz); scene.add(leg);
+  }
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(500, 500),
+    new THREE.MeshStandardMaterial({ color: '#f3d9c4', roughness: 0.95 }));
+  floor.rotation.x = -Math.PI/2; floor.position.y = -11.4; floor.receiveShadow = true; scene.add(floor);
+
+  const roadMat = new THREE.MeshStandardMaterial({ color: PALETTE.asphalt, roughness: 0.85 });
+  const road = new THREE.Mesh(new THREE.BoxGeometry(13, 0.24, 62), roadMat);
+  road.position.y = 0.12; road.receiveShadow = true; scene.add(road);
+  const lineMat = new THREE.MeshStandardMaterial({ color: PALETTE.line, roughness: 0.6 });
+  const dashGeo = new THREE.BoxGeometry(0.28, 0.02, 1.7);
+  for (let i = 0; i < 12; i++) {
+    const d = new THREE.Mesh(dashGeo, lineMat); d.position.set(0, 0.245, -27.5 + i*5); scene.add(d);
+  }
+  const edgeGeo = new THREE.BoxGeometry(0.22, 0.02, 62);
+  for (const ex of [-6.1, 6.1]) { const e = new THREE.Mesh(edgeGeo, lineMat); e.position.set(ex, 0.245, 0); scene.add(e); }
+  const walkMat = new THREE.MeshStandardMaterial({ color: PALETTE.concrete, roughness: 0.8 });
+  const walkGeo = new THREE.BoxGeometry(2.6, 0.34, 62);
+  for (const wx of [-7.9, 7.9]) { const w = new THREE.Mesh(walkGeo, walkMat); w.position.set(wx, 0.17, 0); w.receiveShadow = true; scene.add(w); }
+  const zebraGeo = new THREE.BoxGeometry(0.7, 0.02, 2.4);
+  for (let i = 0; i < 7; i++) { const z = new THREE.Mesh(zebraGeo, lineMat); z.position.set(-4.5 + i*1.5, 0.245, -20); scene.add(z); }
+  const pad = new THREE.Mesh(new THREE.BoxGeometry(3, 0.06, 2.2),
+    new THREE.MeshStandardMaterial({ color: PALETTE.toyYellow, emissive: PALETTE.toyYellow, emissiveIntensity: 0.55, roughness: 0.5 }));
+  pad.position.set(3.2, 0.27, 18); scene.add(pad);
+  const ramp = new THREE.Mesh(new THREE.BoxGeometry(5.4, 0.5, 5),
+    new THREE.MeshStandardMaterial({ color: PALETTE.toyOrange, roughness: 0.6 }));
+  ramp.position.set(-3.2, 0.75, 26); ramp.rotation.x = -0.2; ramp.castShadow = true; ramp.receiveShadow = true; scene.add(ramp);
+
+  /* ---------- Muat 8 aset via pipeline dual-mode (GLB → prosedural) ---------- */
+  const fill = $('load-fill'), status = $('load-status');
+  await preloadAll((i, total, label) => {
+    fill.style.width = `${Math.round((i/total)*100)}%`;
+    status.textContent = STATUS_LINES[i-1] || `Merakit ${label}…`;
+  });
+
+  /* ---------- Tempatkan armada & landmark ---------- */
+  const selectables = [];
+  const vSlots = { angkot:[-3.2,-8], bemo:[3.2,-2], l300:[-3.2,6], ojol:[3.2,12] };
+  for (const key of Object.keys(VEHICLES)) {
+    const g = await loadVehicle(key);
+    const [x, z] = vSlots[key];
+    g.position.set(x, 0.24, z);
+    g.userData.pick = { kind: 'vehicle', key };
+    scene.add(g); selectables.push(g);
+    addNameTag(g, VEHICLES[key].label, g.userData.size.y + 1.1, 4.6, 1.15);
+  }
+  const lSlots = { koperasi:[-17,-16,-Math.PI/2], pasarRaya:[17.5,-10,Math.PI/2], rumdin:[-18,8,-Math.PI/2], monas:[16,14,Math.PI/2] };
+  for (const key of Object.keys(LANDMARKS)) {
+    const g = await loadLandmark(key);
+    const [x, z, ry] = lSlots[key];
+    g.position.set(x, 0, z); g.rotation.y = ry;
+    g.userData.pick = { kind: 'landmark', key };
+    scene.add(g); selectables.push(g);
+    addNameTag(g, LANDMARKS[key].label, g.userData.size.y + 1.6, 7.2, 1.8);
+  }
+
+  /* Pohon, semak, lampu jalan — hidupkan diorama */
+  const trunkGeo = new THREE.CylinderGeometry(0.13, 0.18, 1, 10);
+  const trunkMat = new THREE.MeshStandardMaterial({ color: PALETTE.woodDark, roughness: 0.8 });
+  const leafGeo = new THREE.SphereGeometry(0.85, 16, 12);
+  const leafMat = new THREE.MeshStandardMaterial({ color: PALETTE.grass, roughness: 0.75 });
+  for (const [tx, tz, s] of [[-11,-26,1.2],[11,-27,1],[-12,24,1.3],[12,26,1.1],[-26,-2,1.4],[27,2,1.2],[-27,18,1],[26,-22,1.3]]) {
+    const t = new THREE.Group();
+    const trunk = new THREE.Mesh(trunkGeo, trunkMat); trunk.position.y = 0.5; trunk.castShadow = true;
+    const leaf = new THREE.Mesh(leafGeo, leafMat); leaf.position.y = 1.5; leaf.castShadow = true;
+    const leaf2 = new THREE.Mesh(leafGeo, leafMat); leaf2.position.set(0.4, 1.9, 0.2); leaf2.scale.setScalar(0.6); leaf2.castShadow = true;
+    t.add(trunk, leaf, leaf2); t.position.set(tx, 0, tz); t.scale.setScalar(s); scene.add(t);
+  }
+  const lampPoleGeo = new THREE.CylinderGeometry(0.06, 0.08, 2.6, 8);
+  const lampPoleMat = new THREE.MeshStandardMaterial({ color: PALETTE.tire, roughness: 0.6 });
+  const lampHeadGeo = new THREE.SphereGeometry(0.16, 12, 10);
+  const lampHeadMat = new THREE.MeshStandardMaterial({ color: PALETTE.headlight, emissive: PALETTE.headlight, emissiveIntensity: 1.4, roughness: 0.4 });
+  for (const [lx, lz] of [[-7.9,-14],[7.9,-6],[-7.9,10],[7.9,20]]) {
+    const p = new THREE.Mesh(lampPoleGeo, lampPoleMat); p.position.set(lx, 1.64, lz); p.castShadow = true;
+    const h = new THREE.Mesh(lampHeadGeo, lampHeadMat); h.position.set(lx, 3.02, lz);
+    scene.add(p, h);
+  }
+
+  /* Cincin sorot untuk objek terpilih */
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(1, 0.05, 10, 56),
+    new THREE.MeshStandardMaterial({ color: PALETTE.toyYellow, emissive: PALETTE.toyYellow, emissiveIntensity: 1.2, roughness: 0.4 }));
+  ring.rotation.x = -Math.PI/2; ring.visible = false; scene.add(ring);
+
+  /* ---------- UI: chip, kartu info, kontrol ---------- */
+  const chipsV = $('chips-vehicles'), chipsL = $('chips-landmarks');
+  const chipMap = new Map();
+  let ci = 0;
+  for (const [key, def] of Object.entries(VEHICLES)) chipsV.appendChild(makeChip(key, 'vehicle', def, ci++));
+  for (const [key, def] of Object.entries(LANDMARKS)) chipsL.appendChild(makeChip(key, 'landmark', def, ci++));
+  function makeChip(key, kind, def, i) {
+    const b = document.createElement('button');
+    b.className = 'chip'; b.style.setProperty('--i', i);
+    b.innerHTML = `<span class="em">${EMOJI[key]}</span>${def.label}`;
+    b.addEventListener('click', () => selectByPick(kind, key));
+    chipMap.set(`${kind}:${key}`, b);
+    return b;
+  }
+
+  const card = $('info-card');
+  let selected = null, selectedBaseY = 0;
+  const focusTarget = new THREE.Vector3(0, 2.2, 0);
+  let focusDist = 27, focusing = false, idleTimer = 0;
+  let rotateEnabled = !reducedMotion;
+
+  function selectByPick(kind, key) {
+    const root = selectables.find(o => o.userData.pick.kind === kind && o.userData.pick.key === key);
+    if (root) select(root);
+  }
+  function select(root) {
+    if (selected === root) { resetView(); return; }
+    if (selected) selected.position.y = selectedBaseY;
+    selected = root; selectedBaseY = root.position.y;
+    const { kind, key } = root.userData.pick;
+    const def = kind === 'vehicle' ? VEHICLES[key] : LANDMARKS[key];
+    chipMap.forEach(c => c.classList.remove('active'));
+    chipMap.get(`${kind}:${key}`)?.classList.add('active');
+    chipMap.get(`${kind}:${key}`)?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+
+    const size = root.userData.size;
+    const footprint = Math.max(size.x, size.z);
+    ring.visible = true;
+    ring.position.set(root.position.x, 0.3, root.position.z);
+    ring.scale.setScalar(footprint * 0.72);
+    focusTarget.set(root.position.x, size.y * 0.45, root.position.z);
+    focusDist = Math.max(7, footprint * 2.3);
+    focusing = true; controls.autoRotate = false; idleTimer = 0;
+
+    $('info-emoji').textContent = EMOJI[key];
+    $('info-name').textContent = def.label;
+    $('info-tag').textContent = def.tagline;
+    $('info-desc').textContent = def.desc;
+    const statsEl = $('info-stats'), factsEl = $('info-facts');
+    statsEl.innerHTML = ''; factsEl.innerHTML = '';
+    if (kind === 'vehicle') {
+      const rows = [['KECEPATAN', def.stats.speed, 'var(--red)'], ['AKSELERASI', def.stats.accel, 'var(--orange)'], ['CENGKERAMAN', def.stats.grip, 'var(--green)'], ['BOBOT', def.stats.weight, 'var(--blue)']];
+      for (const [lbl, val, col] of rows) {
+        const d = document.createElement('div'); d.className = 'stat';
+        d.innerHTML = `<div class="lbl"><span>${lbl}</span><span>${val}/10</span></div><div class="track"><div class="fill" style="background:linear-gradient(90deg,${col},var(--amber))"></div></div>`;
+        statsEl.appendChild(d);
+        requestAnimationFrame(() => requestAnimationFrame(() => { d.querySelector('.fill').style.width = `${val*10}%`; }));
+      }
+    } else {
+      factsEl.innerHTML = `<span class="fact">Tinggi <b>±${def.targetSize.y} m</b></span><span class="fact">${def.fact}</span>`;
+    }
+    const src = $('info-src');
+    if (root.userData.source === 'glb') { src.className = 'src-badge glb'; src.textContent = '✓ GLB dimuat dari public/assets'; }
+    else { src.className = 'src-badge proc'; src.textContent = '⚙ Model prosedural (fallback aktif)'; }
+    card.classList.add('open');
+  }
+  function resetView() {
+    if (selected) selected.position.y = selectedBaseY;
+    selected = null; ring.visible = false;
+    chipMap.forEach(c => c.classList.remove('active'));
+    card.classList.remove('open');
+    focusTarget.set(0, 2.2, 0); focusDist = 27; focusing = true; idleTimer = 0;
+  }
+  $('info-close').addEventListener('click', resetView);
+  $('btn-reset').addEventListener('click', resetView);
+  const btnRotate = $('btn-rotate');
+  btnRotate.setAttribute('aria-pressed', String(rotateEnabled));
+  btnRotate.addEventListener('click', () => {
+    rotateEnabled = !rotateEnabled;
+    btnRotate.setAttribute('aria-pressed', String(rotateEnabled));
+    controls.autoRotate = rotateEnabled && !selected;
+  });
+  const btnQ = $('btn-quality'); let hd = true;
+  btnQ.addEventListener('click', () => {
+    hd = !hd; ctx.setQuality(hd);
+    btnQ.textContent = hd ? 'HD' : 'ECO';
+    btnQ.setAttribute('aria-pressed', String(hd));
+  });
+
+  /* Klik / tap objek 3D (raycast, bedakan dari drag orbit) */
+  const ray = new THREE.Raycaster(); const ndc = new THREE.Vector2();
+  let downX = 0, downY = 0;
+  canvas.addEventListener('pointerdown', e => { downX = e.clientX; downY = e.clientY; idleTimer = 0; controls.autoRotate = false; });
+  canvas.addEventListener('pointerup', e => {
+    if (Math.hypot(e.clientX - downX, e.clientY - downY) > 8) return;
+    ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    const hits = ray.intersectObjects(selectables, true);
+    if (hits.length) {
+      let o = hits[0].object;
+      while (o && !o.userData.pick) o = o.parent;
+      if (o) select(o);
+    }
+  });
+  let hoverTick = 0;
+  canvas.addEventListener('pointermove', e => {
+    const now = performance.now();
+    if (now - hoverTick < 90) return; hoverTick = now;
+    ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    canvas.style.cursor = ray.intersectObjects(selectables, true).length ? 'pointer' : 'grab';
+  });
+  canvas.addEventListener('wheel', () => { idleTimer = 0; controls.autoRotate = false; }, { passive: true });
+
+  /* Keyboard: ←/→ siklus pilihan, Esc reset, Spasi putar, R reset */
+  addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      e.preventDefault();
+      const dir = e.key === 'ArrowRight' ? 1 : -1;
+      const idx = selected ? selectables.indexOf(selected) : -1;
+      select(selectables[(idx + dir + selectables.length) % selectables.length]);
+    } else if (e.key === 'Escape' || e.key.toLowerCase() === 'r') resetView();
+    else if (e.key === ' ') { e.preventDefault(); btnRotate.click(); }
+  });
+
+  /* ---------- Loop tunggal: damping orbit, animasi hidup, render ---------- */
+  const clock = new THREE.Clock();
+  const tmpOffset = new THREE.Vector3();
+  renderer.setAnimationLoop(() => {
+    const dt = Math.min(clock.getDelta(), 0.05);
+    const t = clock.elapsedTime;
+
+    idleTimer += dt;
+    if (rotateEnabled && !selected && idleTimer > 5) controls.autoRotate = true;
+
+    if (focusing) {
+      const k = 1 - Math.exp(-4.5 * dt);
+      controls.target.lerp(focusTarget, k);
+      tmpOffset.copy(camera.position).sub(controls.target);
+      const len = tmpOffset.length();
+      tmpOffset.setLength(len + (focusDist - len) * k);
+      camera.position.copy(controls.target).add(tmpOffset);
+      if (controls.target.distanceTo(focusTarget) < 0.05 && Math.abs(len - focusDist) < 0.1) focusing = false;
+    }
+    controls.update();
+
+    if (selected) {
+      const { kind } = selected.userData.pick;
+      if (kind === 'vehicle') {
+        selected.position.y = selectedBaseY + Math.abs(Math.sin(t * 3.2)) * 0.14;
+        for (const w of selected.userData.wheels || []) w.rotation.x += dt * 5;
+      }
+      ring.material.emissiveIntensity = 1.1 + Math.sin(t * 4) * 0.5;
+      const base = Math.max(selected.userData.size.x, selected.userData.size.z) * 0.72;
+      ring.scale.setScalar(base * (1 + Math.sin(t * 4) * 0.03));
+    }
+    pad.material.emissiveIntensity = 0.45 + Math.sin(t * 3) * 0.25;
+
+    ctx.update(dt, t);
+    ctx.render();
+  });
+
+  /* ---------- Tirai loading terangkat ---------- */
+  $('preview-ui').hidden = false;
+  fill.style.width = '100%';
+  status.textContent = 'Siap ngebut, Juragan! 🏁';
+  setTimeout(() => $('loader').classList.add('done'), 450);
+  setTimeout(() => $('loader').remove(), 1300);
+
+  /* ---------- Helper tekstur & tag nama ---------- */
+  function makeWoodTexture() {
+    const c = document.createElement('canvas'); c.width = c.height = 512;
+    const g = c.getContext('2d');
+    g.fillStyle = '#b0793f'; g.fillRect(0, 0, 512, 512);
+    for (let p = 0; p < 8; p++) {
+      g.fillStyle = p % 2 ? 'rgba(138,90,43,.28)' : 'rgba(255,220,170,.14)';
+      g.fillRect(0, p * 64, 512, 64);
+      g.fillStyle = 'rgba(80,50,20,.5)'; g.fillRect(0, p * 64, 512, 3);
+      for (let s = 0; s < 26; s++) {
+        g.strokeStyle = `rgba(90,55,22,${0.05 + Math.random() * 0.1})`;
+        g.lineWidth = 1 + Math.random() * 1.5;
+        const y = p * 64 + 8 + Math.random() * 50;
+        g.beginPath(); g.moveTo(0, y);
+        g.bezierCurveTo(170, y + (Math.random()*8-4), 340, y + (Math.random()*8-4), 512, y);
+        g.stroke();
+      }
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(4, 3);
+    tex.anisotropy = 4;
+    return tex;
+  }
+  function addNameTag(root, text, y, w, h) {
+    const c = document.createElement('canvas'); c.width = 512; c.height = 128;
+    const g = c.getContext('2d');
+    g.fillStyle = 'rgba(255,248,235,.96)';
+    g.beginPath(); g.roundRect(6, 14, 500, 100, 50); g.fill();
+    g.strokeStyle = 'rgba(59,47,47,.25)'; g.lineWidth = 5; g.stroke();
+    g.fillStyle = '#3b2f2f'; g.font = '700 52px Fredoka, "Plus Jakarta Sans", sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(text, 256, 66);
+    const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+    sp.scale.set(w, h, 1); sp.position.y = y;
+    root.add(sp);
+  }
+}
+</script>
+</body>
+</html>

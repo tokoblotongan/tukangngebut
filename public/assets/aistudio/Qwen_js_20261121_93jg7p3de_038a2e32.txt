@@ -1,0 +1,92 @@
+/* =====================================================================
+   salatigaLandmark.js — Streaming landmark ikonik Salatiga di pinggir
+   trek. Memakai pipeline dual-mode assetFactory (GLB → prosedural).
+   Pool tetap per tipe (tanpa kloning runtime) agar referensi userData
+   tetap valid. Landmark muncul tiap TRACK.landmarkEvery segmen,
+   bergantian kiri/kanan, menghadap jalan.
+   ===================================================================== */
+import * as THREE from 'three';
+import { TRACK, LANDMARKS, LANDMARK_TYPES } from '../config/gameConfig.js';
+import { loadLandmark } from '../entities/assetFactory.js';
+import { getTrackHeight } from './trackGenerator.js';
+
+const L = TRACK.segmentLength;
+const EVERY = TRACK.landmarkEvery;
+const POOL_PER_TYPE = 2;
+
+export async function createLandmarkManager(scene) {
+  /* Preload pool tetap per tipe — semua async di sini, bukan di loop */
+  const freeByType = {};
+  const allGroups = [];
+  for (const type of LANDMARK_TYPES) {
+    freeByType[type] = [];
+    for (let k = 0; k < POOL_PER_TYPE; k++) {
+      const g = await loadLandmark(type);
+      g.visible = false;
+      scene.add(g);
+      freeByType[type].push(g);
+      allGroups.push(g);
+    }
+  }
+
+  const slots = []; // { index, type, group }
+
+  function landmarkSpec(i) {
+    const n = Math.floor(i / EVERY);
+    const type = LANDMARK_TYPES[n % LANDMARK_TYPES.length];
+    const side = n % 2 === 0 ? -1 : 1;
+    const def = LANDMARKS[type];
+    const z = -(i + 0.5) * L;
+    const x = side * Math.max(TRACK.landmarkOffset, TRACK.width / 2 + def.targetSize.x / 2 + 2);
+    return { type, side, z, x, def };
+  }
+
+  function place(slot, i) {
+    const spec = landmarkSpec(i);
+    const group = freeByType[spec.type].pop();
+    if (!group) return false;
+    slot.index = i;
+    slot.type = spec.type;
+    slot.group = group;
+    group.visible = true;
+    group.position.set(spec.x, getTrackHeight(spec.z), spec.z);
+    group.rotation.set(0, spec.side < 0 ? -Math.PI / 2 : Math.PI / 2, 0);
+    return true;
+  }
+
+  function release(slot) {
+    if (!slot.group) return;
+    slot.group.visible = false;
+    freeByType[slot.type].push(slot.group);
+    slot.group = null; slot.index = null; slot.type = null;
+  }
+
+  function update(playerZ) {
+    const cur = Math.floor(-playerZ / L);
+    const min = cur - TRACK.segmentsBehind;
+    const max = cur + TRACK.segmentsAhead;
+
+    const needed = [];
+    for (let i = Math.max(2, min); i <= max; i++) if (i % EVERY === 0) needed.push(i);
+    const neededSet = new Set(needed);
+
+    for (const slot of slots) if (slot.index !== null && !neededSet.has(slot.index)) release(slot);
+    slots.forEach((s) => { if (s.index === null) s._dead = true; });
+    for (let k = slots.length - 1; k >= 0; k--) if (slots[k]._dead) slots.splice(k, 1);
+
+    const present = new Set(slots.map((s) => s.index));
+    for (const i of needed) {
+      if (present.has(i)) continue;
+      const slot = { index: null, type: null, group: null };
+      if (place(slot, i)) slots.push(slot);
+    }
+  }
+
+  function dispose() {
+    for (const g of allGroups) scene.remove(g);
+    for (const type of LANDMARK_TYPES) freeByType[type].length = 0;
+    slots.length = 0;
+  }
+
+  return { update, dispose, get activeCount() { return slots.length; } };
+}
