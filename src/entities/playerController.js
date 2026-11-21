@@ -15,7 +15,7 @@ import {
 
 const TWO_PI = Math.PI * 2;
 
-export function createPlayerController({ scene, vehicle, type = 'angkot', callbacks = {} }) {
+export function createPlayerController({ scene, vehicle, type = 'angkot', callbacks = {}, audio = null }) {
   let def = getVehicleDef(type);
   let group = vehicle;
   if (group && !group.parent) scene.add(group);
@@ -32,6 +32,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
   let pitch = 0;
   let totalStunt = 0;
   let crashCooldown = 0;
+  let flamePhase = 0;
 
   function topSpeed() { return PHYSICS.maxSpeed * def.perf.speedMul; }
 
@@ -44,6 +45,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
     if (group) {
       group.position.copy(pos);
       group.rotation.set(0, 0, 0);
+      if (group.userData.flames?.group) group.userData.flames.group.visible = false;
     }
   }
 
@@ -93,6 +95,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
         airborne = true;
         vy = ramp.launchVy + effSpeed * 0.12;
         rollAngle = 0; rolling = false;
+        audio?.playTeloletHorn?.();
         callbacks.onLaunch?.();
       }
       /* Boost pad → turbo */
@@ -126,6 +129,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
           stuntBonus += bonus;
           totalStunt += bonus;
           if (P.barrelRoll.landingBoost) turboTimer = P.turbo.duration;
+          audio?.playTeloletFlourish?.();
           callbacks.onLand?.(rolls, bonus);
         } else {
           callbacks.onLand?.(0, 0);
@@ -154,6 +158,20 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
 
       const wr = def.wheelRadius || 0.34;
       for (const w of group.userData.wheels || []) w.rotation.x -= (effSpeed / wr) * dt;
+
+      const flames = group.userData.flames;
+      if (flames?.group) {
+        flames.group.visible = turboActive;
+        if (turboActive) {
+          flamePhase += dt * 44;
+          for (let i = 0; i < flames.jets.length; i++) {
+            const jet = flames.jets[i];
+            const flicker = 0.85 + 0.45 * Math.abs(Math.sin(flamePhase + i * 1.7));
+            const stretch = 1.05 + 0.55 * Math.sin(flamePhase * 1.37 + i * 2.1);
+            jet.scale.set(flicker, flicker, Math.max(0.75, stretch));
+          }
+        }
+      }
     }
 
     return {

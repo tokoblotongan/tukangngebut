@@ -63,6 +63,22 @@ function getGlossMat(color, opts = {}) {
   }
   return matCache.get(key);
 }
+function getDieCastMat(color, opts = {}) {
+  return getGlossMat(color, {
+    metal: opts.metal ?? 0.35,
+    rough: opts.rough ?? 0.2,
+    clearcoat: opts.clearcoat ?? 1.0,
+    emissive: opts.emissive ?? '#000000',
+    ei: opts.ei ?? 0,
+  });
+}
+function getChromeMat() {
+  return getGlossMat(P.chrome || '#eef2f7', {
+    metal: 0.92,
+    rough: 0.12,
+    clearcoat: 0.75,
+  });
+}
 const glassMat = () => getMat(P.glass, 0.4, { opacity: 0.55, metal: 0.1 });
 
 function rboxGeo(w, h, d, r) {
@@ -124,8 +140,13 @@ function limb(parent, from, to, r, color, rough = 0.6) {
 function wheel(r, w, name) {
   const g = new THREE.Group(); g.name = name;
   const tire = cyl(r, r, w, P.tire, 0.85, 20); tire.rotation.z = Math.PI / 2;
-  const hub = cyl(r * 0.52, r * 0.52, w + 0.03, P.hub, 0.5, 14); hub.rotation.z = Math.PI / 2;
-  g.add(tire, hub);
+  const rim = cyl(r * 0.58, r * 0.58, w + 0.025, P.chrome || '#eef2f7', 0.12, 16, { mat: getChromeMat() });
+  rim.rotation.z = Math.PI / 2;
+  const hub = cyl(r * 0.26, r * 0.26, w + 0.045, P.chrome || '#eef2f7', 0.15, 10, { mat: getChromeMat() });
+  hub.rotation.z = Math.PI / 2;
+  const lugRing = cyl(r * 0.4, r * 0.4, w + 0.032, P.asphaltDark, 0.5, 10);
+  lugRing.rotation.z = Math.PI / 2;
+  g.add(tire, rim, lugRing, hub);
   return g;
 }
 
@@ -216,10 +237,96 @@ function normalizeToTarget(group, target) {
   return wrapper;
 }
 
+function makeUnderglowTexture() {
+  const key = 'tex|underglow';
+  if (texCache.has(key)) return texCache.get(key);
+  const c = document.createElement('canvas'); c.width = 128; c.height = 128;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(64, 64, 8, 64, 64, 62);
+  grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+  grad.addColorStop(0.45, 'rgba(255,255,255,0.5)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 128, 128);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  texCache.set(key, tex);
+  return tex;
+}
+
+function attachSlotUnderglow(wrapper, target) {
+  const geoKey = `ug|${target.x.toFixed(2)}|${target.z.toFixed(2)}`;
+  if (!geoCache.has(geoKey)) {
+    const geo = new THREE.PlaneGeometry(target.x * 1.65, target.z * 1.32);
+    geo.rotateX(-Math.PI / 2);
+    geoCache.set(geoKey, geo);
+  }
+  const mat = new THREE.MeshBasicMaterial({
+    map: makeUnderglowTexture(),
+    color: new THREE.Color('#00e5ff'),
+    transparent: true,
+    opacity: 0.72,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const glow = new THREE.Mesh(geoCache.get(geoKey), mat);
+  glow.name = 'slot_underglow';
+  glow.position.set(0, 0.045, 0);
+  glow.renderOrder = 2;
+  wrapper.add(glow);
+}
+
+function attachTwinExhaustFlames(wrapper, type, target) {
+  const flames = new THREE.Group();
+  flames.name = 'exhaust_flames';
+  flames.position.set(0, 0.38, target.z * 0.5 + 0.04);
+  flames.visible = false;
+
+  if (!geoCache.has('flame|outer')) {
+    const g = new THREE.ConeGeometry(0.19, 1.35, 10);
+    g.rotateX(Math.PI / 2);
+    g.translate(0, 0, 0.68);
+    geoCache.set('flame|outer', g);
+  }
+  if (!geoCache.has('flame|inner')) {
+    const g = new THREE.ConeGeometry(0.1, 0.9, 8);
+    g.rotateX(Math.PI / 2);
+    g.translate(0, 0, 0.45);
+    geoCache.set('flame|inner', g);
+  }
+  if (!matCache.has('flame|outer')) {
+    matCache.set('flame|outer', new THREE.MeshBasicMaterial({
+      color: '#ff5500', transparent: true, opacity: 0.92,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
+  }
+  if (!matCache.has('flame|inner')) {
+    matCache.set('flame|inner', new THREE.MeshBasicMaterial({
+      color: '#ffd60a', transparent: true, opacity: 0.96,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
+  }
+
+  const spread = type === 'ojol' ? 0.16 : Math.min(0.55, target.x * 0.28);
+  for (const sx of [-spread, spread]) {
+    const jet = new THREE.Group();
+    jet.name = sx < 0 ? 'flame_jet_L' : 'flame_jet_R';
+    jet.position.set(sx, 0, 0);
+    const outer = new THREE.Mesh(geoCache.get('flame|outer'), matCache.get('flame|outer'));
+    outer.name = 'flame_outer';
+    const inner = new THREE.Mesh(geoCache.get('flame|inner'), matCache.get('flame|inner'));
+    inner.name = 'flame_inner';
+    jet.add(outer, inner);
+    flames.add(jet);
+  }
+  wrapper.add(flames);
+}
+
 /** Pindai node bernama & siapkan referensi runtime per-instance.
-    Material lampu dikloning agar sein/rem bisa berkedip per kendaraan. */
+    Material lampu & underglow dikloning agar per kendaraan independen. */
 function bindRuntimeRefs(group) {
-  const wheels = [], indicators = [], brakes = [], headlights = [];
+  const wheels = [], indicators = [], brakes = [], headlights = [], jets = [];
+  let underglow = null, flameGroup = null;
   group.traverse((o) => {
     if (!o.name) return;
     const n = o.name.toLowerCase();
@@ -227,12 +334,28 @@ function bindRuntimeRefs(group) {
     if (n.startsWith('indicator_')) { o.material = o.material.clone(); indicators.push(o); }
     if (n.startsWith('brake_')) { o.material = o.material.clone(); brakes.push(o); }
     if (n.startsWith('headlight_')) { o.material = o.material.clone(); headlights.push(o); }
+    if (n === 'slot_underglow') { o.material = o.material.clone(); underglow = o; }
+    if (n === 'exhaust_flames') flameGroup = o;
+    if (n.startsWith('flame_jet_')) jets.push(o);
   });
   group.userData.wheels = wheels;
   group.userData.indicators = indicators;
   group.userData.brakes = brakes;
   group.userData.headlights = headlights;
+  group.userData.underglow = underglow;
+  group.userData.flames = flameGroup ? { group: flameGroup, jets } : null;
   return group;
+}
+
+export function setVehicleUnderglow(group, hexColor) {
+  const glow = group?.userData?.underglow;
+  if (!glow) return;
+  if (!hexColor) {
+    glow.visible = false;
+    return;
+  }
+  glow.visible = true;
+  glow.material.color.set(hexColor);
 }
 
 /* ==================== Pipeline GLB ==================== */
@@ -274,11 +397,11 @@ function buildAngkot(def) {
   add(g, wheel(wr, 0.26, 'wheel_RL'), -0.84, wr, 1.45);
   add(g, wheel(wr, 0.26, 'wheel_RR'), 0.84, wr, 1.45);
 
-  add(g, rbox(1.88, 0.42, 4.30, 0.10, C.body, 0.6), 0, 0.60, 0, { receive: true });
-  add(g, rbox(1.92, 0.92, 4.34, 0.14, C.body, 0.55), 0, 1.22, 0, { receive: true });
-  add(g, rbox(1.96, 0.20, 4.38, 0.06, C.stripe, 0.5), 0, 1.02, 0);
-  add(g, rbox(1.86, 0.60, 4.10, 0.12, C.cabin, 0.6), 0, 1.92, 0);
-  add(g, rbox(1.80, 0.16, 3.96, 0.08, C.roof, 0.55), 0, 2.30, 0);
+  add(g, rbox(1.88, 0.42, 4.30, 0.10, C.body, 0.2, { receive: true, mat: getDieCastMat(C.body) }), 0, 0.60, 0, { receive: true });
+  add(g, rbox(1.92, 0.92, 4.34, 0.14, C.body, 0.2, { receive: true, mat: getDieCastMat(C.body) }), 0, 1.22, 0, { receive: true });
+  add(g, rbox(1.96, 0.20, 4.38, 0.06, C.stripe, 0.2, { mat: getDieCastMat(C.stripe) }), 0, 1.02, 0);
+  add(g, rbox(1.86, 0.60, 4.10, 0.12, C.cabin, 0.2, { mat: getDieCastMat(C.cabin) }), 0, 1.92, 0);
+  add(g, rbox(1.80, 0.16, 3.96, 0.08, C.roof, 0.2, { mat: getDieCastMat(C.roof) }), 0, 2.30, 0);
 
   add(g, rbox(1.62, 0.50, 0.06, 0.02, P.glass, 0.4, { mat: glassMat(), cast: false }), 0, 1.92, -2.06, { rx: -0.10 });
   add(g, label('SALATIGA • PASAR RAYA', 1.56, 0.26, { bg: P.ink, fg: P.toyYellow, h: 96, glow: 0.35 }), 0, 2.26, -2.10, { rx: -0.10 });
@@ -286,8 +409,8 @@ function buildAngkot(def) {
     add(g, rbox(0.06, 0.44, 0.92, 0.02, P.glass, 0.4, { mat: glassMat(), cast: false }), sx, 1.94, wz);
   add(g, rbox(1.5, 0.44, 0.06, 0.02, P.glass, 0.4, { mat: glassMat(), cast: false }), 0, 1.94, 2.06);
 
-  add(g, rbox(0.05, 1.05, 0.85, 0.02, P.angkotGreenDark, 0.6), -0.965, 1.15, 0.55);
-  add(g, rbox(0.03, 0.05, 0.18, 0.01, P.hub, 0.5), -0.99, 1.35, 0.25);
+  add(g, rbox(0.05, 1.05, 0.85, 0.02, P.angkotGreenDark, 0.2, { mat: getDieCastMat(P.angkotGreenDark) }), -0.965, 1.15, 0.55);
+  add(g, rbox(0.03, 0.05, 0.18, 0.01, P.chrome || '#eef2f7', 0.15, { mat: getChromeMat() }), -0.99, 1.35, 0.25);
 
   add(g, rbox(0.30, 0.18, 0.08, 0.03, P.headlight, 0.4, { emissive: P.headlight, ei: 1.1 }), -0.62, 0.98, -2.18, { name: 'headlight_L' });
   add(g, rbox(0.30, 0.18, 0.08, 0.03, P.headlight, 0.4, { emissive: P.headlight, ei: 1.1 }), 0.62, 0.98, -2.18, { name: 'headlight_R' });
@@ -327,23 +450,23 @@ function buildBemo(def) {
   add(g, wheel(0.30, 0.22, 'wheel_RL'), -0.74, 0.30, 0.95);
   add(g, wheel(0.30, 0.22, 'wheel_RR'), 0.74, 0.30, 0.95);
 
-  add(g, rbox(0.34, 0.22, 0.72, 0.08, C.body, 0.55), 0, 0.62, -1.30);
-  add(g, rbox(1.10, 0.62, 0.55, 0.18, C.body, 0.55), 0, 0.82, -1.55);
+  add(g, rbox(0.34, 0.22, 0.72, 0.08, C.body, 0.2, { mat: getDieCastMat(C.body) }), 0, 0.62, -1.30);
+  add(g, rbox(1.10, 0.62, 0.55, 0.18, C.body, 0.2, { mat: getDieCastMat(C.body) }), 0, 0.82, -1.55);
   add(g, cyl(0.13, 0.13, 0.08, P.headlight, 0.4, 16, { emissive: P.headlight, ei: 1.1 }), 0, 1.02, -1.84, { rx: Math.PI / 2, name: 'headlight_C' });
-  add(g, rbox(1.50, 0.95, 1.15, 0.16, C.body, 0.55), 0, 1.20, -0.75, { receive: true });
+  add(g, rbox(1.50, 0.95, 1.15, 0.16, C.body, 0.2, { receive: true, mat: getDieCastMat(C.body) }), 0, 1.20, -0.75, { receive: true });
   add(g, rbox(1.16, 0.42, 0.05, 0.02, P.glass, 0.4, { mat: glassMat(), cast: false }), 0, 1.62, -1.32, { rx: -0.12 });
   add(g, rbox(1.2, 0.12, 0.3, 0.04, P.tire, 0.6), 0, 1.35, -1.15);
   add(g, cyl(0.13, 0.13, 0.03, P.tire, 0.6, 14), 0.34, 1.42, -1.05, { rx: -0.9 });
   add(g, driver(P.woodDark, 'peci'), 0.34, 1.35, -0.65);
 
-  add(g, rbox(1.50, 0.16, 1.55, 0.06, P.bemoOrangeDark, 0.6), 0, 0.66, 0.80, { receive: true });
+  add(g, rbox(1.50, 0.16, 1.55, 0.06, P.bemoOrangeDark, 0.2, { receive: true, mat: getDieCastMat(P.bemoOrangeDark) }), 0, 0.66, 0.80, { receive: true });
   for (const bz of [0.42, 1.18]) {
     add(g, rbox(1.30, 0.12, 0.42, 0.04, C.bench, 0.7), 0, 0.98, bz);
     for (const lx of [-0.55, 0.55]) add(g, rbox(0.08, 0.24, 0.36, 0.02, P.woodDark, 0.7), lx, 0.82, bz);
   }
   for (const sx of [-0.72, 0.72]) add(g, cyl(0.035, 0.035, 1.5, P.tire, 0.6, 8), sx, 1.15, 0.80, { rx: Math.PI / 2 });
 
-  add(g, rbox(1.72, 0.14, 3.30, 0.07, C.roof, 0.6), 0, 2.10, -0.10);
+  add(g, rbox(1.72, 0.14, 3.30, 0.07, C.roof, 0.2, { mat: getDieCastMat(C.roof) }), 0, 2.10, -0.10);
   for (const sx of [-0.72, 0.72]) for (const pz of [0.35, 1.45])
     add(g, cyl(0.04, 0.04, 1.30, P.tire, 0.6, 8), sx, 1.40, pz);
 
@@ -367,7 +490,7 @@ function buildL300(def) {
   add(g, wheel(wr, 0.28, 'wheel_RR'), 0.86, wr, 1.40);
 
   add(g, rbox(1.86, 0.34, 4.35, 0.08, P.tire, 0.7), 0, 0.62, 0);
-  add(g, rbox(1.88, 1.10, 1.70, 0.16, C.body, 0.55), 0, 1.32, -1.30, { receive: true });
+  add(g, rbox(1.88, 1.10, 1.70, 0.16, C.body, 0.2, { receive: true, mat: getDieCastMat(C.body) }), 0, 1.32, -1.30, { receive: true });
   add(g, rbox(1.62, 0.52, 0.05, 0.02, P.glass, 0.4, { mat: glassMat(), cast: false }), 0, 1.55, -2.16, { rx: -0.08 });
   for (const sx of [-0.95, 0.95]) add(g, rbox(0.05, 0.46, 1.05, 0.02, P.glass, 0.4, { mat: glassMat(), cast: false }), sx, 1.52, -1.30);
   add(g, rbox(1.10, 0.24, 0.06, 0.02, P.tire, 0.7), 0, 0.95, -2.17);
@@ -409,20 +532,20 @@ function buildOjol(def) {
   add(g, wheel(0.30, 0.14, 'wheel_F'), 0, 0.30, -0.85);
   add(g, wheel(0.30, 0.14, 'wheel_R'), 0, 0.30, 0.85);
 
-  add(g, rbox(0.32, 0.30, 1.10, 0.10, C.body, 0.5), 0, 0.75, 0.30);
-  add(g, rbox(0.30, 0.26, 0.50, 0.12, C.body, 0.45), 0, 0.95, -0.15);
+  add(g, rbox(0.32, 0.30, 1.10, 0.10, C.body, 0.2, { mat: getDieCastMat(C.body) }), 0, 0.75, 0.30);
+  add(g, rbox(0.30, 0.26, 0.50, 0.12, C.body, 0.2, { mat: getDieCastMat(C.body) }), 0, 0.95, -0.15);
   add(g, rbox(0.30, 0.12, 0.70, 0.06, P.tire, 0.7), 0, 1.00, 0.35);
-  add(g, rbox(0.20, 0.12, 0.50, 0.06, C.body, 0.5), 0, 0.62, -0.85);
+  add(g, rbox(0.20, 0.12, 0.50, 0.06, C.body, 0.2, { mat: getDieCastMat(C.body) }), 0, 0.62, -0.85);
   add(g, rbox(0.26, 0.28, 0.40, 0.06, P.asphaltDark, 0.6), 0, 0.60, 0);
-  for (const fx of [-0.09, 0.09]) limb(g, [fx, 1.15, -0.52], [fx, 0.32, -0.85], 0.035, P.hub, 0.5);
+  for (const fx of [-0.09, 0.09]) limb(g, [fx, 1.15, -0.52], [fx, 0.32, -0.85], 0.035, P.chrome || '#eef2f7', 0.2);
   add(g, cyl(0.035, 0.035, 0.55, P.tire, 0.5, 10), 0, 1.25, -0.62, { rz: Math.PI / 2 });
   for (const gx of [-0.26, 0.26]) add(g, cyl(0.045, 0.045, 0.1, P.tire, 0.8, 8), gx, 1.25, -0.62, { rz: Math.PI / 2 });
   add(g, rbox(0.16, 0.14, 0.10, 0.04, P.headlight, 0.4, { emissive: P.headlight, ei: 1.2 }), 0, 1.10, -0.78, { name: 'headlight_C' });
   add(g, rbox(0.10, 0.10, 0.06, 0.02, P.tail, 0.4, { emissive: P.tail, ei: 0.8 }), 0, 0.85, 0.92, { name: 'brake_C' });
-  add(g, cyl(0.05, 0.05, 0.7, P.asphaltDark, 0.5, 10), 0.16, 0.45, 0.4, { rx: Math.PI / 2 - 0.12 });
+  add(g, cyl(0.05, 0.05, 0.7, P.chrome || '#eef2f7', 0.15, 10, { mat: getChromeMat() }), 0.16, 0.45, 0.4, { rx: Math.PI / 2 - 0.12 });
 
   /* Boks antar + logo */
-  add(g, rbox(0.42, 0.40, 0.42, 0.08, P.ojolGreenDark, 0.55), 0, 1.28, 0.95);
+  add(g, rbox(0.42, 0.40, 0.42, 0.08, P.ojolGreenDark, 0.2, { mat: getDieCastMat(P.ojolGreenDark) }), 0, 1.28, 0.95);
   add(g, label('OJOL', 0.34, 0.2, { bg: 'none', fg: P.warmWhite, h: 96, glow: 0.3 }), 0, 1.28, 1.17);
   add(g, label('OJOL', 0.34, 0.2, { bg: 'none', fg: P.warmWhite, h: 96, glow: 0.3 }), 0.22, 1.28, 0.95, { ry: Math.PI / 2 });
 
@@ -893,6 +1016,10 @@ function getPrototype(kind, type) {
       wrapper.userData.label = def.label;
       wrapper.userData.size = { ...def.targetSize };
       wrapper.userData.wheelRadius = isV ? def.wheelRadius : 0;
+      if (isV) {
+        attachSlotUnderglow(wrapper, def.targetSize);
+        attachTwinExhaustFlames(wrapper, type, def.targetSize);
+      }
       return wrapper;
     })());
   }

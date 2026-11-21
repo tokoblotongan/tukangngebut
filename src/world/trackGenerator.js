@@ -75,53 +75,53 @@ export function checkBoostCollision(x, z) {
   return null;
 }
 
-/* ---------- Tekstur aspal hand-painted Dota 2 + Normal Map ---------- */
+/* ---------- Tekstur Trek Plastik Oranye Hot Wheels + Speed Grooves + Normal Map ---------- */
 function makeStylizedRoadTextures() {
   const size = 512;
   const c = document.createElement('canvas'); c.width = c.height = size;
   const g = c.getContext('2d');
 
-  // Gradien dasar aspal hangat-sejuk (tepi agak lebih gelap & menyatu dengan bahu)
+  // Gradien dasar plastik satin oranye ikonik Hot Wheels (#FF6B00)
   const baseGrad = g.createLinearGradient(0, 0, size, 0);
-  baseGrad.addColorStop(0, '#363c48');
-  baseGrad.addColorStop(0.08, '#464d5c');
-  baseGrad.addColorStop(0.5, '#4c5464');
-  baseGrad.addColorStop(0.92, '#464d5c');
-  baseGrad.addColorStop(1, '#363c48');
+  baseGrad.addColorStop(0, '#d95300');
+  baseGrad.addColorStop(0.06, '#ff6b00');
+  baseGrad.addColorStop(0.5, '#ff7b1a');
+  baseGrad.addColorStop(0.94, '#ff6b00');
+  baseGrad.addColorStop(1, '#d95300');
   g.fillStyle = baseGrad;
   g.fillRect(0, 0, size, size);
 
-  // Sapuan kuas hand-painted lembut ala Source 2
-  for (let i = 0; i < 420; i++) {
-    const x = hash(i * 13.7) * size;
-    const y = hash(i * 29.3) * size;
-    const w = 18 + hash(i * 7.1) * 54;
-    const h = 4 + hash(i * 19.9) * 10;
-    const bright = hash(i * 41.3) > 0.5;
-    g.fillStyle = bright ? 'rgba(130, 146, 175, 0.06)' : 'rgba(26, 30, 38, 0.07)';
-    g.beginPath();
-    g.ellipse(x, y, w * 0.5, h * 0.5, (hash(i * 3.7) - 0.5) * 0.25, 0, Math.PI * 2);
-    g.fill();
+  // Highlight kilap plastik di tengah & alur kecepatan memanjang (speed grooves)
+  const sheenGrad = g.createLinearGradient(0, 0, size, 0);
+  sheenGrad.addColorStop(0, 'rgba(255, 210, 140, 0)');
+  sheenGrad.addColorStop(0.28, 'rgba(255, 224, 170, 0.14)');
+  sheenGrad.addColorStop(0.5, 'rgba(255, 238, 195, 0.22)');
+  sheenGrad.addColorStop(0.72, 'rgba(255, 224, 170, 0.14)');
+  sheenGrad.addColorStop(1, 'rgba(255, 210, 140, 0)');
+  g.fillStyle = sheenGrad;
+  g.fillRect(0, 0, size, size);
+
+  // Alur kecepatan tengah (center speed grooves) & rel pemandu lajur halus
+  const grooveXs = [
+    size * 0.19, size * 0.21,
+    size * 0.47, size * 0.50, size * 0.53,
+    size * 0.79, size * 0.81,
+  ];
+  for (const gx of grooveXs) {
+    const isCenter = Math.abs(gx - size * 0.5) < size * 0.05;
+    const gw = isCenter ? 5 : 3;
+    g.fillStyle = isCenter ? 'rgba(165, 52, 0, 0.26)' : 'rgba(180, 62, 0, 0.18)';
+    g.fillRect(gx - gw * 0.5, 0, gw, size);
+    g.fillStyle = 'rgba(255, 200, 120, 0.24)';
+    g.fillRect(gx + gw * 0.5, 0, 2, size);
   }
 
-  // Jejak ban halus di 3 lajur (kiri, tengah, kanan)
-  for (const laneCenter of [size * 0.2, size * 0.5, size * 0.8]) {
-    for (const trackOff of [-22, 22]) {
-      const trGrad = g.createLinearGradient(laneCenter + trackOff - 16, 0, laneCenter + trackOff + 16, 0);
-      trGrad.addColorStop(0, 'rgba(22,26,34,0)');
-      trGrad.addColorStop(0.5, 'rgba(22,26,34,0.18)');
-      trGrad.addColorStop(1, 'rgba(22,26,34,0)');
-      g.fillStyle = trGrad;
-      g.fillRect(laneCenter + trackOff - 16, 0, 32, size);
-    }
-  }
-
-  // Detail bintik agregat halus
-  for (let i = 0; i < 900; i++) {
+  // Tekstur plastik satin mikro yang halus
+  for (let i = 0; i < 480; i++) {
     const x = hash(i * 5.3 + 9) * size;
     const y = hash(i * 11.1 + 3) * size;
-    g.fillStyle = i % 2 === 0 ? 'rgba(255,245,225,0.035)' : 'rgba(15,20,30,0.05)';
-    g.fillRect(x, y, 2, 2);
+    g.fillStyle = i % 2 === 0 ? 'rgba(255,245,220,0.04)' : 'rgba(160,50,0,0.035)';
+    g.fillRect(x, y, 2, 10);
   }
 
   const map = new THREE.CanvasTexture(c);
@@ -131,20 +131,25 @@ function makeStylizedRoadTextures() {
   map.repeat.set(1, 2);
   map.anisotropy = 4;
 
-  // Normal map prosedural untuk tekstur taktil halus
+  // Normal map prosedural untuk alur plastik cetakan (molded grooves)
   const nc = document.createElement('canvas'); nc.width = nc.height = 256;
   const ng = nc.getContext('2d');
   const img = ng.createImageData(256, 256);
   const hBuf = new Float32Array(256 * 256);
   for (let y = 0; y < 256; y++) {
     for (let x = 0; x < 256; x++) {
-      const n1 = Math.sin(x * 0.14 + Math.cos(y * 0.11) * 1.4) * 0.35;
-      const n2 = Math.cos(y * 0.22 + x * 0.06) * 0.25;
-      const n3 = (hash(x * 37 + y * 131) - 0.5) * 0.4;
-      hBuf[y * 256 + x] = n1 + n2 + n3;
+      const u = x / 256;
+      const centerGroove =
+        Math.exp(-Math.pow((u - 0.5) * 48, 2)) * -0.85 +
+        Math.exp(-Math.pow((u - 0.47) * 58, 2)) * -0.55 +
+        Math.exp(-Math.pow((u - 0.53) * 58, 2)) * -0.55 +
+        Math.exp(-Math.pow((u - 0.2) * 52, 2)) * -0.4 +
+        Math.exp(-Math.pow((u - 0.8) * 52, 2)) * -0.4;
+      const micro = (hash(x * 37 + y * 131) - 0.5) * 0.08;
+      hBuf[y * 256 + x] = centerGroove + micro;
     }
   }
-  const strength = 1.4;
+  const strength = 1.6;
   for (let y = 0; y < 256; y++) {
     for (let x = 0; x < 256; x++) {
       const xm = (x - 1 + 256) & 255;
@@ -165,7 +170,7 @@ function makeStylizedRoadTextures() {
   const normalMap = new THREE.CanvasTexture(nc);
   normalMap.wrapS = THREE.RepeatWrapping;
   normalMap.wrapT = THREE.RepeatWrapping;
-  normalMap.repeat.set(3, 6);
+  normalMap.repeat.set(1, 4);
 
   return { map, normalMap };
 }
@@ -285,16 +290,20 @@ function makeBlockTex(letter, bg, fg) {
 function makeArchBannerTex() {
   const c = document.createElement('canvas'); c.width = 1024; c.height = 192;
   const g = c.getContext('2d');
-  g.fillStyle = P.toyRed;
+  const grad = g.createLinearGradient(0, 0, 1024, 0);
+  grad.addColorStop(0, '#d90429');
+  grad.addColorStop(0.5, '#ff6b00');
+  grad.addColorStop(1, '#d90429');
+  g.fillStyle = grad;
   g.beginPath(); g.roundRect(6, 6, 1012, 180, 26); g.fill();
-  g.strokeStyle = P.toyYellow;
+  g.strokeStyle = '#ffd100';
   g.lineWidth = 12;
   g.beginPath(); g.roundRect(14, 14, 996, 164, 20); g.stroke();
   g.fillStyle = '#fff8eb';
-  g.font = '700 66px Fredoka, "Plus Jakarta Sans", sans-serif';
+  g.font = '700 58px Fredoka, "Plus Jakarta Sans", sans-serif';
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  g.fillText('★  JURAGAN NGEBUT • SALATIGA  ★', 512, 98);
+  g.fillText('🔥 JURAGAN NGEBUT • KING OF THE ROAD 🔥', 512, 98);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
@@ -309,31 +318,52 @@ export function createTrackGenerator(scene) {
   const matAsphalt = new THREE.MeshStandardMaterial({
     map: roadTex.map,
     normalMap: roadTex.normalMap,
-    normalScale: new THREE.Vector2(0.35, 0.35),
-    roughness: 0.78,
-    metalness: 0.04,
+    normalScale: new THREE.Vector2(0.28, 0.28),
+    roughness: 0.28,
+    metalness: 0.08,
   });
 
-  /* Material bahu jalan dengan transisi vertex color curb → rumput */
+  /* Material bahu jalan dengan transisi vertex color oranye/stone → rumput */
   const matShoulderBlend = new THREE.MeshStandardMaterial({
     vertexColors: true,
     roughness: 0.84,
     metalness: 0.02,
   });
 
-  const matDeckSide = new THREE.MeshStandardMaterial({ color: P.concrete, roughness: 0.72 });
-  const matCurb = new THREE.MeshStandardMaterial({ color: P.stone, roughness: 0.65 });
-  const matLine = new THREE.MeshStandardMaterial({ color: P.line, roughness: 0.55, emissive: P.line, emissiveIntensity: 0.12 });
-  const matRamp = new THREE.MeshStandardMaterial({ color: P.toyOrange, roughness: 0.44 });
-  const matRampStripe = new THREE.MeshStandardMaterial({ color: P.toyYellow, roughness: 0.4, emissive: P.toyYellow, emissiveIntensity: 0.28 });
-  const matBoost = new THREE.MeshStandardMaterial({ color: P.toyYellow, roughness: 0.38, emissive: P.toyYellow, emissiveIntensity: 0.6 });
-  const matChevron = new THREE.MeshStandardMaterial({ color: P.toyOrange, roughness: 0.42, emissive: P.toyOrange, emissiveIntensity: 0.45 });
+  const matDeckSide = new THREE.MeshStandardMaterial({ color: P.trackOrangeDark, roughness: 0.34, metalness: 0.06 });
+  const matCurb = new THREE.MeshStandardMaterial({ color: P.trackOrange, roughness: 0.28, metalness: 0.08 });
+  const matLine = new THREE.MeshStandardMaterial({ color: '#ffe599', roughness: 0.35, emissive: '#ffbe0b', emissiveIntensity: 0.22 });
+  const matConnectorBlue = new THREE.MeshStandardMaterial({
+    color: P.connectorBlue, roughness: 0.26, metalness: 0.12,
+    emissive: '#0044aa', emissiveIntensity: 0.14,
+  });
+  const matRamp = new THREE.MeshStandardMaterial({
+    color: P.trackOrange, roughness: 0.24, metalness: 0.08,
+    emissive: '#ff4800', emissiveIntensity: 0.3,
+  });
+  const matRampStripe = new THREE.MeshStandardMaterial({
+    color: '#ffe135', roughness: 0.25,
+    emissive: '#ffbe0b', emissiveIntensity: 0.85,
+  });
+  const matBoost = new THREE.MeshStandardMaterial({
+    color: '#ffbe0b', roughness: 0.28,
+    emissive: '#ff9500', emissiveIntensity: 0.72,
+  });
+  const matChevron = new THREE.MeshStandardMaterial({
+    color: '#fff3b0', roughness: 0.25,
+    emissive: '#ffd100', emissiveIntensity: 0.9,
+  });
+  const matBoosterWheel = new THREE.MeshStandardMaterial({
+    color: '#ffd100', roughness: 0.32, metalness: 0.05,
+    emissive: '#ffaa00', emissiveIntensity: 0.25,
+  });
+  const matBoosterHub = new THREE.MeshStandardMaterial({
+    color: P.connectorBlue, roughness: 0.24, metalness: 0.35,
+  });
   const matPillar = new THREE.MeshStandardMaterial({ color: P.concrete, roughness: 0.75 });
   const matRailColors = [
-    new THREE.MeshStandardMaterial({ color: P.toyRed, roughness: 0.4 }),
-    new THREE.MeshStandardMaterial({ color: P.toyYellow, roughness: 0.4 }),
-    new THREE.MeshStandardMaterial({ color: P.toyBlue, roughness: 0.4 }),
-    new THREE.MeshStandardMaterial({ color: P.warmWhite, roughness: 0.44 }),
+    new THREE.MeshStandardMaterial({ color: P.trackOrange, roughness: 0.28, metalness: 0.08 }),
+    new THREE.MeshStandardMaterial({ color: '#ff7b1a', roughness: 0.28, metalness: 0.08 }),
   ];
 
   /* Foliage berlapis + wind shader */
@@ -439,14 +469,22 @@ export function createTrackGenerator(scene) {
   );
 
   /* Geometri bersama */
-  const geoDash = new THREE.BoxGeometry(0.28, 0.03, 1.7);
-  const geoRamp = new RoundedBoxGeometry(RAMP_W, 0.6, RAMP_LEN, 3, 0.14);
-  const geoRampStripe = new THREE.BoxGeometry(RAMP_W - 0.6, 0.06, 0.4);
+  const geoDash = new THREE.BoxGeometry(0.24, 0.025, 1.75);
+  const geoRamp = new RoundedBoxGeometry(RAMP_W, 0.65, RAMP_LEN + 0.4, 3, 0.16);
+  const geoRampRail = new RoundedBoxGeometry(0.32, 0.65, RAMP_LEN + 0.4, 2, 0.08);
+  const geoRampStripe = new THREE.BoxGeometry(RAMP_W - 0.8, 0.07, 0.44);
   const geoBoost = new RoundedBoxGeometry(BOOST_W, 0.12, BOOST_LEN, 3, 0.06);
   const geoChevron = new THREE.BoxGeometry(2.6, 0.06, 0.35);
+  const geoBoosterHousing = new RoundedBoxGeometry(1.05, 0.92, BOOST_LEN + 0.9, 3, 0.16);
+  const geoBoosterWheel = new THREE.CylinderGeometry(0.72, 0.72, 0.38, 16);
+  geoBoosterWheel.rotateZ(Math.PI / 2);
+  const geoBoosterHub = new THREE.CylinderGeometry(0.34, 0.34, 0.42, 8);
+  geoBoosterHub.rotateZ(Math.PI / 2);
+  const geoConnectorBar = new RoundedBoxGeometry(W + 1.35, 0.34, 1.15, 2, 0.08);
+  const geoConnectorEar = new RoundedBoxGeometry(0.55, 0.92, 1.45, 2, 0.1);
   const geoPillar = new THREE.CylinderGeometry(0.55, 0.72, 1, 12);
-  const geoGuardPost = new THREE.CylinderGeometry(0.09, 0.11, 0.88, 8);
-  const geoGuardBeam = new RoundedBoxGeometry(0.16, 0.22, 4.1, 2, 0.04);
+  const geoGuardPost = new RoundedBoxGeometry(0.24, 0.82, 0.28, 2, 0.05);
+  const geoGuardBeam = new RoundedBoxGeometry(0.32, 0.56, 4.18, 2, 0.08);
 
   const geoTrunk = new THREE.CylinderGeometry(0.14, 0.26, 1.25, 10);
   const geoCanopy = new THREE.SphereGeometry(0.86, 14, 10);
@@ -631,8 +669,8 @@ export function createTrackGenerator(scene) {
     const seg = {
       group, index: null, type: 'plain',
       road: null, shoulders: [], skirts: [], edges: [], dashes: [],
-      guardPosts: [], guardBeams: [],
-      ramp: null, boost: null, bridge: null, piers: [],
+      guardPosts: [], guardBeams: [], connector: null,
+      ramp: null, boost: null, boosterWheels: [], bridge: null, piers: [],
       floor: null, blocks: [], fences: [], arch: null,
       decor: [], grassInst: null, flowerInst: null,
       collectibles: [],
@@ -706,7 +744,7 @@ export function createTrackGenerator(scene) {
       group.add(m); seg.dashes.push(m);
     }
 
-    /* Guardrail warna-warni di kedua sisi jalan */
+    /* Guardrail sisi oranye menonjol (Hot Wheels Track Walls) + Klip Konektor Biru (#0077FF) */
     for (const side of [-1, 1]) {
       for (let k = 0; k < 6; k++) {
         const post = new THREE.Mesh(geoGuardPost, matCurb);
@@ -716,10 +754,25 @@ export function createTrackGenerator(scene) {
 
         const beam = new THREE.Mesh(geoGuardBeam, matRailColors[k % matRailColors.length]);
         beam.castShadow = true;
+        beam.receiveShadow = true;
         group.add(beam);
         seg.guardBeams.push({ mesh: beam, side, k });
       }
     }
+
+    const connector = new THREE.Group();
+    const connBar = new THREE.Mesh(geoConnectorBar, matConnectorBlue);
+    connBar.position.set(0, -0.14, 0);
+    connBar.castShadow = true;
+    connector.add(connBar);
+    for (const side of [-1, 1]) {
+      const ear = new THREE.Mesh(geoConnectorEar, matConnectorBlue);
+      ear.position.set(side * (W / 2 + 0.38), 0.34, 0);
+      ear.castShadow = true;
+      connector.add(ear);
+    }
+    group.add(connector);
+    seg.connector = connector;
 
     /* Pilar penopang jalan layang ke lantai playroom */
     for (const px of [-W / 2 + 1.5, W / 2 - 1.5]) {
@@ -729,20 +782,27 @@ export function createTrackGenerator(scene) {
       seg.piers.push({ mesh: p, x: px });
     }
 
-    /* Ramp & Boost pad */
+    /* Steep Glowing Orange Stunt Ramp */
     const ramp = new THREE.Group();
     const slab = new THREE.Mesh(geoRamp, matRamp);
     slab.castShadow = true; slab.receiveShadow = true;
     ramp.add(slab);
-    for (let s = 0; s < 3; s++) {
+    for (const side of [-1, 1]) {
+      const rail = new THREE.Mesh(geoRampRail, matConnectorBlue);
+      rail.position.set(side * (RAMP_W / 2 + 0.14), 0.3, 0);
+      rail.castShadow = true;
+      ramp.add(rail);
+    }
+    for (let s = 0; s < 4; s++) {
       const st = new THREE.Mesh(geoRampStripe, matRampStripe);
-      st.position.set(0, 0.32, -1.4 + s * 1.4);
+      st.position.set(0, 0.35, -1.8 + s * 1.2);
       ramp.add(st);
     }
-    ramp.rotation.x = 0.27;
+    ramp.rotation.x = 0.34;
     ramp.visible = false;
     group.add(ramp); seg.ramp = ramp;
 
+    /* Boost Pad + Motorized Spinning Blue/Yellow Wheel Boosters di kedua sisi */
     const boost = new THREE.Group();
     const pad = new THREE.Mesh(geoBoost, matBoost);
     pad.receiveShadow = true;
@@ -752,6 +812,24 @@ export function createTrackGenerator(scene) {
       ch.position.set(0, 0.08, -0.9 + c * 0.9);
       ch.rotation.y = c % 2 ? 0.35 : -0.35;
       boost.add(ch);
+    }
+    for (const side of [-1, 1]) {
+      const hx = side * (BOOST_W / 2 + 0.68);
+      const housing = new THREE.Mesh(geoBoosterHousing, matConnectorBlue);
+      housing.position.set(hx, 0.44, 0);
+      housing.castShadow = true;
+      boost.add(housing);
+
+      for (const wz of [-0.95, 0.95]) {
+        const wheelGroup = new THREE.Group();
+        wheelGroup.position.set(side * (BOOST_W / 2 + 0.24), 0.48, wz);
+        const tire = new THREE.Mesh(geoBoosterWheel, matBoosterWheel);
+        tire.castShadow = true;
+        const hub = new THREE.Mesh(geoBoosterHub, matBoosterHub);
+        wheelGroup.add(tire, hub);
+        boost.add(wheelGroup);
+        seg.boosterWheels.push({ mesh: wheelGroup, side });
+      }
     }
     boost.visible = false;
     group.add(boost); seg.boost = boost;
@@ -1085,13 +1163,18 @@ export function createTrackGenerator(scene) {
     for (const gp of seg.guardPosts) {
       const lz = -L / 2 + 2 + gp.k * 4;
       const y = getTrackHeight(centerZ + lz);
-      gp.mesh.position.set(gp.side * (W / 2 + 0.22), y + 0.42, lz);
+      gp.mesh.position.set(gp.side * (W / 2 + 0.32), y + 0.36, lz);
     }
     for (const gb of seg.guardBeams) {
       const lz = -L / 2 + 2 + gb.k * 4;
       const y = getTrackHeight(centerZ + lz);
-      gb.mesh.position.set(gb.side * (W / 2 + 0.22), y + 0.66, lz);
+      gb.mesh.position.set(gb.side * (W / 2 + 0.14), y + 0.32, lz);
       gb.mesh.rotation.x = Math.atan(-getTrackSlope(centerZ + lz));
+    }
+    if (seg.connector) {
+      const seamZ = L / 2;
+      seg.connector.position.set(0, getTrackHeight(centerZ + seamZ), seamZ);
+      seg.connector.rotation.x = Math.atan(-getTrackSlope(centerZ + seamZ));
     }
 
     const roadMidY = getTrackHeight(centerZ);
@@ -1102,10 +1185,15 @@ export function createTrackGenerator(scene) {
     }
 
     seg.ramp.visible = seg.type === 'ramp';
-    if (seg.ramp.visible) seg.ramp.position.set(0, getTrackHeight(centerZ) + 0.35, 0);
+    if (seg.ramp.visible) {
+      seg.ramp.position.set(0, getTrackHeight(centerZ) + 0.45, 0);
+    }
 
     seg.boost.visible = seg.type === 'boost';
-    if (seg.boost.visible) seg.boost.position.set(0, getTrackHeight(centerZ) + 0.07, 0);
+    if (seg.boost.visible) {
+      seg.boost.position.set(0, getTrackHeight(centerZ) + 0.07, 0);
+      seg.boost.rotation.x = Math.atan(-getTrackSlope(centerZ));
+    }
 
     seg.bridge.visible = seg.type === 'bridge';
     if (seg.bridge.visible) {
@@ -1175,6 +1263,12 @@ export function createTrackGenerator(scene) {
       for (const d of seg.decor) {
         if (d.kind === 'tree') d.obj.rotation.z = Math.sin(t * 1.5 + d.phase) * 0.028;
         else if (d.kind === 'bush') d.obj.rotation.z = Math.sin(t * 2.1 + d.phase) * 0.035;
+      }
+
+      if (seg.boost.visible) {
+        for (const bw of seg.boosterWheels) {
+          bw.mesh.rotation.x = -t * 22;
+        }
       }
 
       for (const item of seg.collectibles) {
@@ -1256,16 +1350,18 @@ export function createTrackGenerator(scene) {
       for (const item of seg.collectibles) item.gemMesh.userData.gemMat.dispose();
     }
     [
-      geoDash, geoRamp, geoRampStripe, geoBoost, geoChevron, geoPillar,
-      geoGuardPost, geoGuardBeam, geoTrunk, geoCanopy, geoBushLobe, geoBerry,
+      geoDash, geoRamp, geoRampRail, geoRampStripe, geoBoost, geoChevron,
+      geoBoosterHousing, geoBoosterWheel, geoBoosterHub, geoConnectorBar, geoConnectorEar,
+      geoPillar, geoGuardPost, geoGuardBeam, geoTrunk, geoCanopy, geoBushLobe, geoBerry,
       geoPlantShadow, geoGrassTuft, geoFlower, geoLampBase, geoLampPole,
       geoLampArm, geoLampHead, geoFloor, geoBlock, geoFencePost, geoFenceRail,
       geoArchPillar, geoArchBeam, geoArchSign, geoArchBulb, geoBunting,
       geoCoinBody, geoCoinRim, geoCoinCore, geoGemStar, geoGemRing, geoGlowRing,
     ].forEach((g) => g.dispose());
     [
-      matAsphalt, matShoulderBlend, matDeckSide, matCurb, matLine, matRamp,
-      matRampStripe, matBoost, matChevron, matPillar, ...matRailColors,
+      matAsphalt, matShoulderBlend, matDeckSide, matCurb, matLine, matConnectorBlue,
+      matRamp, matRampStripe, matBoost, matChevron, matBoosterWheel, matBoosterHub,
+      matPillar, ...matRailColors,
       matTrunk, matLeaf1, matLeaf2, matLeaf3, matBushEmerald, matBushPurple,
       matBerry, matGrassTuft, matFlower, matPlantShadow, matLampPole,
       matLampCollar, matLampHead, ...floorMats, ...blockMats, matArchBanner,

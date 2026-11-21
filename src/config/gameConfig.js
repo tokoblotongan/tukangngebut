@@ -34,6 +34,7 @@ export const PALETTE = Object.freeze({
   headlight: '#fff3b0', tail: '#ff3b3b', indicator: '#ffb020',
   skyZenith: '#1d4ed8', skyMid: '#38bdf8', horizon: '#ffd89b',
   coinGold: '#ffbe0b', coinGoldRim: '#fb8500',
+  trackOrange: '#ff6b00', trackOrangeDark: '#d95300', connectorBlue: '#0077ff', chrome: '#eef2f7',
   pastelMint: '#52b788', pastelCoral: '#ff6b8b', pastelSky: '#4cc9f0',
   pastelButter: '#ffd166', pastelLavender: '#b583e0',
 });
@@ -64,11 +65,11 @@ export const LIGHTING = Object.freeze({
 
 /* ---------- Kamera chase 45° lebih dekat & intim (~22% lebih rapat) ---------- */
 export const CAMERA = Object.freeze({
-  fov: 56, near: 0.1, far: 500,
+  fov: 55, maxFov: 68, near: 0.1, far: 500,
   height: 6.4, distance: 6.6,
   lookAhead: 10.5, lookHeight: 1.25,
   posLerp: 6.5, aimLerp: 9.0,
-  fovSpeedGain: 7.5,
+  fovSpeedGain: 6.5,
   shakeDecay: 1.8, shakeAmp: 0.38,
 });
 

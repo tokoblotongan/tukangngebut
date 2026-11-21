@@ -41,7 +41,9 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
     if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(c)) e.preventDefault();
     keys.add(c);
     if (c === 'KeyM') hud.toggleAudio();
-    else if (c === 'KeyP' || c === 'Escape') {
+    else if (c === 'KeyH') {
+      if (state === STATES.PLAYING) hud.triggerTelolet?.();
+    } else if (c === 'KeyP' || c === 'Escape') {
       if (state === STATES.PLAYING) pause();
       else if (state === STATES.PAUSED) resume();
     } else if (c === 'KeyR') {
@@ -236,7 +238,7 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
     /* Kamera & atmosphere */
     const groundY = track.getTrackHeight(pos.z);
     ctx.setAnchor(pos.x, pos.y, pos.z);
-    ctx.followCamera(pos, dt, { speedRatio: res.speed / PHYSICS.maxSpeed });
+    ctx.followCamera(pos, dt, { speedRatio: res.speed / PHYSICS.maxSpeed, turbo: res.turbo });
     ctx.updateContactShadow(pos.x, groundY, pos.z, Math.max(0, pos.y - groundY), 3.4);
 
     hud.updateHUD({
@@ -305,6 +307,7 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
       rollAngle: ps.rollAngle,
       speed: ps.speed,
       score,
+      turbo: ps.turboTimer > 0,
       state,
     });
     network.update(dt);

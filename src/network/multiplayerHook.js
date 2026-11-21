@@ -7,7 +7,7 @@
    ===================================================================== */
 import * as THREE from 'three';
 import { createClient } from '@supabase/supabase-js';
-import { loadVehicle } from '../entities/assetFactory.js';
+import { loadVehicle, setVehicleUnderglow } from '../entities/assetFactory.js';
 import { VEHICLES, getVehicleDef } from '../config/gameConfig.js';
 
 export const PUBLIC_ROOMS = Object.freeze([
@@ -25,6 +25,14 @@ const NAMES = [
   'Nona Salatiga', 'Mas Blotongan', 'Juragan Kopi', 'Pembalap Merbabu',
 ];
 const VEHICLE_EMOJIS = { angkot: '🚐', bemo: '🛺', l300: '🛻', ojol: '🏍️' };
+const SLOT_GLOW_COLORS = ['#00e5ff', '#ff007f', '#39ff14', '#ffe600', '#a855f7', '#ff6b00'];
+
+export function getSlotGlowColor(peerId) {
+  const str = String(peerId || 'p0');
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  return SLOT_GLOW_COLORS[Math.abs(h) % SLOT_GLOW_COLORS.length];
+}
 
 export function normalizeRoomId(raw) {
   const cleaned = String(raw || '')
@@ -195,6 +203,7 @@ export function createMultiplayerHook({
       rollAngle: +payload.rollAngle || 0,
       speed: +payload.speed || 0,
       score: +payload.score || 0,
+      turbo: !!payload.turbo,
       state: payload.state || 'PLAYING',
       seen: performance.now() / 1000,
     });
@@ -412,6 +421,7 @@ export function createMultiplayerHook({
       rollAngle: round(playerState?.rollAngle),
       speed: round(playerState?.speed),
       score: Math.round(playerState?.score || 0),
+      turbo: !!playerState?.turbo,
       state: playerState?.state || 'MENU',
     };
   }
@@ -455,11 +465,12 @@ export function createMultiplayerHook({
       if (disposed || !peers.has(peer.id) || ghosts.get(peer.id) !== entry) return;
 
       mesh.traverse((o) => {
-        if (o.isMesh) {
+        if (o.isMesh && o.name !== 'slot_underglow' && !o.name.startsWith('flame_')) {
           o.castShadow = false;
           o.receiveShadow = true;
         }
       });
+      setVehicleUnderglow(mesh, getSlotGlowColor(peer.id));
 
       if (entry.vehicleMesh) entry.root.remove(entry.vehicleMesh);
       entry.vehicleMesh = mesh;
@@ -551,6 +562,19 @@ export function createMultiplayerHook({
         const spin = ((p.speed || 16) / wr) * dt;
         for (const w of entry.vehicleMesh.userData.wheels || []) {
           w.rotation.x -= spin;
+        }
+        const flames = entry.vehicleMesh.userData.flames;
+        if (flames?.group) {
+          const on = !!p.turbo;
+          flames.group.visible = on;
+          if (on) {
+            const tNow = performance.now() * 0.04;
+            for (let j = 0; j < flames.jets.length; j++) {
+              const jet = flames.jets[j];
+              const s = 0.88 + 0.4 * Math.abs(Math.sin(tNow + j * 1.9));
+              jet.scale.set(s, s, 1.0 + 0.5 * Math.sin(tNow * 1.3 + j));
+            }
+          }
         }
       }
     }

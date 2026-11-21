@@ -9,7 +9,7 @@
    ===================================================================== */
 import * as THREE from 'three';
 import { TRAFFIC, PHYSICS, TRACK, VEHICLE_TYPES, getVehicleDef } from '../config/gameConfig.js';
-import { loadVehicle } from './assetFactory.js';
+import { loadVehicle, setVehicleUnderglow } from './assetFactory.js';
 import { getTrackHeight, getTrackSlope } from '../world/trackGenerator.js';
 
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -31,6 +31,7 @@ export async function createTrafficManager(scene) {
     freeByType[type] = [];
     for (let k = 0; k < 4; k++) {
       const g = await loadVehicle(type);
+      setVehicleUnderglow(g, null);
       g.visible = false;
       scene.add(g);
       freeByType[type].push(g);

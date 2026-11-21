@@ -6,13 +6,13 @@
    ===================================================================== */
 import { createSceneContext } from './core/sceneSetup.js';
 import { createGameLoop } from './core/gameLoop.js';
-import { preloadAll, loadVehicle } from './entities/assetFactory.js';
+import { preloadAll, loadVehicle, setVehicleUnderglow } from './entities/assetFactory.js';
 import { createPlayerController } from './entities/playerController.js';
 import { createTrafficManager } from './entities/trafficManager.js';
 import { createTrackGenerator } from './world/trackGenerator.js';
 import { createLandmarkManager } from './world/salatigaLandmark.js';
 import { createHUD } from './ui/hudManager.js';
-import { createMultiplayerHook } from './network/multiplayerHook.js';
+import { createMultiplayerHook, getSlotGlowColor } from './network/multiplayerHook.js';
 import { GAME, VEHICLES } from './config/gameConfig.js';
 
 const LOAD_LINES = [
@@ -83,7 +83,7 @@ async function init() {
   if (!VEHICLES[type]) type = 'angkot';
   const vehicle = await loadVehicle(type);
   player = createPlayerController({
-    scene: ctx.scene, vehicle, type,
+    scene: ctx.scene, vehicle, type, audio: hud.sfx,
     callbacks: {
       onLaunch: () => { hud.sfx.launch(); ctx.addShake(0.18); },
       onRollStart: () => hud.sfx.roll(),
@@ -110,6 +110,7 @@ async function init() {
     onStatusChange: ({ status, room, onlineCount }) => hud.setNetworkStatus(status, room, onlineCount),
     onLobbyChange: (counts) => hud.setLobbyCounts(counts),
   });
+  setVehicleUnderglow(vehicle, getSlotGlowColor(network.identity.id));
   hud.setPlayerName(network.identity.name);
   hud.setActiveRoom(network.room);
   hud.setLobbyCounts(network.lobbyCounts);
@@ -131,6 +132,7 @@ async function init() {
     try {
       const g = await loadVehicle(key);
       if (token !== vehicleSwapToken) return;
+      setVehicleUnderglow(g, getSlotGlowColor(network?.identity?.id));
       player.setVehicle(g, key);
       hud.toast(`${VEHICLES[key].label} siap di garis start! ${VEHICLES[key].tagline}`, 'good');
     } catch (err) {

@@ -317,18 +317,18 @@ export function createSceneContext(canvas) {
     camInit = true;
   }
 
-  /**ikuti player tanpa pernah ikut roll — kamera chase 45° intim & horizon-locked */
-  function followCamera(pos, dt, { speedRatio = 0 } = {}) {
+  /** Ikuti player tanpa pernah ikut roll — kamera chase 45° intim & horizon-locked */
+  function followCamera(pos, dt, { speedRatio = 0, turbo = false } = {}) {
     if (!camInit) snapCamera(pos);
     const sr = THREE.MathUtils.clamp(speedRatio, 0, 1.6);
     const kp = 1 - Math.exp(-CAMERA.posLerp * dt);
     const ka = 1 - Math.exp(-CAMERA.aimLerp * dt);
     desiredPos.set(
       pos.x * 0.90,
-      pos.y + CAMERA.height - sr * 0.35,
+      pos.y + CAMERA.height - sr * 0.38,
       pos.z + CAMERA.distance + sr * 0.45
     );
-    desiredAim.set(pos.x * 0.96, pos.y + CAMERA.lookHeight, pos.z - CAMERA.lookAhead - sr * 1.4);
+    desiredAim.set(pos.x * 0.96, pos.y + CAMERA.lookHeight, pos.z - CAMERA.lookAhead - sr * 1.6);
     camPos.lerp(desiredPos, kp);
     aim.lerp(desiredAim, ka);
     camera.position.copy(camPos);
@@ -336,8 +336,11 @@ export function createSceneContext(canvas) {
     camera.position.y += shakeOffset.y;
     camera.up.set(0, 1, 0);
     camera.lookAt(aim);
-    const targetFov = CAMERA.fov + sr * CAMERA.fovSpeedGain;
-    currentFov += (targetFov - currentFov) * kp;
+    const maxFov = CAMERA.maxFov ?? 68;
+    const baseGain = Math.min(1, sr) * (CAMERA.fovSpeedGain ?? 6.5);
+    const targetFov = turbo ? maxFov : Math.min(maxFov, CAMERA.fov + baseGain);
+    const fovLerp = 1 - Math.exp(-(turbo ? 7.5 : 4.5) * dt);
+    currentFov += (targetFov - currentFov) * fovLerp;
     if (Math.abs(currentFov - camera.fov) > 0.01) {
       camera.fov = currentFov;
       camera.updateProjectionMatrix();

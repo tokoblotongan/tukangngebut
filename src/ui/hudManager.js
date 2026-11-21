@@ -7,6 +7,7 @@
    ===================================================================== */
 import { VEHICLES, GAME, PALETTE as P } from '../config/gameConfig.js';
 import { PUBLIC_ROOMS, normalizeRoomId } from '../network/multiplayerHook.js';
+import { createTeloletSynthesizer } from '../audio/soundManager.js';
 
 const EMOJI = { angkot: '🚐', bemo: '🛺', l300: '🛻', ojol: '🏍️' };
 const DIFFS = [
@@ -44,11 +45,59 @@ export function createHUD(opts = {}) {
     overCoins: $('jg-over-coins'), overBest: $('jg-over-best'), overRecord: $('jg-over-record'), overTitle: $('jg-over-title'),
     btnAudio: $('jg-audio'), btnAudioMenu: $('jg-audio-menu'), btnAudioPause: $('jg-audio-pause'),
     btnQuality: $('jg-quality'), btnPause: $('jg-pause-btn'),
-    padL: $('jg-pad-l'), padR: $('jg-pad-r'), crashFlash: $('jg-crash'),
+    padL: $('jg-pad-l'), padR: $('jg-pad-r'), telolet: $('jg-telolet'), crashFlash: $('jg-crash'),
+    speedLines: /** @type {HTMLCanvasElement | null} */ ($('jg-speedlines')),
   };
 
+  /* ---------- Edge Speed Lines Canvas ---------- */
+  const speedCtx = el.speedLines?.getContext('2d') || null;
+  const speedStreaks = Array.from({ length: 34 }, (_, i) => ({
+    angle: (i / 34) * Math.PI * 2 + (i % 3) * 0.05,
+    offset: Math.random(),
+    speed: 1.8 + (i % 5) * 0.45,
+    width: 1.5 + (i % 3) * 1.1,
+    hot: i % 2 === 0,
+  }));
+  function resizeSpeedLines() {
+    if (!el.speedLines) return;
+    el.speedLines.width = window.innerWidth;
+    el.speedLines.height = window.innerHeight;
+  }
+  function clearSpeedLines() {
+    if (!speedCtx || !el.speedLines) return;
+    speedCtx.clearRect(0, 0, el.speedLines.width, el.speedLines.height);
+  }
+  function drawSpeedLines(intensity, isTurbo) {
+    if (!speedCtx || !el.speedLines) return;
+    const w = el.speedLines.width, h = el.speedLines.height;
+    if (!w || !h || intensity <= 0.02) { clearSpeedLines(); return; }
+    speedCtx.clearRect(0, 0, w, h);
+    const cx = w * 0.5, cy = h * 0.48;
+    const maxR = Math.hypot(cx, cy);
+    const innerR = Math.min(w, h) * (isTurbo ? 0.37 : 0.43);
+    const t = performance.now() * 0.001;
+    for (let i = 0; i < speedStreaks.length; i++) {
+      const st = speedStreaks[i];
+      const prog = (st.offset + t * st.speed * (isTurbo ? 2.1 : 1.15)) % 1;
+      const r0 = innerR + prog * (maxR - innerR) * 0.55;
+      const r1 = r0 + (45 + prog * 140) * (isTurbo ? 1.35 : 0.85);
+      const cos = Math.cos(st.angle), sin = Math.sin(st.angle);
+      const alpha = intensity * (1 - prog * 0.6) * (isTurbo ? 0.58 : 0.34);
+      speedCtx.strokeStyle = st.hot
+        ? (isTurbo ? `rgba(255, 190, 11, ${alpha})` : `rgba(255, 255, 255, ${alpha * 0.8})`)
+        : (isTurbo ? `rgba(255, 107, 0, ${alpha})` : `rgba(144, 224, 239, ${alpha * 0.85})`);
+      speedCtx.lineWidth = st.width * (isTurbo ? 1.4 : 1);
+      speedCtx.beginPath();
+      speedCtx.moveTo(cx + cos * r0, cy + sin * r0);
+      speedCtx.lineTo(cx + cos * r1, cy + sin * r1);
+      speedCtx.stroke();
+    }
+  }
+  resizeSpeedLines();
+  window.addEventListener('resize', resizeSpeedLines);
+
   const input = { left: false, right: false };
-  const sfx = createAudioEngine();
+  const sfx = createAudioEngine(() => pulseTeloletBtn());
   let muted = localStorage.getItem('jg_muted') === '1';
   let hd = true;
   let selectedVehicle = localStorage.getItem('jg_vehicle') || 'angkot';
@@ -215,6 +264,28 @@ export function createHUD(opts = {}) {
   }
   bindPad(el.padL, 'left'); bindPad(el.padR, 'right');
 
+  function pulseTeloletBtn() {
+    if (!el.telolet) return;
+    el.telolet.classList.remove('honk');
+    void el.telolet.offsetWidth;
+    el.telolet.classList.add('honk');
+  }
+  function triggerTelolet() {
+    sfx.resume();
+    return sfx.playTeloletHorn();
+  }
+  el.telolet?.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    triggerTelolet();
+  });
+  el.telolet?.addEventListener('keydown', (e) => {
+    if (e.code === 'Enter' || e.code === 'Space') {
+      e.preventDefault();
+      triggerTelolet();
+    }
+  });
+  el.telolet?.addEventListener('contextmenu', (e) => e.preventDefault());
+
   /* ---------- Cache nilai agar tidak thrash DOM ---------- */
   const last = {};
   function setText(node, key, val) { if (last[key] !== val) { last[key] = val; node.textContent = val; } }
@@ -222,7 +293,7 @@ export function createHUD(opts = {}) {
   let bannerTimer = 0, toastSeq = 0;
 
   const api = {
-    input, sfx,
+    input, sfx, triggerTelolet,
     get vehicle() { return selectedVehicle; },
     get difficulty() { return selectedDiff; },
     get room() { return selectedRoom; },
@@ -242,6 +313,7 @@ export function createHUD(opts = {}) {
     },
 
     showMenu(best) {
+      clearSpeedLines();
       el.menu.classList.add('show');
       el.hud.classList.remove('show');
       el.pause.classList.remove('show');
@@ -251,7 +323,7 @@ export function createHUD(opts = {}) {
     },
     hideMenu() { el.menu.classList.remove('show'); },
     showHUD() { el.hud.classList.add('show'); },
-    hideHUD() { el.hud.classList.remove('show'); },
+    hideHUD() { clearSpeedLines(); el.hud.classList.remove('show'); },
 
     updateHUD(s) {
       setText(el.score, 'score', Math.round(s.score).toLocaleString('id-ID'));
@@ -279,6 +351,9 @@ export function createHUD(opts = {}) {
       el.cpFill.style.width = `${Math.min(100, (s.distance % 500) / 5)}%`;
       setText(el.cpLabel, 'cp', `Checkpoint ${s.nextCheckpoint} m`);
       el.hud.classList.toggle('invuln', s.invuln > 0);
+      const isTurbo = s.turbo > 0;
+      const lineStrength = isTurbo ? 1 : Math.max(0, (s.speedRatio - 0.68) / 0.32);
+      drawSpeedLines(lineStrength, isTurbo);
     },
 
     setAirHint(on) { el.airHint.classList.toggle('show', on); },
@@ -321,6 +396,7 @@ export function createHUD(opts = {}) {
       el.overRecord.classList.toggle('show', r.newRecord);
       el.overTitle.textContent = r.newRecord ? 'REKOR BARU, JURAGAN!' : 'MOGOK DI JALAN!';
       el.over.classList.add('show');
+      clearSpeedLines();
       el.hud.classList.remove('show');
     },
     hideGameOver() { el.over.classList.remove('show'); },
@@ -362,6 +438,7 @@ export function createHUD(opts = {}) {
 
     dispose() {
       clearTimeout(bannerTimer);
+      window.removeEventListener('resize', resizeSpeedLines);
       sfx.dispose();
       wrap.remove();
     },
@@ -370,10 +447,16 @@ export function createHUD(opts = {}) {
 }
 
 /* ==================== Audio sintetis (WebAudio, tanpa file) ==================== */
-function createAudioEngine() {
+function createAudioEngine(onHorn) {
   let ac = null, master = null, muted = false;
   let engOsc = null, engSub = null, engGain = null, engFilter = null, roadGain = null, noiseBuf = null;
   let engineOn = false;
+
+  const telolet = createTeloletSynthesizer({
+    ensureContext: () => (ensure() ? ac : null),
+    getMaster: () => master,
+    isMuted: () => muted,
+  });
 
   function ensure() {
     if (ac) return true;
@@ -476,12 +559,22 @@ function createAudioEngine() {
     gem() {
       [1046, 1318, 1568, 2093].forEach((f, i) => tone(f, 0.18, 'triangle', 0.22, null, i * 0.055));
     },
+    playTeloletHorn(patternIndex) {
+      const ok = telolet.playTeloletHorn(patternIndex);
+      if (ok) onHorn?.();
+      return ok;
+    },
+    playTeloletFlourish() {
+      const ok = telolet.playTeloletFlourish();
+      if (ok) onHorn?.();
+      return ok;
+    },
     gameover() { [523, 440, 349, 262].forEach((f, i) => tone(f, 0.34, 'triangle', 0.26, null, i * 0.16)); },
     setMuted(m) {
       muted = m;
       if (master && ac) master.gain.setTargetAtTime(m ? 0 : 0.55, ac.currentTime, 0.05);
     },
-    dispose() { try { engOsc?.stop(); engSub?.stop(); ac?.close(); } catch {} ac = null; engOsc = null; },
+    dispose() { telolet.dispose(); try { engOsc?.stop(); engSub?.stop(); ac?.close(); } catch {} ac = null; engOsc = null; },
   };
 }
 
@@ -504,43 +597,56 @@ function TEMPLATE() {
 
   <div id="jg-menu" class="jg-overlay jg-menu">
     <div class="jg-menu-top">
-      <div class="jg-brand"><span class="jg-brand-em">🚐</span>
-        <div><h1>JURAGAN <em>NGEBUT</em></h1><span class="jg-brand-sub">MINI RACE NUSANTARA • SALATIGA</span></div>
+      <div class="jg-brand jg-flame-banner"><span class="jg-brand-em">🔥</span>
+        <div><h1>JURAGAN <em>NGEBUT</em></h1><span class="jg-brand-sub">KING OF THE ROAD • SALATIGA</span></div>
       </div>
       <div class="jg-menu-tools">
         <span id="jg-net-menu" class="jg-net solo">● SOLO • AI MODE</span>
         <button id="jg-audio-menu" class="jg-icon" aria-pressed="true">🔊</button>
       </div>
     </div>
-    <div class="jg-panel jg-menu-card">
-      <div class="jg-name-row">
-        <label for="jg-name-input">Nama Juragan</label>
-        <input id="jg-name-input" class="jg-input" type="text" maxlength="18" placeholder="Tulis namamu di trek…" autocomplete="off" />
+    <div class="jg-menu-stage">
+      <div class="jg-panel jg-menu-card">
+        <div class="jg-flame-marquee">
+          <span class="jg-flame-badge">🔥 KING OF THE ROAD SALATIGA</span>
+          <span class="jg-flame-sub">STUNT ARENA • 1:64 DIE-CAST EDITION</span>
+        </div>
+        <div class="jg-name-row">
+          <label for="jg-name-input">Nama Juragan</label>
+          <input id="jg-name-input" class="jg-input" type="text" maxlength="18" placeholder="Tulis namamu di trek…" autocomplete="off" />
+        </div>
+        <div class="jg-menu-section">
+          <div class="jg-menu-head">
+            <h2>Pilih Armada</h2><span id="jg-best-menu" class="jg-chip gold">🏆 Rekor: 0</span>
+          </div>
+          <div id="jg-fleet" class="jg-fleet"></div>
+        </div>
+        <div class="jg-menu-section">
+          <div class="jg-menu-head"><h2>Pilih Kamar Server</h2><span id="jg-room-active" class="jg-chip live-room">🌐 SALATIGA-1</span></div>
+          <div id="jg-rooms" class="jg-rooms"></div>
+          <div class="jg-private-row">
+            <input id="jg-room-input" class="jg-input" type="text" maxlength="20" placeholder="Buat / Gabung Kamar Privat (cth: KOP-88 atau SALATIGA)…" autocomplete="off" />
+            <button id="jg-room-join" class="jg-btn small" type="button">Gabung 🔒</button>
+          </div>
+        </div>
+        <div class="jg-menu-section">
+          <div class="jg-menu-head"><h2>Tingkat Ngebut</h2><span id="jg-diff-note" class="jg-chip">3 nyawa • skor ×1.0</span></div>
+          <div id="jg-diffs" class="jg-diffs"></div>
+        </div>
+        <button id="jg-start" class="jg-btn primary big">GAS! 🏁</button>
+        <div class="jg-legend">
+          <span><kbd>←</kbd><kbd>→</kbd> / <kbd>A</kbd><kbd>D</kbd> belok</span>
+          <span><kbd>←</kbd><kbd>→</kbd> di udara = <b>Barrel Roll</b> → Turbo</span>
+          <span><kbd>H</kbd> klakson telolet • <kbd>P</kbd> jeda • <kbd>R</kbd> ulang • <kbd>M</kbd> suara</span>
+          <span>📱 Sentuh pads kiri/kanan di layar</span>
+        </div>
+        <div class="jg-objective">🎯 Kumpulkan koin &amp; buah segar, salip ketat, hajar ramp, dan raih rantai stunt. Checkpoint tiap 500 m memberi bonus!</div>
       </div>
-      <div class="jg-menu-head">
-        <h2>Pilih Armada</h2><span id="jg-best-menu" class="jg-chip gold">🏆 Rekor: 0</span>
-      </div>
-      <div id="jg-fleet" class="jg-fleet"></div>
-      <div class="jg-menu-head mt"><h2>Pilih Kamar Server</h2><span id="jg-room-active" class="jg-chip live-room">🌐 SALATIGA-1</span></div>
-      <div id="jg-rooms" class="jg-rooms"></div>
-      <div class="jg-private-row">
-        <input id="jg-room-input" class="jg-input" type="text" maxlength="20" placeholder="Buat / Gabung Kamar Privat (cth: KOP-88 atau SALATIGA)…" autocomplete="off" />
-        <button id="jg-room-join" class="jg-btn small" type="button">Gabung 🔒</button>
-      </div>
-      <div class="jg-menu-head mt"><h2>Tingkat Ngebut</h2><span id="jg-diff-note" class="jg-chip">3 nyawa • skor ×1.0</span></div>
-      <div id="jg-diffs" class="jg-diffs"></div>
-      <button id="jg-start" class="jg-btn primary big">GAS! 🏁</button>
-      <div class="jg-legend">
-        <span><kbd>←</kbd><kbd>→</kbd> / <kbd>A</kbd><kbd>D</kbd> belok</span>
-        <span><kbd>←</kbd><kbd>→</kbd> di udara = <b>Barrel Roll</b> → Turbo</span>
-        <span><kbd>P</kbd> jeda • <kbd>R</kbd> ulang • <kbd>M</kbd> suara</span>
-        <span>📱 Sentuh pads kiri/kanan di layar</span>
-      </div>
-      <div class="jg-objective">🎯 Kumpulkan koin &amp; buah segar, salip ketat, hajar ramp, dan raih rantai stunt. Checkpoint tiap 500 m memberi bonus!</div>
     </div>
   </div>
 
   <div id="jg-hud" class="jg-hud">
+    <canvas id="jg-speedlines" class="jg-speedlines" aria-hidden="true"></canvas>
     <div class="jg-hud-left jg-panel">
       <div class="jg-score-lbl">SKOR</div>
       <div id="jg-score" class="jg-score">0</div>
@@ -570,6 +676,10 @@ function TEMPLATE() {
     <div id="jg-airhint" class="jg-airhint">⬅️ TAHAN KIRI / KANAN ➡️ UNTUK BARREL ROLL!</div>
     <div id="jg-toasts" class="jg-toasts"></div>
     <div id="jg-pad-l" class="jg-pad left" aria-label="Belok kiri">◀</div>
+    <button id="jg-telolet" class="jg-telolet" type="button" aria-label="Klakson Telolet Basuri (H)" title="Klakson Telolet Basuri (H)">
+      <span class="jg-telolet-em">🎺</span>
+      <span class="jg-telolet-lbl">Telolet <kbd>H</kbd></span>
+    </button>
     <div id="jg-pad-r" class="jg-pad right" aria-label="Belok kanan">▶</div>
     <div id="jg-crash" class="jg-crash"></div>
   </div>
@@ -624,16 +734,16 @@ function injectStyles() {
   #jg-root *{scrollbar-width:thin;scrollbar-color:var(--jg-amber) rgba(59,47,47,.07)}
   #jg-root kbd{background:var(--jg-paper);border:1px solid var(--jg-line);border-bottom-width:2px;border-radius:5px;padding:1px 6px;font-size:10.5px;font-family:var(--jg-body)}
   .jg-panel{background:var(--jg-surface);border:2px solid var(--jg-line);border-radius:18px;box-shadow:var(--jg-shadow);backdrop-filter:blur(12px)}
-  .jg-chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:800;background:var(--jg-paper);border:1.5px solid var(--jg-line);border-radius:99px;padding:4px 10px;color:var(--jg-soft);font-variant-numeric:tabular-nums}
+  .jg-chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:800;background:var(--jg-paper);border:1.5px solid var(--jg-line);border-radius:99px;padding:5px 12px;color:var(--jg-soft);font-variant-numeric:tabular-nums}
   .jg-chip.gold{background:linear-gradient(135deg,var(--jg-amber),var(--jg-orange));color:#fff;border-color:var(--jg-orange)}
   .jg-chip.coin{background:linear-gradient(135deg,#fff3bf,#ffd166);color:#6e3f00;border-color:#f4a261}
   .jg-chip.coin b{font-family:var(--jg-disp);font-weight:700}
   .jg-chip.coin.pop{animation:jgCoinPop .28s cubic-bezier(.2,.9,.3,1.4)}
-  .jg-btn{pointer-events:auto;border:2px solid var(--jg-line);background:var(--jg-paper);color:var(--jg-ink);font-weight:800;font-size:13.5px;border-radius:14px;padding:12px 18px;transition:transform .14s,background .2s,border-color .2s;box-shadow:0 6px 16px rgba(122,72,20,.14)}
+  .jg-btn{pointer-events:auto;border:2px solid var(--jg-line);background:var(--jg-paper);color:var(--jg-ink);font-weight:800;font-size:14px;border-radius:14px;padding:12px 18px;transition:transform .14s,background .2s,border-color .2s;box-shadow:0 6px 16px rgba(122,72,20,.14)}
   .jg-btn:hover{transform:translateY(-2px);border-color:var(--jg-amber)}
   .jg-btn:active{transform:scale(.96)}
   .jg-btn.primary{background:linear-gradient(135deg,var(--jg-amber),var(--jg-orange));color:#fff;border-color:var(--jg-orange);text-shadow:0 1px 2px rgba(120,60,0,.35)}
-  .jg-btn.big{width:100%;font-size:19px;font-family:var(--jg-disp);font-weight:700;padding:15px;margin-top:14px;letter-spacing:.5px}
+  .jg-btn.big{width:100%;font-size:1.25rem;font-family:var(--jg-disp);font-weight:700;padding:14px 28px;margin-top:2px;letter-spacing:.5px}
   .jg-btn.icon{flex:none;width:52px}
   .jg-btn-row{display:flex;gap:8px;margin-top:9px}
   .jg-btn-row .jg-btn{flex:1}
@@ -659,58 +769,67 @@ function injectStyles() {
   /* Overlay umum */
   .jg-overlay{position:fixed;inset:0;pointer-events:none;opacity:0;visibility:hidden;transition:opacity .35s,visibility .35s}
   .jg-overlay.show{opacity:1;visibility:visible;pointer-events:auto}
-  .jg-menu{display:flex;flex-direction:column;padding:16px;gap:12px;background:radial-gradient(120% 90% at 50% 0%,rgba(255,229,204,.55),rgba(255,243,224,.82));overflow-y:auto}
-  .jg-menu-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none}
-  .jg-brand{display:flex;align-items:center;gap:11px}
-  .jg-brand-em{font-size:38px;filter:drop-shadow(0 4px 7px rgba(122,72,20,.3))}
-  .jg-brand h1{font-family:var(--jg-disp);font-weight:700;font-size:clamp(21px,3.6vw,32px);line-height:1}
+  .jg-menu{display:flex;flex-direction:column;align-items:center;padding:18px 20px;gap:14px;background:radial-gradient(120% 90% at 50% 0%,rgba(255,229,204,.55),rgba(255,243,224,.82));overflow-y:auto}
+  .jg-menu-top{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;max-width:1200px;flex:none}
+  .jg-menu-stage{flex:1;width:100%;display:flex;align-items:center;justify-content:center;padding:4px 0 12px}
+  .jg-brand{display:flex;align-items:center;gap:12px}
+  .jg-flame-banner{background:linear-gradient(125deg,#d00000 0%,#ff6b00 54%,#ffbe0b 100%);padding:10px 18px;border-radius:18px;border:2.5px solid #fff3bf;box-shadow:0 10px 26px rgba(208,0,0,.35)}
+  .jg-flame-banner h1{color:#fff;text-shadow:0 3px 0 #7f1d1d,0 5px 14px rgba(0,0,0,.35)}
+  .jg-flame-banner h1 em{color:#ffe600}
+  .jg-flame-banner .jg-brand-sub{color:#fff8eb;opacity:.95}
+  .jg-brand-em{font-size:38px;filter:drop-shadow(0 4px 7px rgba(122,72,20,.35))}
+  .jg-brand h1{font-family:var(--jg-disp);font-weight:700;font-size:clamp(1.45rem,3.2vw,2.1rem);line-height:1.05}
   .jg-brand h1 em{font-style:normal;color:var(--jg-red)}
-  .jg-brand-sub{font-size:10px;font-weight:800;letter-spacing:1.8px;color:var(--jg-soft)}
+  .jg-brand-sub{display:block;margin-top:3px;font-size:10.5px;font-weight:800;letter-spacing:1.8px;color:var(--jg-soft)}
   .jg-menu-tools{display:flex;gap:8px}
-  .jg-menu-card{width:min(760px,100%);margin:auto;padding:20px;max-height:calc(100vh - 120px);overflow-y:auto}
-  .jg-menu-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px}
-  .jg-menu-head.mt{margin-top:16px}
-  .jg-menu-head h2{font-family:var(--jg-disp);font-weight:600;font-size:19px}
-  .jg-fleet{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
-  .jg-card{position:relative;pointer-events:auto;display:flex;flex-direction:column;align-items:flex-start;gap:3px;text-align:left;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:15px;padding:11px;transition:transform .16s,border-color .2s,box-shadow .2s}
+  .jg-menu-card{display:flex;flex-direction:column;gap:16px;max-width:780px;width:92%;margin:auto;padding:24px 28px;max-height:calc(100vh - 96px);overflow-y:auto;border-color:rgba(255,107,0,.45)}
+  .jg-flame-marquee{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:11px 16px;border-radius:14px;background:linear-gradient(90deg,#d00000 0%,#ff5400 52%,#ffbe0b 100%);color:#fff;box-shadow:0 8px 20px rgba(255,84,0,.28);border:2px solid #fff3bf}
+  .jg-flame-badge{font-family:var(--jg-disp);font-weight:700;font-size:1.08rem;letter-spacing:.7px;text-shadow:0 2px 0 rgba(120,20,0,.6)}
+  .jg-flame-sub{font-size:11px;font-weight:800;letter-spacing:1.4px;background:rgba(34,24,24,.32);padding:4px 10px;border-radius:99px;color:#fff8eb}
+  .jg-menu-section{display:flex;flex-direction:column;gap:10px}
+  .jg-menu-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .jg-menu-head h2{font-family:var(--jg-disp);font-weight:600;font-size:1.1rem}
+  .jg-fleet{display:grid;grid-template-columns:repeat(4,1fr);gap:11px}
+  .jg-card{position:relative;pointer-events:auto;display:flex;flex-direction:column;align-items:flex-start;gap:5px;text-align:left;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:16px;padding:13px 14px;transition:transform .16s,border-color .2s,box-shadow .2s}
   .jg-card:hover{transform:translateY(-3px);border-color:var(--jg-amber)}
   .jg-card.on{border-color:var(--jg-orange);box-shadow:0 0 0 3px rgba(255,197,61,.35),0 10px 22px rgba(122,72,20,.2);background:linear-gradient(160deg,#fff8eb,#ffefd6)}
-  .jg-card-em{font-size:27px}
-  .jg-card-name{font-family:var(--jg-disp);font-weight:600;font-size:14.5px;line-height:1.1}
-  .jg-card-tag{font-size:10px;font-weight:700;color:var(--jg-orange);line-height:1.25;min-height:24px}
-  .jg-card-check{position:absolute;top:8px;right:9px;width:19px;height:19px;border-radius:99px;background:var(--jg-orange);color:#fff;font-size:11px;display:none;place-items:center}
+  .jg-card-em{font-size:29px}
+  .jg-card-name{font-family:var(--jg-disp);font-weight:600;font-size:1rem;line-height:1.15}
+  .jg-card-tag{font-size:11.5px;font-weight:700;color:var(--jg-orange);line-height:1.3;min-height:30px}
+  .jg-card-check{position:absolute;top:9px;right:10px;width:20px;height:20px;border-radius:99px;background:var(--jg-orange);color:#fff;font-size:11px;display:none;place-items:center}
   .jg-card.on .jg-card-check{display:grid}
-  .jg-bars{display:flex;flex-direction:column;gap:3px;width:100%;margin-top:4px}
+  .jg-bars{display:flex;flex-direction:column;gap:4px;width:100%;margin-top:4px}
   .jg-bar{display:flex;align-items:center;gap:5px}
-  .jg-bar i{font-style:normal;font-size:8px;font-weight:800;color:var(--jg-soft);width:22px}
+  .jg-bar i{font-style:normal;font-size:8.5px;font-weight:800;color:var(--jg-soft);width:24px}
   .jg-bar b{flex:1;height:5px;border-radius:99px;background:rgba(59,47,47,.1);overflow:hidden}
   .jg-bar u{display:block;height:100%;border-radius:99px}
-  .jg-diffs{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-  .jg-diff{pointer-events:auto;display:flex;align-items:center;justify-content:center;gap:6px;font-weight:800;font-size:13px;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:13px;padding:11px;transition:transform .15s,border-color .2s}
+  .jg-diffs{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .jg-diff{pointer-events:auto;display:flex;align-items:center;justify-content:center;gap:7px;font-weight:800;font-size:.96rem;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:14px;padding:12px 14px;transition:transform .15s,border-color .2s}
   .jg-diff:hover{transform:translateY(-2px);border-color:var(--jg-amber)}
   .jg-diff.on{background:linear-gradient(135deg,var(--jg-amber),var(--jg-orange));color:#fff;border-color:var(--jg-orange)}
-  .jg-name-row{display:flex;align-items:center;gap:10px;margin-bottom:13px;padding-bottom:12px;border-bottom:1.5px dashed var(--jg-line)}
-  .jg-name-row label{font-family:var(--jg-disp);font-weight:600;font-size:15px;white-space:nowrap}
-  .jg-input{pointer-events:auto;user-select:text;flex:1;min-width:0;font-family:var(--jg-body);font-weight:700;font-size:13px;color:var(--jg-ink);background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:12px;padding:9px 12px;outline:none;transition:border-color .2s,box-shadow .2s}
+  .jg-name-row{display:flex;align-items:center;gap:12px;padding-bottom:14px;border-bottom:1.5px dashed var(--jg-line)}
+  .jg-name-row label{font-family:var(--jg-disp);font-weight:600;font-size:1.1rem;white-space:nowrap}
+  .jg-input{pointer-events:auto;user-select:text;flex:1;min-width:0;font-family:var(--jg-body);font-weight:700;font-size:14px;color:var(--jg-ink);background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:12px;padding:10px 14px;outline:none;transition:border-color .2s,box-shadow .2s}
   .jg-input:focus{border-color:var(--jg-blue);box-shadow:0 0 0 3px rgba(58,134,255,.2)}
   .jg-chip.live-room{background:rgba(236,253,245,.95);border-color:rgba(16,185,129,.45);color:#0f766e}
-  .jg-rooms{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-  .jg-room-btn{pointer-events:auto;display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:13px;padding:9px 11px;transition:transform .15s,border-color .2s,box-shadow .2s}
+  .jg-rooms{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .jg-room-btn{pointer-events:auto;display:flex;flex-direction:column;align-items:flex-start;gap:4px;text-align:left;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:14px;padding:11px 13px;transition:transform .15s,border-color .2s,box-shadow .2s}
   .jg-room-btn:hover{transform:translateY(-2px);border-color:var(--jg-amber)}
   .jg-room-btn.on{border-color:var(--jg-green);background:linear-gradient(160deg,#ecfdf5,#d1fae5);box-shadow:0 0 0 3px rgba(56,176,0,.18)}
-  .jg-room-name{font-family:var(--jg-disp);font-weight:600;font-size:13.5px;color:var(--jg-ink)}
-  .jg-room-name small{font-family:var(--jg-body);font-size:10px;font-weight:700;color:var(--jg-soft)}
-  .jg-room-cnt{font-size:10.5px;font-weight:800;color:#0f766e}
-  .jg-private-row{display:flex;gap:8px;margin-top:8px}
-  .jg-btn.small{padding:9px 14px;font-size:12.5px;border-radius:12px;white-space:nowrap}
-  .jg-legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:13px;font-size:11px;font-weight:700;color:var(--jg-soft)}
+  .jg-room-name{font-family:var(--jg-disp);font-weight:600;font-size:1rem;color:var(--jg-ink)}
+  .jg-room-name small{font-family:var(--jg-body);font-size:11.5px;font-weight:700;color:var(--jg-soft)}
+  .jg-room-cnt{font-size:11.5px;font-weight:800;color:#0f766e}
+  .jg-private-row{display:flex;gap:10px}
+  .jg-btn.small{padding:10px 16px;font-size:13.5px;border-radius:12px;white-space:nowrap}
+  .jg-legend{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:12.5px;font-weight:700;line-height:1.45;color:var(--jg-soft)}
   .jg-legend b{color:var(--jg-red)}
-  .jg-objective{margin-top:11px;font-size:11.5px;font-weight:700;line-height:1.5;color:var(--jg-soft);background:rgba(63,163,77,.1);border:1.5px solid rgba(63,163,77,.3);border-radius:12px;padding:9px 12px}
+  .jg-objective{font-size:12.5px;font-weight:700;line-height:1.55;color:var(--jg-soft);background:rgba(63,163,77,.1);border:1.5px solid rgba(63,163,77,.3);border-radius:13px;padding:11px 14px}
 
   /* HUD */
   .jg-hud{position:fixed;inset:0;opacity:0;visibility:hidden;transition:opacity .3s,visibility .3s}
   .jg-hud.show{opacity:1;visibility:visible}
-  .jg-hud-left{position:absolute;top:14px;left:14px;padding:12px 14px;min-width:172px}
+  .jg-speedlines{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:4}
+  .jg-hud-left{position:absolute;top:14px;left:14px;padding:12px 14px;min-width:172px;z-index:10}
   .jg-score-lbl{font-size:9.5px;font-weight:800;letter-spacing:2px;color:var(--jg-soft)}
   .jg-score{font-family:var(--jg-disp);font-weight:700;font-size:34px;line-height:1;color:var(--jg-ink)}
   .jg-row{display:flex;gap:5px;margin-top:7px;flex-wrap:wrap}
@@ -743,15 +862,21 @@ function injectStyles() {
   .jg-banner-pts{font-family:var(--jg-disp);font-weight:700;font-size:clamp(18px,3.4vw,28px);color:var(--jg-amber);text-shadow:0 2px 8px rgba(122,72,20,.6)}
   .jg-airhint{position:absolute;top:32%;left:50%;transform:translateX(-50%);opacity:0;transition:opacity .25s;font-size:12.5px;font-weight:800;color:var(--jg-ink);background:var(--jg-surface);border:2px solid var(--jg-amber);border-radius:99px;padding:8px 16px;box-shadow:var(--jg-shadow);white-space:nowrap}
   .jg-airhint.show{opacity:1;animation:jgFloat 1.1s ease-in-out infinite}
-  .jg-toasts{position:absolute;left:50%;bottom:150px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:6px}
-  .jg-toast{font-size:12px;font-weight:800;background:var(--jg-surface);border:2px solid var(--jg-line);border-radius:99px;padding:8px 15px;box-shadow:var(--jg-shadow);backdrop-filter:blur(8px);animation:jgToastIn .3s cubic-bezier(.2,.9,.3,1.4);transition:opacity .3s,transform .3s}
+  .jg-toasts{position:fixed;left:24px;bottom:135px;transform:none;display:flex;flex-direction:column;align-items:flex-start;gap:6px;max-width:min(320px,calc(100vw - 48px));pointer-events:none;z-index:20}
+  .jg-toast{font-size:11.5px;font-weight:800;line-height:1.3;text-align:left;background:var(--jg-surface);border:2px solid var(--jg-line);border-radius:14px;padding:7px 13px;box-shadow:0 10px 24px rgba(122,72,20,.18);backdrop-filter:blur(8px);animation:jgToastIn .28s cubic-bezier(.2,.9,.3,1.3);transition:opacity .32s ease,transform .32s ease}
   .jg-toast.good{border-color:var(--jg-green);color:#2b7a38}
   .jg-toast.warn{border-color:var(--jg-orange);color:#b45309}
   .jg-toast.bad{border-color:var(--jg-red);color:#b3261e}
-  .jg-toast.out{opacity:0;transform:translateY(-8px)}
+  .jg-toast.out{opacity:0;transform:translateY(-14px)}
   .jg-pad{position:absolute;bottom:22px;width:104px;height:104px;border-radius:32px;display:none;place-items:center;font-size:34px;color:var(--jg-ink);background:var(--jg-surface);border:2px solid var(--jg-line);box-shadow:var(--jg-shadow);backdrop-filter:blur(10px);pointer-events:auto;user-select:none;-webkit-user-select:none;touch-action:none;transition:transform .1s,background .12s}
   .jg-pad.left{left:22px}.jg-pad.right{right:22px}
   .jg-pad.on{background:linear-gradient(135deg,var(--jg-amber),var(--jg-orange));color:#fff;transform:scale(.94)}
+  .jg-telolet{position:absolute;bottom:22px;left:50%;transform:translateX(-50%);display:inline-flex;align-items:center;gap:7px;padding:10px 16px;border-radius:99px;border:2px solid var(--jg-orange);background:linear-gradient(135deg,#fff3bf,#ffd166);color:#6e3f00;font-family:var(--jg-disp);font-weight:700;font-size:14px;box-shadow:var(--jg-shadow);pointer-events:auto;user-select:none;-webkit-user-select:none;touch-action:none;transition:transform .12s,box-shadow .15s}
+  .jg-telolet:hover{transform:translateX(-50%) translateY(-2px)}
+  .jg-telolet:active{transform:translateX(-50%) scale(.93)}
+  .jg-telolet.honk{animation:jgHornPop .34s cubic-bezier(.2,.9,.3,1.5)}
+  .jg-telolet-em{font-size:20px;line-height:1}
+  .jg-telolet-lbl{display:inline-flex;align-items:center;gap:5px}
   .jg-crash{position:absolute;inset:0;opacity:0;background:radial-gradient(120% 90% at 50% 50%,transparent 40%,rgba(229,72,77,.55));pointer-events:none}
   .jg-crash.on{animation:jgCrash .45s ease-out}
 
@@ -777,22 +902,26 @@ function injectStyles() {
   @keyframes jgRoad{to{background-position:-30px 0}}
   @keyframes jgPop{from{transform:scale(.7);opacity:0}to{transform:scale(1);opacity:1}}
   @keyframes jgCoinPop{0%{transform:scale(1)}45%{transform:scale(1.18)}100%{transform:scale(1)}}
-  @keyframes jgToastIn{from{transform:translateY(12px);opacity:0}to{transform:none;opacity:1}}
+  @keyframes jgHornPop{0%{transform:translateX(-50%) scale(1)}35%{transform:translateX(-50%) scale(1.18) rotate(-4deg)}70%{transform:translateX(-50%) scale(1.08) rotate(3deg)}100%{transform:translateX(-50%) scale(1)}}
+  @keyframes jgToastIn{from{transform:translateY(10px);opacity:0}to{transform:translateY(0);opacity:1}}
   @keyframes jgBlink{50%{opacity:.35}}
   @keyframes jgFloat{50%{transform:translateX(-50%) translateY(-5px)}}
   @keyframes jgCrash{0%{opacity:1}100%{opacity:0}}
 
   @media (pointer:coarse),(max-width:860px){
     .jg-pad{display:grid}
-    .jg-toasts{bottom:142px}
+    .jg-telolet{bottom:26px;padding:10px 14px;font-size:13px}
+    .jg-telolet kbd{display:none}
+    .jg-toasts{left:20px;bottom:140px}
   }
   @media (max-width:720px){
     .jg-fleet{grid-template-columns:1fr 1fr}
     .jg-rooms{grid-template-columns:1fr}
-    .jg-name-row{flex-direction:column;align-items:stretch;gap:6px}
+    .jg-name-row{flex-direction:column;align-items:stretch;gap:8px}
     .jg-card-tag{min-height:0}
-    .jg-menu-card{padding:15px;max-height:none}
-    .jg-menu{padding:12px}
+    .jg-menu-stage{align-items:flex-start;padding:0 0 8px}
+    .jg-menu-card{width:100%;padding:18px 16px;gap:14px;max-height:none}
+    .jg-menu{padding:12px;gap:10px}
     .jg-brand-sub{display:none}
     .jg-hud-left{min-width:140px;padding:10px;top:10px;left:10px}
     .jg-score{font-size:26px}
@@ -802,7 +931,8 @@ function injectStyles() {
     .jg-net{font-size:8.5px;padding:5px 8px}
     .jg-pad{width:88px;height:88px;bottom:16px}
     .jg-pad.left{left:14px}.jg-pad.right{right:14px}
-    .jg-legend{font-size:10px}
+    .jg-toasts{left:14px;bottom:118px;max-width:calc(100vw - 28px)}
+    .jg-legend{font-size:11px}
     .jg-airhint{font-size:10.5px;padding:7px 12px;max-width:92vw;white-space:normal;text-align:center}
   }
   @media (prefers-reduced-motion:reduce){#jg-root *{animation-duration:.01ms!important;transition-duration:.01ms!important}}
