@@ -36,6 +36,7 @@ async function init() {
     onStart: () => loop?.start(),
     onPause: () => loop?.pause(),
     onResume: () => loop?.resume(),
+    onContinue: () => loop?.continueLap(),
     onRestart: () => loop?.start(),
     onMenu: () => loop?.toMenu(),
     onDifficulty: (id) => loop?.setDifficulty(id),

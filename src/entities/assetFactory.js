@@ -1063,8 +1063,8 @@ export function disposeAssetCache() {
   if (dracoLoader) { dracoLoader.dispose(); dracoLoader = null; gltfLoader = null; }
 }
 
-/** Pita neon 3D zero-GC di belakang kendaraan (untuk P1-P4) */
-export function createNeonRibbonTrail(scene, hexColor = '#00e5ff', halfWidth = 0.56) {
+/** Pita neon 3D zero-GC di belakang kendaraan (untuk P1-P4), menyala api oranye-emas saat boost/roll */
+export function createNeonRibbonTrail(scene, hexColor = '#ff2a4b', halfWidth = 0.56) {
   const N = 22;
   const positions = new Float32Array(N * 2 * 3);
   const colors = new Float32Array(N * 2 * 3);
@@ -1084,7 +1084,7 @@ export function createNeonRibbonTrail(scene, hexColor = '#00e5ff', halfWidth = 0
   const mat = new THREE.MeshBasicMaterial({
     vertexColors: true,
     transparent: true,
-    opacity: 0.72,
+    opacity: 0.78,
     blending: THREE.AdditiveBlending,
     side: THREE.DoubleSide,
     depthWrite: false,
@@ -1096,24 +1096,38 @@ export function createNeonRibbonTrail(scene, hexColor = '#00e5ff', halfWidth = 0
   scene.add(mesh);
 
   const baseCol = new THREE.Color(hexColor);
+  const fireHead = new THREE.Color('#fff3b0');
+  const fireMid = new THREE.Color('#ffbe0b');
+  const fireTail = new THREE.Color('#ff4800');
+  const _tmpCol = new THREE.Color();
+  let boostMode = false;
   let initialized = false;
   let lastDistSq = 0;
 
   function applyColor() {
     for (let i = 0; i < N; i++) {
-      const fade = Math.pow(1 - i / (N - 1), 1.65);
-      const r = baseCol.r * fade, g = baseCol.g * fade, b = baseCol.b * fade;
+      const u = i / (N - 1);
+      const fade = Math.pow(1 - u, boostMode ? 1.35 : 1.65);
+      if (boostMode) {
+        if (u < 0.35) _tmpCol.lerpColors(fireHead, fireMid, u / 0.35);
+        else _tmpCol.lerpColors(fireMid, fireTail, (u - 0.35) / 0.65);
+      } else {
+        _tmpCol.copy(baseCol);
+      }
+      const r = _tmpCol.r * fade, g = _tmpCol.g * fade, b = _tmpCol.b * fade;
       const cIdx = i * 6;
       colors[cIdx] = r; colors[cIdx + 1] = g; colors[cIdx + 2] = b;
       colors[cIdx + 3] = r; colors[cIdx + 4] = g; colors[cIdx + 5] = b;
     }
     geo.attributes.color.needsUpdate = true;
+    mat.opacity = boostMode ? 0.92 : 0.75;
   }
   applyColor();
 
   function rebuildVertices() {
+    const activeHalf = boostMode ? halfWidth * 1.32 : halfWidth;
     for (let i = 0; i < N; i++) {
-      const taper = halfWidth * (1 - (i / (N - 1)) * 0.78);
+      const taper = activeHalf * (1 - (i / (N - 1)) * 0.78);
       const cx = histPos[i * 3], cy = histPos[i * 3 + 1], cz = histPos[i * 3 + 2];
       const rx = histRight[i * 3] * taper, ry = histRight[i * 3 + 1] * taper, rz = histRight[i * 3 + 2] * taper;
       const vIdx = i * 6;
@@ -1157,6 +1171,14 @@ export function createNeonRibbonTrail(scene, hexColor = '#00e5ff', halfWidth = 0
     applyColor();
   }
 
+  function setBoostMode(on) {
+    const next = !!on;
+    if (next !== boostMode) {
+      boostMode = next;
+      applyColor();
+    }
+  }
+
   function setVisible(v) { mesh.visible = !!v; }
 
   function dispose() {
@@ -1165,6 +1187,6 @@ export function createNeonRibbonTrail(scene, hexColor = '#00e5ff', halfWidth = 0
     mat.dispose();
   }
 
-  return { update, reset, setColor, setVisible, dispose };
+  return { update, reset, setColor, setBoostMode, setVisible, dispose };
 }
 

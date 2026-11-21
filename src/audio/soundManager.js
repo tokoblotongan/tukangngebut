@@ -262,6 +262,85 @@ export function createTeloletSynthesizer({ ensureContext, getMaster, isMuted }) 
     return true;
   }
 
+  /**
+   * Suara whoosh api emas saat menembus Fire Ring di udara.
+   */
+  function playFireRing() {
+    if (isMuted?.()) return false;
+    const ac = ensureContext?.();
+    const master = getMaster?.();
+    if (!ac || !master) return false;
+    if (ac.state === 'suspended') ac.resume().catch(() => {});
+
+    const now = ac.currentTime + 0.01;
+    const notes = [587.33, 880.0, 1174.66, 1567.98];
+    let t = now;
+    for (const freq of notes) {
+      playAirHornNote(ac, master, t, freq, 0.08, 0.18, 1750);
+      t += 0.055;
+    }
+    return true;
+  }
+
+  /**
+   * Suara "bonk-klontang" plastik ceria saat menabrak tong atau kerucut mainan.
+   */
+  function playSmashProp() {
+    if (isMuted?.()) return false;
+    const ac = ensureContext?.();
+    const master = getMaster?.();
+    if (!ac || !master) return false;
+    if (ac.state === 'suspended') ac.resume().catch(() => {});
+
+    const now = ac.currentTime + 0.005;
+    const osc = ac.createOscillator();
+    const osc2 = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(340, now);
+    osc.frequency.exponentialRampToValueAtTime(115, now + 0.16);
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(520, now);
+    osc2.frequency.exponentialRampToValueAtTime(210, now + 0.14);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.26, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+
+    osc.connect(gain);
+    osc2.connect(gain);
+    gain.connect(master);
+    osc.start(now);
+    osc2.start(now);
+    osc.stop(now + 0.2);
+    osc2.stop(now + 0.2);
+    return true;
+  }
+
+  /**
+   * Fanfare podium kemenangan saat melewati garis finis Checkered Flag!
+   */
+  function playVictoryFanfare() {
+    if (isMuted?.()) return false;
+    const ac = ensureContext?.();
+    const master = getMaster?.();
+    if (!ac || !master) return false;
+    if (ac.state === 'suspended') ac.resume().catch(() => {});
+
+    const notes = [
+      { freq: 523.25, dur: 0.11, gap: 0.02 },
+      { freq: 659.25, dur: 0.11, gap: 0.02 },
+      { freq: 783.99, dur: 0.12, gap: 0.03 },
+      { freq: 1046.5, dur: 0.34, gap: 0.04 },
+    ];
+    let t = ac.currentTime + 0.01;
+    for (const n of notes) {
+      playAirHornNote(ac, master, t, n.freq, n.dur, 0.24, 1550);
+      t += n.dur + n.gap;
+    }
+    return true;
+  }
+
   function dispose() {
     stopActiveVoices();
   }
@@ -271,6 +350,9 @@ export function createTeloletSynthesizer({ ensureContext, getMaster, isMuted }) 
     playTeloletFlourish,
     playAbyssWhistle,
     playLoopWhoosh,
+    playFireRing,
+    playSmashProp,
+    playVictoryFanfare,
     dispose,
   };
 }

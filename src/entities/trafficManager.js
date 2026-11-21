@@ -118,6 +118,8 @@ export async function createTrafficManager(scene) {
     targetX: 0,
     speed: PHYSICS.baseSpeed * 1.12,
     score: 0,
+    coins: 0,
+    lastCollectZ: 999,
     airborne: false,
     rollAngle: 0,
     targetRoll: 0,
@@ -181,6 +183,8 @@ export async function createTrafficManager(scene) {
         slot.targetX = off.x;
         slot.speed = PHYSICS.baseSpeed * (1.02 + slot.skillBias);
         slot.score = 0;
+        slot.coins = 0;
+        slot.lastCollectZ = 999;
         slot.airborne = false;
         slot.rollAngle = 0;
         slot.targetRoll = 0;
@@ -191,6 +195,7 @@ export async function createTrafficManager(scene) {
         slot.rig.root.position.set(slot.x, slot.y, slot.z);
         slot.rig.mesh.quaternion.identity();
         slot.rig.mesh.rotation.set(0, 0, 0);
+        slot.ribbon.setBoostMode(false);
         slot.ribbon.reset(slot.x, slot.y + 0.35, slot.z + 1.4);
       }
     }
@@ -312,6 +317,7 @@ export async function createTrafficManager(scene) {
             fl.jets[j].scale.set(s, s, 1.15);
           }
         }
+        ai.ribbon.setBoostMode(true);
         ai.ribbon.update(ai.x, ai.y + 0.32, ai.z + 1.1, ai.rightVec.x, ai.rightVec.y, ai.rightVec.z);
 
         if (ai.loopState.u >= 1) {
@@ -390,7 +396,14 @@ export async function createTrafficManager(scene) {
         if (bestTarget) desiredX = bestTarget.x;
       }
 
-      /* Hindari mobil ambient di depan */
+      /* Hindari penghalang tengkorak & mobil ambient di depan */
+      const hazards = track?.getUpcomingHazards?.(ai.z, 24);
+      if (hazards && hazards.length > 0) {
+        const hz = hazards[0];
+        if (Math.abs(hz.laneX - desiredX) < 2.2) {
+          desiredX = hz.laneX >= 0 ? Math.max(-4.5, hz.laneX - 4.0) : Math.min(4.5, hz.laneX + 4.0);
+        }
+      }
       for (const e of active) {
         const dz = ai.z - e.z;
         if (dz > 1 && dz < 13 && Math.abs(e.x - ai.x) < 2.5) {
@@ -467,11 +480,16 @@ export async function createTrafficManager(scene) {
         }
       }
 
-      /* Simulasi skor item bila melintas dekat buah/koin */
+      /* Simulasi koin & skor item bila melintas dekat buah/koin/Fire Ring */
       for (let k = 0; k < _targetsBuf.length; k++) {
         const tg = _targetsBuf[k];
-        if (Math.abs(tg.z - ai.z) < 0.8 && Math.abs(tg.x - ai.x) < 1.6) {
-          ai.score += (tg.kind === 'gem' ? 40 : tg.kind === 'fruit' ? 25 : 8) * rawDt * 6;
+        if (Math.abs(tg.z - ai.z) < 0.75 && Math.abs(tg.x - ai.x) < 1.65 && Math.abs(tg.z - ai.lastCollectZ) > 0.9) {
+          ai.lastCollectZ = tg.z;
+          const cAdd = (tg.kind === 'ring' || tg.kind === 'gem') ? 5 : tg.kind === 'fruit' ? 2 : 1;
+          const ptsAdd = tg.kind === 'ring' ? SCORE.ringBonus : tg.kind === 'gem' ? SCORE.gemBonus : tg.kind === 'fruit' ? SCORE.fruitBonus : SCORE.coinBonus;
+          ai.coins += cAdd;
+          ai.score += ptsAdd;
+          if (tg.kind === 'ring') ai.turboTimer = 1.8;
         }
       }
 
@@ -498,6 +516,7 @@ export async function createTrafficManager(scene) {
         }
       }
 
+      ai.ribbon.setBoostMode(ai.turboTimer > 0 || ai.airborne);
       ai.ribbon.update(ai.x, ai.y + 0.34, ai.z + 1.3, ai.rightVec.x, ai.rightVec.y, ai.rightVec.z);
     }
   }
@@ -603,6 +622,7 @@ export async function createTrafficManager(scene) {
         name: ai.name,
         type: ai.type,
         z: ai.z,
+        coins: Math.round(ai.coins),
         score: Math.round(ai.score),
         slotColor: ai.slotColor,
         isAI: true,

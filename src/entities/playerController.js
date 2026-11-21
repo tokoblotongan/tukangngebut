@@ -126,6 +126,15 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
     return true;
   }
 
+  function triggerBoostSurge(duration = PHYSICS.turbo.duration, speedBoost = 5) {
+    turboTimer = Math.max(turboTimer, duration);
+    speed = Math.min(topSpeed() * 1.15, speed + speedBoost);
+  }
+
+  function bounceProp() {
+    suspVel = Math.max(-4.5, suspVel - 2.6);
+  }
+
   function updateFlames(dt, active) {
     const flames = group?.userData?.flames;
     if (!flames?.group) return;
@@ -172,7 +181,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
       }
       return {
         pos, speed, airborne: true, stuntBonus: 0,
-        turbo: false, rollAngle: 0, totalStunt,
+        turbo: false, inBoost: false, rollAngle: 0, totalStunt,
         inLoop: false, loopCenterZ: 0, falling: false, respawning: true, rightVec,
       };
     }
@@ -196,7 +205,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
       }
       return {
         pos, speed, airborne: true, stuntBonus: 0,
-        turbo: false, rollAngle, totalStunt,
+        turbo: false, inBoost: false, rollAngle, totalStunt,
         inLoop: false, loopCenterZ: 0, falling: true, respawning: false, rightVec,
       };
     }
@@ -251,14 +260,14 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
         callbacks.onLoopComplete?.();
         return {
           pos, speed: loopSpeed, airborne: false, stuntBonus,
-          turbo: true, rollAngle: 0, totalStunt,
+          turbo: true, inBoost: true, rollAngle: 0, totalStunt,
           inLoop: false, loopCenterZ, falling: false, respawning: false, rightVec,
         };
       }
 
       return {
         pos, speed: loopSpeed, airborne: false, stuntBonus,
-        turbo: true, rollAngle: 0, totalStunt,
+        turbo: true, inBoost: true, rollAngle: 0, totalStunt,
         inLoop: true, loopCenterZ, falling: false, respawning: false, rightVec,
       };
     }
@@ -291,7 +300,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
       }
       return {
         pos, speed: effSpeed, airborne: false, stuntBonus: 0,
-        turbo: true, rollAngle: 0, totalStunt,
+        turbo: true, inBoost: true, rollAngle: 0, totalStunt,
         inLoop: true, loopCenterZ: (zStart + zEnd) * 0.5, falling: false, respawning: false, rightVec,
       };
     }
@@ -309,7 +318,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
         triggerAbyssFall(surf.type);
         return {
           pos, speed: effSpeed, airborne: true, stuntBonus: 0,
-          turbo: false, rollAngle, totalStunt,
+          turbo: false, inBoost: false, rollAngle, totalStunt,
           inLoop: false, loopCenterZ: 0, falling: true, respawning: false, rightVec,
         };
       }
@@ -351,7 +360,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
           triggerAbyssFall(surf.type);
           return {
             pos, speed: effSpeed, airborne: true, stuntBonus: 0,
-            turbo: false, rollAngle, totalStunt,
+            turbo: false, inBoost: false, rollAngle, totalStunt,
             inLoop: false, loopCenterZ: 0, falling: true, respawning: false, rightVec,
           };
         }
@@ -400,7 +409,9 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
 
     return {
       pos, speed: effSpeed, airborne, stuntBonus,
-      turbo: turboActive, rollAngle, totalStunt,
+      turbo: turboActive,
+      inBoost: turboActive || (airborne && Math.abs(rollAngle) > 0.25),
+      rollAngle, totalStunt,
       inLoop: false, loopCenterZ: 0, falling: false, respawning: false, rightVec,
     };
   }
@@ -424,5 +435,8 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
   function dispose() { if (group) scene.remove(group); }
 
   reset();
-  return { updatePlayer, reset, hitObstacle, setVehicle, getState, dispose, get group() { return group; } };
+  return {
+    updatePlayer, reset, hitObstacle, triggerBoostSurge, bounceProp, setVehicle, getState, dispose,
+    get group() { return group; },
+  };
 }

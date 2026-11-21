@@ -204,6 +204,7 @@ export function createMultiplayerHook({
       rollAngle: +payload.rollAngle || 0,
       speed: +payload.speed || 0,
       score: +payload.score || 0,
+      coins: Math.round(+payload.coins || 0),
       turbo: !!payload.turbo,
       state: payload.state || 'PLAYING',
       seen: performance.now() / 1000,
@@ -311,7 +312,7 @@ export function createMultiplayerHook({
                 name: meta.name || 'Juragan',
                 vehicleType: vType,
                 vehicle: vType,
-                x: 0, y: 0, z: 0, rollAngle: 0, speed: 0, score: 0,
+                x: 0, y: 0, z: 0, rollAngle: 0, speed: 0, score: 0, coins: 0,
                 state: 'MENU',
                 seen: performance.now() / 1000,
               });
@@ -422,6 +423,7 @@ export function createMultiplayerHook({
       rollAngle: round(playerState?.rollAngle),
       speed: round(playerState?.speed),
       score: Math.round(playerState?.score || 0),
+      coins: Math.round(playerState?.coins || 0),
       turbo: !!playerState?.turbo,
       state: playerState?.state || 'MENU',
     };
@@ -586,6 +588,7 @@ export function createMultiplayerHook({
         }
       }
       const ry = entry.vehicleMesh?.rotation?.y || 0;
+      entry.ribbon?.setBoostMode(!!p.turbo || Math.abs(p.rollAngle || 0) > 0.35);
       entry.ribbon?.update(
         entry.root.position.x,
         entry.root.position.y + 0.34,

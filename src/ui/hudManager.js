@@ -42,8 +42,11 @@ export function createHUD(opts = {}) {
     banner: $('jg-banner'), bannerTitle: $('jg-banner-title'), bannerPts: $('jg-banner-pts'),
     airHint: $('jg-airhint'), toasts: $('jg-toasts'), net: $('jg-net'), netMenu: $('jg-net-menu'),
     pause: $('jg-pause'), over: $('jg-over'), podium: $('jg-podium'),
+    warnings: $('jg-warnings'), warnL: $('jg-warn-l'), warnC: $('jg-warn-c'), warnR: $('jg-warn-r'),
+    progressDots: $('jg-progress-dots'),
     overScore: $('jg-over-score'), overDist: $('jg-over-dist'), overRolls: $('jg-over-rolls'),
     overCoins: $('jg-over-coins'), overBest: $('jg-over-best'), overRecord: $('jg-over-record'), overTitle: $('jg-over-title'),
+    btnOverContinue: $('jg-over-continue'), btnOverRestart: $('jg-over-restart'),
     btnAudio: $('jg-audio'), btnAudioMenu: $('jg-audio-menu'), btnAudioPause: $('jg-audio-pause'),
     btnQuality: $('jg-quality'), btnPause: $('jg-pause-btn'),
     padL: $('jg-pad-l'), padR: $('jg-pad-r'), telolet: $('jg-telolet'), crashFlash: $('jg-crash'),
@@ -224,6 +227,7 @@ export function createHUD(opts = {}) {
   $('jg-resume').addEventListener('click', () => { sfx.ui(); opts.onResume?.(); });
   $('jg-pause-restart').addEventListener('click', () => { sfx.ui(); opts.onRestart?.(); });
   $('jg-pause-menu').addEventListener('click', () => { sfx.ui(); opts.onMenu?.(); });
+  $('jg-over-continue')?.addEventListener('click', () => { sfx.ui(); opts.onContinue?.(); });
   $('jg-over-restart').addEventListener('click', () => { sfx.ui(); opts.onRestart?.(); });
   $('jg-over-menu').addEventListener('click', () => { sfx.ui(); opts.onMenu?.(); });
   $('jg-fatal-reload').addEventListener('click', () => location.reload());
@@ -315,6 +319,7 @@ export function createHUD(opts = {}) {
 
     showMenu(best) {
       clearSpeedLines();
+      api.setWarnings([]);
       el.menu.classList.add('show');
       el.hud.classList.remove('show');
       el.pause.classList.remove('show');
@@ -324,7 +329,7 @@ export function createHUD(opts = {}) {
     },
     hideMenu() { el.menu.classList.remove('show'); },
     showHUD() { el.hud.classList.add('show'); },
-    hideHUD() { clearSpeedLines(); el.hud.classList.remove('show'); },
+    hideHUD() { clearSpeedLines(); api.setWarnings([]); el.hud.classList.remove('show'); },
 
     updateHUD(s) {
       setText(el.score, 'score', Math.round(s.score).toLocaleString('id-ID'));
@@ -359,10 +364,40 @@ export function createHUD(opts = {}) {
         setText(el.rank, 'rank', `${rankMedals[rankNum - 1] || '🏁'} ${ord} / ${totalRacers}`);
         el.rank.className = `jg-chip rank rank-${rankNum}`;
       }
+      if (el.progressDots && Array.isArray(s.racerMarkers)) {
+        const markers = s.racerMarkers;
+        while (el.progressDots.children.length < markers.length) {
+          const dot = document.createElement('span');
+          dot.className = 'jg-prog-dot';
+          el.progressDots.appendChild(dot);
+        }
+        while (el.progressDots.children.length > markers.length) {
+          el.progressDots.lastChild?.remove();
+        }
+        for (let k = 0; k < markers.length; k++) {
+          const mk = markers[k];
+          const dot = /** @type {HTMLElement} */ (el.progressDots.children[k]);
+          dot.style.bottom = `${(Math.max(0, Math.min(1, mk.frac)) * 100).toFixed(1)}%`;
+          dot.style.background = mk.color || '#ff2a4b';
+          dot.classList.toggle('me', !!mk.isPlayer);
+        }
+      }
       el.hud.classList.toggle('invuln', s.invuln > 0);
       const isTurbo = s.turbo > 0;
       const lineStrength = isTurbo ? 1 : Math.max(0, (s.speedRatio - 0.68) / 0.32);
       drawSpeedLines(lineStrength, isTurbo);
+    },
+
+    setWarnings(list = []) {
+      let onL = false, onC = false, onR = false;
+      for (const w of list) {
+        if (w.laneX < -1.5) onL = true;
+        else if (w.laneX > 1.5) onR = true;
+        else onC = true;
+      }
+      el.warnL?.classList.toggle('show', onL);
+      el.warnC?.classList.toggle('show', onC);
+      el.warnR?.classList.toggle('show', onR);
     },
 
     setAirHint(on) { el.airHint.classList.toggle('show', on); },
@@ -402,14 +437,25 @@ export function createHUD(opts = {}) {
       el.overRolls.textContent = String(r.rolls);
       el.overCoins.textContent = Math.round(r.coins ?? 0).toLocaleString('id-ID');
       el.overBest.textContent = Math.round(r.best).toLocaleString('id-ID');
-      el.overRecord.classList.toggle('show', r.newRecord);
+      el.overRecord.classList.toggle('show', !!r.newRecord);
       const rank = r.rank || 1;
-      el.overTitle.textContent = r.newRecord
-        ? 'REKOR BARU, JURAGAN!'
-        : rank === 1 ? 'JUARA 1 DI SALATIGA!' : `FINIS POSISI #${rank}!`;
+      if (r.isLapFinish) {
+        el.overTitle.textContent = rank === 1
+          ? `🏁 JUARA BABAK ${r.lapNumber || 1}!`
+          : `🏁 FINIS BABAK ${r.lapNumber || 1} (#${rank})`;
+        if (el.btnOverContinue) el.btnOverContinue.style.display = '';
+        el.btnOverRestart?.classList.remove('primary');
+      } else {
+        el.overTitle.textContent = r.newRecord
+          ? 'REKOR BARU, JURAGAN!'
+          : rank === 1 ? 'JUARA 1 DI SALATIGA!' : `FINIS POSISI #${rank}!`;
+        if (el.btnOverContinue) el.btnOverContinue.style.display = 'none';
+        el.btnOverRestart?.classList.add('primary');
+      }
       renderPodium(el.podium, r.standings || []);
       el.over.classList.add('show');
       clearSpeedLines();
+      api.setWarnings([]);
       el.hud.classList.remove('show');
     },
     hideGameOver() { el.over.classList.remove('show'); },
@@ -588,6 +634,15 @@ function createAudioEngine(onHorn) {
     playLoopWhoosh() {
       return telolet.playLoopWhoosh();
     },
+    fireRing() {
+      return telolet.playFireRing();
+    },
+    smashProp() {
+      return telolet.playSmashProp();
+    },
+    victory() {
+      return telolet.playVictoryFanfare();
+    },
     gameover() { [523, 440, 349, 262].forEach((f, i) => tone(f, 0.34, 'triangle', 0.26, null, i * 0.16)); },
     setMuted(m) {
       muted = m;
@@ -692,6 +747,15 @@ function TEMPLATE() {
       </div>
       <div id="jg-combo" class="jg-combo">×2 RANTAI</div>
     </div>
+    <div id="jg-progress-rail" class="jg-progress-rail" aria-hidden="true">
+      <div class="jg-prog-flag">🏁</div>
+      <div class="jg-prog-track"><div id="jg-progress-dots" class="jg-prog-dots"></div></div>
+    </div>
+    <div id="jg-warnings" class="jg-warnings" aria-hidden="true">
+      <div id="jg-warn-l" class="jg-warn-badge">!<span>BAHAYA</span></div>
+      <div id="jg-warn-c" class="jg-warn-badge">!<span>BAHAYA</span></div>
+      <div id="jg-warn-r" class="jg-warn-badge">!<span>BAHAYA</span></div>
+    </div>
     <div id="jg-banner" class="jg-banner"><div id="jg-banner-title" class="jg-banner-title">BARREL ROLL!</div><div id="jg-banner-pts" class="jg-banner-pts">+250</div></div>
     <div id="jg-airhint" class="jg-airhint">⬅️ TAHAN KIRI / KANAN ➡️ UNTUK BARREL ROLL!</div>
     <div id="jg-toasts" class="jg-toasts"></div>
@@ -726,6 +790,7 @@ function TEMPLATE() {
       <div><b id="jg-over-rolls">0</b><span>BARREL ROLL</span></div>
       <div class="jg-stat-wide"><b id="jg-over-best">0</b><span>REKOR TERBAIK</span></div>
     </div>
+    <button id="jg-over-continue" class="jg-btn primary big" style="display:none">LANJUT BABAK ▶</button>
     <button id="jg-over-restart" class="jg-btn primary big">GAS LAGI 🔁</button>
     <button id="jg-over-menu" class="jg-btn">🚐 Ganti Armada</button>
   </div></div>`;
@@ -735,6 +800,19 @@ function renderPodium(container, standings) {
   if (!container) return;
   container.replaceChildren();
   if (!standings || standings.length === 0) return;
+
+  const confettiWrap = document.createElement('div');
+  confettiWrap.className = 'jg-confetti-wrap';
+  const confColors = ['#ff2a4b', '#ffd100', '#39ff14', '#9d4edd', '#38bdf8'];
+  for (let i = 0; i < 16; i++) {
+    const bit = document.createElement('span');
+    bit.className = 'jg-confetti-bit';
+    bit.style.left = `${(i * 6.2 + 3) % 96}%`;
+    bit.style.background = confColors[i % confColors.length];
+    bit.style.animationDelay = `${(i % 5) * 0.12}s`;
+    confettiWrap.appendChild(bit);
+  }
+  container.appendChild(confettiWrap);
 
   const stage = document.createElement('div');
   stage.className = 'jg-podium-stage';
@@ -750,6 +828,12 @@ function renderPodium(container, standings) {
 
     const racer = document.createElement('div');
     racer.className = 'jg-pod-racer';
+    if (idx === 0) {
+      const flames = document.createElement('div');
+      flames.className = 'jg-pod-flames';
+      flames.textContent = '🔥 👑 🔥';
+      racer.appendChild(flames);
+    }
     const em = document.createElement('div');
     em.className = 'jg-pod-em';
     em.textContent = EMOJI[r.type] || '🚐';
@@ -766,7 +850,10 @@ function renderPodium(container, standings) {
     medal.textContent = medals[idx] || `#${idx + 1}`;
     const num = document.createElement('b');
     num.textContent = `#${idx + 1}`;
-    block.append(medal, num);
+    const cBadge = document.createElement('span');
+    cBadge.className = 'jg-pod-coins';
+    cBadge.textContent = `🪙 ${Math.round(r.coins ?? 0)}`;
+    block.append(medal, num, cBadge);
 
     col.append(racer, block);
     stage.appendChild(col);
@@ -777,7 +864,7 @@ function renderPodium(container, standings) {
     const r4 = standings[3];
     const row4 = document.createElement('div');
     row4.className = `jg-pod-fourth${r4.isPlayer ? ' me' : ''}`;
-    row4.textContent = `🏁 #4 • ${EMOJI[r4.type] || '🚐'} ${r4.isPlayer ? `${r4.name} (KAMU)` : r4.name}`;
+    row4.textContent = `🏁 #4 • ${EMOJI[r4.type] || '🚐'} ${r4.isPlayer ? `${r4.name} (KAMU)` : r4.name} • 🪙 ${Math.round(r4.coins ?? 0)}`;
     container.appendChild(row4);
   }
 }
@@ -968,24 +1055,41 @@ function injectStyles() {
   .jg-modal-card .jg-btn.primary{width:100%}
   .jg-record{display:none;font-family:var(--jg-disp);font-weight:700;font-size:14px;color:#fff;background:linear-gradient(135deg,var(--jg-amber),var(--jg-orange));border-radius:99px;padding:6px 14px;margin:0 auto 12px;width:fit-content}
   .jg-record.show{display:block;animation:jgPop .4s}
-  .jg-podium{margin:8px 0 14px;background:rgba(59,47,47,.05);border:1.5px solid var(--jg-line);border-radius:16px;padding:12px 10px 10px}
-  .jg-podium-stage{display:flex;align-items:flex-end;justify-content:center;gap:8px;min-height:132px;padding-top:6px}
+  .jg-podium{position:relative;overflow:hidden;margin:8px 0 14px;background:rgba(59,47,47,.05);border:1.5px solid var(--jg-line);border-radius:16px;padding:12px 10px 10px}
+  .jg-confetti-wrap{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+  .jg-confetti-bit{position:absolute;top:-10px;width:7px;height:11px;border-radius:2px;opacity:.9;animation:jgConfetti 2.1s linear infinite}
+  .jg-podium-stage{position:relative;z-index:1;display:flex;align-items:flex-end;justify-content:center;gap:8px;min-height:152px;padding-top:10px}
   .jg-pod-col{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:6px}
   .jg-pod-racer{display:flex;flex-direction:column;align-items:center;gap:2px;animation:jgPop .45s backwards}
+  .jg-pod-flames{font-size:13px;line-height:1;animation:jgFlamePulse .7s ease-in-out infinite alternate}
   .jg-pod-col.pos-1 .jg-pod-racer{animation-delay:.18s}
   .jg-pod-col.pos-2 .jg-pod-racer{animation-delay:.08s}
   .jg-pod-col.pos-3 .jg-pod-racer{animation-delay:.28s}
   .jg-pod-em{font-size:24px;line-height:1;filter:drop-shadow(0 3px 5px rgba(0,0,0,.18))}
   .jg-pod-name{font-size:10.5px;font-weight:800;color:var(--jg-ink);line-height:1.2;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .jg-pod-col.me .jg-pod-name{color:var(--jg-orange)}
-  .jg-pod-block{width:100%;border-radius:12px 12px 8px 8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;border:2px solid var(--slot-col,var(--jg-amber));transform-origin:bottom;animation:jgPodiumRise .6s cubic-bezier(.2,.9,.3,1.2) backwards;box-shadow:0 6px 14px rgba(122,72,20,.16)}
-  .jg-pod-col.pos-1 .jg-pod-block{height:76px;background:linear-gradient(180deg,#ffe066,#ffbe0b);animation-delay:.12s}
-  .jg-pod-col.pos-2 .jg-pod-block{height:56px;background:linear-gradient(180deg,#f1f5f9,#cbd5e1);animation-delay:.02s}
-  .jg-pod-col.pos-3 .jg-pod-block{height:44px;background:linear-gradient(180deg,#fed7aa,#fb923c);animation-delay:.22s}
+  .jg-pod-block{width:100%;border-radius:12px 12px 8px 8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;border:2px solid var(--slot-col,var(--jg-amber));transform-origin:bottom;animation:jgPodiumRise .6s cubic-bezier(.2,.9,.3,1.2) backwards;box-shadow:0 6px 14px rgba(122,72,20,.16);padding:4px}
+  .jg-pod-col.pos-1 .jg-pod-block{height:88px;background:linear-gradient(180deg,#ffe066,#ffbe0b);animation-delay:.12s}
+  .jg-pod-col.pos-2 .jg-pod-block{height:68px;background:linear-gradient(180deg,#f1f5f9,#cbd5e1);animation-delay:.02s}
+  .jg-pod-col.pos-3 .jg-pod-block{height:56px;background:linear-gradient(180deg,#fed7aa,#fb923c);animation-delay:.22s}
   .jg-pod-medal{font-size:18px;line-height:1}
   .jg-pod-block b{font-family:var(--jg-disp);font-size:13px;color:var(--jg-ink)}
-  .jg-pod-fourth{margin-top:8px;padding:5px 10px;border-radius:99px;background:var(--jg-paper);border:1px solid var(--jg-line);font-size:11px;font-weight:700;color:var(--jg-soft)}
+  .jg-pod-coins{font-size:10.5px;font-weight:800;color:#5c3400;background:rgba(255,255,255,.6);border-radius:99px;padding:1px 7px}
+  .jg-pod-fourth{position:relative;z-index:1;margin-top:8px;padding:5px 10px;border-radius:99px;background:var(--jg-paper);border:1px solid var(--jg-line);font-size:11px;font-weight:700;color:var(--jg-soft)}
   .jg-pod-fourth.me{border-color:var(--jg-orange);color:var(--jg-orange)}
+
+  /* Right-Edge Vertical Race Progress Bar & Pulsing Hazard Warning Badges */
+  .jg-progress-rail{position:fixed;right:16px;top:54%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:center;gap:6px;pointer-events:none;z-index:11}
+  .jg-prog-flag{font-size:20px;line-height:1;filter:drop-shadow(0 3px 5px rgba(0,0,0,.3))}
+  .jg-prog-track{position:relative;width:12px;height:185px;border-radius:99px;background:rgba(24,24,27,.45);border:2px solid rgba(255,248,235,.75);box-shadow:0 6px 16px rgba(0,0,0,.22)}
+  .jg-prog-dots{position:absolute;inset:6px 0}
+  .jg-prog-dot{position:absolute;left:50%;transform:translate(-50%,50%);width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.4);transition:bottom .12s linear}
+  .jg-prog-dot.me{width:18px;height:18px;border:2.5px solid #fff;box-shadow:0 0 0 3px rgba(255,190,11,.8),0 3px 8px rgba(0,0,0,.45)}
+  .jg-warnings{position:fixed;top:92px;left:50%;transform:translateX(-50%);display:grid;grid-template-columns:repeat(3,86px);gap:14px;pointer-events:none;z-index:14}
+  .jg-warn-badge{opacity:0;transform:scale(.7);transition:opacity .16s,transform .16s;display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(135deg,#ff0033,#d00000);color:#fff;border:2.5px solid #ffbe0b;border-radius:14px;padding:4px 8px;font-family:var(--jg-disp);font-weight:700;font-size:22px;line-height:1;box-shadow:0 8px 20px rgba(208,0,0,.5)}
+  .jg-warn-badge span{font-size:9px;letter-spacing:1.2px;margin-top:2px;color:#fff3b0}
+  .jg-warn-badge.show{opacity:1;transform:scale(1);animation:jgWarnPulse .42s ease-in-out infinite alternate}
+  #jg-over-continue{margin-bottom:8px}
   .jg-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:15px}
   .jg-stats div{background:var(--jg-paper);border:1.5px solid var(--jg-line);border-radius:13px;padding:10px}
   .jg-stats .jg-stat-wide{grid-column:1 / -1;background:linear-gradient(135deg,#fff8eb,#ffefd6);border-color:var(--jg-amber)}
@@ -1005,6 +1109,9 @@ function injectStyles() {
   @keyframes jgBlink{50%{opacity:.35}}
   @keyframes jgFloat{50%{transform:translateX(-50%) translateY(-5px)}}
   @keyframes jgCrash{0%{opacity:1}100%{opacity:0}}
+  @keyframes jgWarnPulse{from{transform:scale(.95)}to{transform:scale(1.08)}}
+  @keyframes jgFlamePulse{from{transform:translateY(0) scale(1)}to{transform:translateY(-3px) scale(1.12)}}
+  @keyframes jgConfetti{0%{transform:translateY(-10px) rotate(0deg);opacity:.95}100%{transform:translateY(190px) rotate(320deg);opacity:0}}
 
   @media (pointer:coarse),(max-width:860px){
     .jg-pad{display:grid}

@@ -499,14 +499,69 @@ export function createTrackGenerator(scene) {
     color: P.connectorBlue, roughness: 0.26, metalness: 0.12,
     emissive: '#0044aa', emissiveIntensity: 0.14,
   });
+  const hazardStripeTex = (() => {
+    const c = document.createElement('canvas'); c.width = 256; c.height = 64;
+    const g = c.getContext('2d');
+    g.fillStyle = '#ffbe0b';
+    g.fillRect(0, 0, 256, 64);
+    g.fillStyle = '#18181b';
+    for (let x = -64; x < 320; x += 36) {
+      g.beginPath();
+      g.moveTo(x, 0); g.lineTo(x + 18, 0); g.lineTo(x + 42, 64); g.lineTo(x + 24, 64);
+      g.closePath();
+      g.fill();
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(3, 1);
+    return tex;
+  })();
+  const skullSignTex = (() => {
+    const c = document.createElement('canvas'); c.width = 256; c.height = 160;
+    const g = c.getContext('2d');
+    const bg = g.createLinearGradient(0, 0, 256, 0);
+    bg.addColorStop(0, '#d00000'); bg.addColorStop(0.5, '#1d4ed8'); bg.addColorStop(1, '#d00000');
+    g.fillStyle = bg;
+    g.beginPath(); g.roundRect(4, 4, 248, 152, 20); g.fill();
+    g.strokeStyle = '#ffbe0b'; g.lineWidth = 8; g.stroke();
+    g.fillStyle = '#ffffff';
+    g.beginPath(); g.arc(128, 66, 30, 0, Math.PI * 2); g.fill();
+    g.fillRect(112, 86, 32, 18);
+    g.fillStyle = '#18181b';
+    g.beginPath(); g.arc(117, 63, 7, 0, Math.PI * 2); g.arc(139, 63, 7, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#ffffff'; g.lineWidth = 10; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(86, 128); g.lineTo(170, 102); g.moveTo(170, 128); g.lineTo(86, 102); g.stroke();
+    const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  })();
+  const matHazardStripe = new THREE.MeshStandardMaterial({
+    map: hazardStripeTex, roughness: 0.34, emissive: '#ffbe0b', emissiveIntensity: 0.18,
+  });
   const matRamp = new THREE.MeshStandardMaterial({
-    color: P.trackOrange, roughness: 0.24, metalness: 0.08,
-    emissive: '#ff4800', emissiveIntensity: 0.3,
+    color: '#10b981', roughness: 0.24, metalness: 0.08,
+    emissive: '#059669', emissiveIntensity: 0.28,
   });
   const matRampStripe = new THREE.MeshStandardMaterial({
     color: '#ffe135', roughness: 0.25,
     emissive: '#ffbe0b', emissiveIntensity: 0.85,
   });
+  const matFireRing = new THREE.MeshPhysicalMaterial({
+    color: '#ffbe0b', roughness: 0.14, metalness: 0.65, clearcoat: 1.0,
+    emissive: '#ff5400', emissiveIntensity: 0.88,
+  });
+  const matFireFlame = new THREE.MeshStandardMaterial({
+    color: '#ff6b00', roughness: 0.3, emissive: '#ff9500', emissiveIntensity: 1.15,
+  });
+  const matConeOrange = new THREE.MeshStandardMaterial({ color: '#ff5400', roughness: 0.35 });
+  const matConeWhite = new THREE.MeshStandardMaterial({ color: '#fff8eb', roughness: 0.35 });
+  const matBarrelRed = new THREE.MeshStandardMaterial({ color: '#e63946', roughness: 0.35, metalness: 0.15 });
+  const matBarrelYellow = new THREE.MeshStandardMaterial({ color: '#ffbe0b', roughness: 0.35, metalness: 0.15 });
+  const matSkullSign = new THREE.MeshStandardMaterial({
+    map: skullSignTex, roughness: 0.38, emissive: '#ffffff', emissiveMap: skullSignTex, emissiveIntensity: 0.22,
+  });
+  const matBeaconRed = new THREE.MeshStandardMaterial({ color: '#ff2a4b', emissive: '#ff0033', emissiveIntensity: 1.5, roughness: 0.2 });
+  const matBeaconBlue = new THREE.MeshStandardMaterial({ color: '#38bdf8', emissive: '#0077ff', emissiveIntensity: 1.5, roughness: 0.2 });
   const matBoost = new THREE.MeshStandardMaterial({
     color: '#ffbe0b', roughness: 0.28,
     emissive: '#ff9500', emissiveIntensity: 0.72,
@@ -632,9 +687,20 @@ export function createTrackGenerator(scene) {
 
   /* Geometri bersama */
   const geoDash = new THREE.BoxGeometry(0.24, 0.025, 1.75);
-  const geoRamp = new RoundedBoxGeometry(RAMP_W, 0.65, RAMP_LEN + 0.4, 3, 0.16);
-  const geoRampRail = new RoundedBoxGeometry(0.32, 0.65, RAMP_LEN + 0.4, 2, 0.08);
-  const geoRampStripe = new THREE.BoxGeometry(RAMP_W - 0.8, 0.07, 0.44);
+  const geoRamp = (() => {
+    const shape = new THREE.Shape();
+    shape.moveTo(-RAMP_LEN * 0.5, 0);
+    shape.lineTo(RAMP_LEN * 0.5, 0);
+    shape.lineTo(RAMP_LEN * 0.5, RAMP_RISE);
+    shape.closePath();
+    const g = new THREE.ExtrudeGeometry(shape, { depth: RAMP_W, bevelEnabled: true, bevelThickness: 0.08, bevelSize: 0.08, bevelSegments: 2 });
+    g.center();
+    g.rotateY(Math.PI / 2);
+    return g;
+  })();
+  const geoRampRail = new RoundedBoxGeometry(0.36, 0.95, RAMP_LEN + 0.3, 2, 0.08);
+  const geoRampStripe = new THREE.BoxGeometry(RAMP_W - 0.8, 0.12, 0.55);
+  const geoRampLipHazard = new THREE.BoxGeometry(RAMP_W + 0.28, 0.34, 0.78);
   const geoBoost = new RoundedBoxGeometry(BOOST_W, 0.12, BOOST_LEN, 3, 0.06);
   const geoChevron = new THREE.BoxGeometry(2.6, 0.06, 0.35);
   const geoBoosterHousing = new RoundedBoxGeometry(1.05, 0.92, BOOST_LEN + 0.9, 3, 0.16);
@@ -644,6 +710,24 @@ export function createTrackGenerator(scene) {
   geoBoosterHub.rotateZ(Math.PI / 2);
   const geoConnectorBar = new RoundedBoxGeometry(W + 1.35, 0.34, 1.15, 2, 0.08);
   const geoConnectorEar = new RoundedBoxGeometry(0.55, 0.92, 1.45, 2, 0.1);
+  const geoFireRingTorus = new THREE.TorusGeometry(1.82, 0.19, 10, 28);
+  const geoFireFlame = new THREE.ConeGeometry(0.22, 0.68, 5);
+  const geoSkyLoop = new THREE.TorusGeometry(9.5, 1.35, 10, 32);
+  const geoConeBody = new THREE.ConeGeometry(0.42, 1.05, 12);
+  const geoConeBase = new THREE.BoxGeometry(0.95, 0.14, 0.95);
+  const geoConeCollar = new THREE.CylinderGeometry(0.21, 0.28, 0.26, 12);
+  const geoBarrelBody = new THREE.CylinderGeometry(0.54, 0.54, 1.25, 14);
+  const geoBarrelBand = new THREE.CylinderGeometry(0.56, 0.56, 0.32, 14);
+  const geoHazardBody = new RoundedBoxGeometry(3.4, 1.65, 0.62, 2, 0.12);
+  const geoHazardSign = new THREE.PlaneGeometry(3.0, 1.4);
+  const geoHazardBeacon = new THREE.SphereGeometry(0.26, 10, 8);
+  const geoMascotPlinth = new THREE.CylinderGeometry(2.8, 3.2, 1.4, 14);
+  const geoMascotHead = new THREE.SphereGeometry(1.5, 14, 12);
+  const geoMascotBody = new RoundedBoxGeometry(2.5, 2.9, 1.8, 3, 0.4);
+  const geoMascotArm = new RoundedBoxGeometry(0.65, 2.0, 0.65, 2, 0.2);
+  const geoMonsterWheel = new THREE.CylinderGeometry(1.15, 1.15, 0.9, 14);
+  geoMonsterWheel.rotateZ(Math.PI / 2);
+  const geoMonsterCabin = new RoundedBoxGeometry(2.8, 1.75, 4.6, 3, 0.3);
   const geoPillar = new THREE.CylinderGeometry(0.55, 0.72, 1, 12);
   const geoGuardPost = new RoundedBoxGeometry(0.24, 0.82, 0.28, 2, 0.05);
   const geoGuardBeam = new RoundedBoxGeometry(0.32, 0.56, 4.18, 2, 0.08);
@@ -891,6 +975,125 @@ export function createTrackGenerator(scene) {
     return g;
   }
 
+  function buildFireRingMesh() {
+    const g = new THREE.Group();
+    const torus = new THREE.Mesh(geoFireRingTorus, matFireRing);
+    torus.castShadow = false;
+    g.add(torus);
+    for (let k = 0; k < 10; k++) {
+      const a = (k / 10) * Math.PI * 2;
+      const flame = new THREE.Mesh(geoFireFlame, matFireFlame);
+      flame.position.set(Math.cos(a) * 2.04, Math.sin(a) * 2.04, 0);
+      flame.rotation.z = a - Math.PI / 2;
+      g.add(flame);
+    }
+    return g;
+  }
+
+  function buildPropMesh(kind) {
+    const g = new THREE.Group();
+    if (kind === 'cone') {
+      const base = new THREE.Mesh(geoConeBase, matConeOrange);
+      base.position.y = 0.07;
+      base.castShadow = true;
+      const body = new THREE.Mesh(geoConeBody, matConeOrange);
+      body.position.y = 0.58;
+      body.castShadow = true;
+      const collar = new THREE.Mesh(geoConeCollar, matConeWhite);
+      collar.position.y = 0.68;
+      g.add(base, body, collar);
+    } else {
+      const body = new THREE.Mesh(geoBarrelBody, matBarrelRed);
+      body.position.y = 0.62;
+      body.castShadow = true;
+      const band1 = new THREE.Mesh(geoBarrelBand, matBarrelYellow);
+      band1.position.y = 0.34;
+      const band2 = new THREE.Mesh(geoBarrelBand, matBarrelYellow);
+      band2.position.y = 0.90;
+      g.add(body, band1, band2);
+    }
+    return g;
+  }
+
+  function buildSkullHazardMesh() {
+    const g = new THREE.Group();
+    for (const sx of [-1.35, 1.35]) {
+      const leg = new THREE.Mesh(geoGuardPost, matConnectorBlue);
+      leg.position.set(sx, 0.42, 0);
+      leg.castShadow = true;
+      g.add(leg);
+    }
+    const bar = new THREE.Mesh(geoHazardBody, matBarrelRed);
+    bar.position.set(0, 1.12, 0);
+    bar.castShadow = true;
+    const front = new THREE.Mesh(geoHazardSign, matSkullSign);
+    front.position.set(0, 1.12, 0.33);
+    const back = new THREE.Mesh(geoHazardSign, matSkullSign);
+    back.position.set(0, 1.12, -0.33);
+    back.rotation.y = Math.PI;
+    const beaconL = new THREE.Mesh(geoHazardBeacon, matBeaconRed);
+    beaconL.position.set(-1.35, 2.08, 0);
+    const beaconR = new THREE.Mesh(geoHazardBeacon, matBeaconBlue);
+    beaconR.position.set(1.35, 2.08, 0);
+    g.add(bar, front, back, beaconL, beaconR);
+    g.userData = { beaconL, beaconR };
+    return g;
+  }
+
+  function buildSkyLoopDecor() {
+    const g = new THREE.Group();
+    const deck = new THREE.Mesh(geoSkyLoop, matAsphalt);
+    deck.position.y = 10.0;
+    const rim = new THREE.Mesh(geoSkyLoop, matCurb);
+    rim.position.y = 10.0;
+    rim.scale.set(1.04, 1.04, 0.45);
+    g.add(deck, rim);
+    for (const sx of [-4.2, 4.2]) {
+      const strut = new THREE.Mesh(geoLoopStrut, matConnectorBlue);
+      strut.scale.set(1, 10.2, 1);
+      strut.position.set(sx, 5.1, 0);
+      g.add(strut);
+    }
+    return g;
+  }
+
+  function buildMascotDisplay(variant) {
+    const g = new THREE.Group();
+    const plinth = new THREE.Mesh(geoMascotPlinth, matConnectorBlue);
+    plinth.position.y = 0.7;
+    plinth.castShadow = true;
+    g.add(plinth);
+    if (variant === 0) {
+      const body = new THREE.Mesh(geoMascotBody, matBarrelRed);
+      body.position.y = 2.85;
+      body.castShadow = true;
+      const head = new THREE.Mesh(geoMascotHead, matRampStripe);
+      head.position.y = 5.15;
+      head.castShadow = true;
+      const armL = new THREE.Mesh(geoMascotArm, matBarrelYellow);
+      armL.position.set(-1.75, 3.25, 0);
+      armL.rotation.z = 0.55;
+      const armR = new THREE.Mesh(geoMascotArm, matBarrelYellow);
+      armR.position.set(1.75, 3.25, 0);
+      armR.rotation.z = -0.55;
+      g.add(body, head, armL, armR);
+      g.userData = { variant: 0, armL, armR };
+    } else {
+      const cabin = new THREE.Mesh(geoMonsterCabin, matBarrelRed);
+      cabin.position.y = 3.15;
+      cabin.castShadow = true;
+      g.add(cabin);
+      for (const wx of [-1.65, 1.65]) for (const wz of [-1.45, 1.45]) {
+        const w = new THREE.Mesh(geoMonsterWheel, matLampPole);
+        w.position.set(wx, 2.05, wz);
+        w.castShadow = true;
+        g.add(w);
+      }
+      g.userData = { variant: 1 };
+    }
+    return g;
+  }
+
   const _dummy = new THREE.Object3D();
   const _col = new THREE.Color();
   const GRASS_SHADES = ['#38b000', '#4d7c0f', '#52b788', '#70e000'];
@@ -908,6 +1111,8 @@ export function createTrackGenerator(scene) {
       loopGroup: null, loopDeck: null, loopRailL: null, loopRailR: null, loopStruts: [],
       ramp: null, boost: null, boosterWheels: [], bridge: null, piers: [],
       floor: null, blocks: [], fences: [], arch: null,
+      skyLoop: null, mascot0: null, mascot1: null,
+      smashProps: [], hazard: null,
       decor: [], grassInst: null, flowerInst: null,
       collectibles: [],
     };
@@ -961,7 +1166,7 @@ export function createTrackGenerator(scene) {
     group.add(rampApproach, rampExit);
     seg.rampRoads.push({ mesh: rampApproach, z0: L / 2, z1: RAMP_GAP_START }, { mesh: rampExit, z0: RAMP_GAP_END, z1: -L / 2 });
     for (const cz of [RAMP_GAP_START, RAMP_GAP_END]) {
-      const cap = new THREE.Mesh(geoGapCap, matGapCap);
+      const cap = new THREE.Mesh(geoGapCap, matHazardStripe);
       cap.visible = false;
       group.add(cap);
       seg.rampCaps.push({ mesh: cap, lz: cz });
@@ -1081,23 +1286,30 @@ export function createTrackGenerator(scene) {
       seg.piers.push({ mesh: p, x: px });
     }
 
-    /* Steep Glowing Orange Stunt Ramp */
+    /* Steep Glowing Green/Blue Triangular Launch Ramp with Yellow-Black Hazard Edge */
     const ramp = new THREE.Group();
     const slab = new THREE.Mesh(geoRamp, matRamp);
     slab.castShadow = true; slab.receiveShadow = true;
     ramp.add(slab);
+    const rampAngle = Math.atan2(RAMP_RISE, RAMP_LEN);
     for (const side of [-1, 1]) {
       const rail = new THREE.Mesh(geoRampRail, matConnectorBlue);
-      rail.position.set(side * (RAMP_W / 2 + 0.14), 0.3, 0);
+      rail.position.set(side * (RAMP_W / 2 + 0.14), 0.14, 0);
+      rail.rotation.x = rampAngle;
       rail.castShadow = true;
       ramp.add(rail);
     }
     for (let s = 0; s < 4; s++) {
+      const lz = 1.65 - s * 1.1;
+      const u = (s + 0.5) / 4;
       const st = new THREE.Mesh(geoRampStripe, matRampStripe);
-      st.position.set(0, 0.35, -1.8 + s * 1.2);
+      st.position.set(0, -RAMP_RISE * 0.45 + u * RAMP_RISE + 0.06, lz);
+      st.rotation.x = rampAngle;
       ramp.add(st);
     }
-    ramp.rotation.x = 0.34;
+    const hazardLip = new THREE.Mesh(geoRampLipHazard, matHazardStripe);
+    hazardLip.position.set(0, RAMP_RISE * 0.46, -RAMP_LEN * 0.47);
+    ramp.add(hazardLip);
     ramp.visible = false;
     group.add(ramp); seg.ramp = ramp;
 
@@ -1213,14 +1425,49 @@ export function createTrackGenerator(scene) {
     group.add(flowerInst);
     seg.flowerInst = flowerInst;
 
-    /* Pool kolektibel per segmen (koin emas, permata pelangi, & buah 3D glossy) */
+    /* Dekorasi langit: Background Sky Loops + Giant Mascot / Monster Truck Displays */
+    seg.skyLoop = buildSkyLoopDecor();
+    seg.skyLoop.visible = false;
+    group.add(seg.skyLoop);
+
+    seg.mascot0 = buildMascotDisplay(0);
+    seg.mascot0.visible = false;
+    group.add(seg.mascot0);
+
+    seg.mascot1 = buildMascotDisplay(1);
+    seg.mascot1.visible = false;
+    group.add(seg.mascot1);
+
+    /* Smashable cones & barrels (2 barel + 2 kerucut per segmen) */
+    for (let p = 0; p < 4; p++) {
+      const kind = p < 2 ? 'barrel' : 'cone';
+      const mesh = buildPropMesh(kind);
+      mesh.visible = false;
+      group.add(mesh);
+      seg.smashProps.push({
+        mesh, kind, lx: 0, lz: 0, baseY: 0,
+        active: false, hit: false, vx: 0, vy: 0, vz: 0, rvx: 0, rvz: 0,
+      });
+    }
+
+    /* Penghalang bahaya tengkorak merah/biru */
+    const hazMesh = buildSkullHazardMesh();
+    hazMesh.visible = false;
+    group.add(hazMesh);
+    seg.hazard = {
+      mesh: hazMesh, lx: 0, lz: 0, baseY: 0,
+      active: false, hit: false, vx: 0, vy: 0, vz: 0, rvx: 0, rvz: 0,
+    };
+
+    /* Pool kolektibel per segmen (koin emas, permata pelangi, buah 3D glossy, & Fire Ring) */
     for (let c = 0; c < MAX_COLLECTIBLES; c++) {
       const wrapper = new THREE.Group();
       const coinMesh = buildCoinMesh();
       const gemMesh = buildGemMesh();
       const fruitType = FRUIT_TYPES[c % FRUIT_TYPES.length];
       const fruitMesh = buildToyFruit(fruitType);
-      wrapper.add(coinMesh, gemMesh, fruitMesh);
+      const fireRingMesh = buildFireRingMesh();
+      wrapper.add(coinMesh, gemMesh, fruitMesh, fireRingMesh);
       wrapper.visible = false;
       group.add(wrapper);
 
@@ -1236,6 +1483,7 @@ export function createTrackGenerator(scene) {
         coinMesh,
         gemMesh,
         fruitMesh,
+        fireRingMesh,
         fruitType,
         kind: 'coin',
         lx: 0,
@@ -1359,6 +1607,7 @@ export function createTrackGenerator(scene) {
       slot.coinMesh.visible = kind === 'coin';
       slot.gemMesh.visible = kind === 'gem';
       slot.fruitMesh.visible = kind === 'fruit';
+      slot.fireRingMesh.visible = kind === 'ring';
       slot.obj.position.set(lx, slot.baseY, lz);
       slot.obj.visible = true;
 
@@ -1397,13 +1646,13 @@ export function createTrackGenerator(scene) {
     }
 
     if (seg.type === 'fork') {
-      // Kiri: jalur risiko tinggi penuh buah glossy & permata! Kanan: jalur aman berderet koin
+      // Kiri: jalur risiko tinggi penuh buah glossy & Fire Ring! Kanan: jalur aman berderet koin
       const ts = [0.22, 0.38, 0.54, 0.70, 0.82];
       ts.forEach((t, idx) => {
         const fp = getForkProfile(t);
         const lz = L / 2 - t * L;
-        const kindL = idx === 2 ? 'gem' : 'fruit';
-        placeItem(kindL, fp.cxL, lz, fp.yOffL + 1.25);
+        const kindL = idx === 2 ? 'ring' : idx === 3 ? 'gem' : 'fruit';
+        placeItem(kindL, fp.cxL, lz, fp.yOffL + (kindL === 'ring' ? 1.85 : 1.25));
         placeItem('coin', fp.cxR, lz, 0.95);
       });
       return;
@@ -1425,7 +1674,7 @@ export function createTrackGenerator(scene) {
       arcSteps.forEach((lz, idx) => {
         const u = (idx + 1) / arcSteps.length;
         const yOff = 1.6 + Math.sin(u * Math.PI * 0.58) * 3.15;
-        const kind = idx === 3 ? 'gem' : idx === 2 ? 'fruit' : 'coin';
+        const kind = idx === 2 ? 'ring' : idx === 3 ? 'gem' : 'coin';
         placeItem(kind, 0, lz, yOff);
       });
       return;
@@ -1451,9 +1700,9 @@ export function createTrackGenerator(scene) {
         const lx = leadSide * LANE_W * (1 - u);
         placeItem('coin', lx, lz, 0.95);
       }
-      placeItem('fruit', 0, -3.2, 1.25);
-      placeItem('coin', 0, -7.0, 0.95);
-      placeItem('coin', 0, -10.0, 0.95);
+      placeItem(i % 2 === 0 ? 'ring' : 'fruit', 0, -4.8, i % 2 === 0 ? 1.9 : 1.25);
+      placeItem('coin', 0, -7.8, 0.95);
+      placeItem('coin', 0, -10.2, 0.95);
       return;
     }
 
@@ -1640,7 +1889,8 @@ export function createTrackGenerator(scene) {
 
     seg.ramp.visible = seg.type === 'ramp';
     if (seg.ramp.visible) {
-      seg.ramp.position.set(0, getTrackHeight(centerZ) + 0.45, 0);
+      seg.ramp.position.set(0, getTrackHeight(centerZ) + RAMP_RISE * 0.5, 0);
+      seg.ramp.rotation.x = Math.atan(-getTrackSlope(centerZ));
     }
 
     seg.boost.visible = seg.type === 'boost' || seg.type === 'loop';
@@ -1662,6 +1912,60 @@ export function createTrackGenerator(scene) {
 
     seg.arch.visible = i >= 4 && i % (TRACK.archEvery || 8) === 0 && seg.type !== 'loop';
     if (seg.arch.visible) seg.arch.position.set(0, roadMidY, 0);
+
+    /* Sky Loops di cakrawala atas Salatiga + Maskot / Monster Truck raksasa di tepi */
+    seg.skyLoop.visible = i >= 1 && i % 3 === 0;
+    if (seg.skyLoop.visible) {
+      const side = i % 2 === 0 ? -1 : 1;
+      seg.skyLoop.position.set(side * 42, FLOOR_Y, 0);
+      seg.skyLoop.rotation.y = side * -0.52;
+    }
+    const showMascot = i >= 2 && i % 4 === 0 && seg.type !== 'loop';
+    const useMonster = (Math.floor(i / 4) % 2) === 1;
+    seg.mascot0.visible = showMascot && !useMonster;
+    seg.mascot1.visible = showMascot && useMonster;
+    if (showMascot) {
+      const side = i % 8 === 0 ? -1 : 1;
+      const mObj = useMonster ? seg.mascot1 : seg.mascot0;
+      mObj.position.set(side * 24.5, FLOOR_Y, -3.5);
+      mObj.rotation.y = side < 0 ? 0.55 : -0.55;
+    }
+
+    /* Smashable props (kerucut & tong mainan) + Penghalang tengkorak merah/biru */
+    const LANE_W = W / TRACK.lanes;
+    const propLaneIdx = Math.floor(hash(i * 37 + 11) * 3) % 3;
+    const propLaneX = (propLaneIdx - 1) * LANE_W;
+    const showProps = (seg.type === 'plain' || seg.type === 'boost') && i >= 2;
+    seg.smashProps.forEach((p, idx) => {
+      p.hit = false;
+      p.vx = 0; p.vy = 0; p.vz = 0; p.rvx = 0; p.rvz = 0;
+      p.mesh.rotation.set(0, 0, 0);
+      p.active = showProps;
+      p.mesh.visible = showProps;
+      if (showProps) {
+        const ox = (idx % 2 === 0 ? -0.68 : 0.68);
+        const oz = 3.5 - Math.floor(idx / 2) * 3.4;
+        p.lx = propLaneX + ox;
+        p.lz = oz;
+        p.baseY = getTrackHeight(centerZ + oz);
+        p.mesh.position.set(p.lx, p.baseY, p.lz);
+      }
+    });
+
+    const haz = seg.hazard;
+    const showHazard = seg.type === 'plain' && i >= 5 && (i % 3 === 1 || i % 7 === 2);
+    haz.hit = false;
+    haz.vx = 0; haz.vy = 0; haz.vz = 0; haz.rvx = 0; haz.rvz = 0;
+    haz.mesh.rotation.set(0, 0, 0);
+    haz.active = showHazard;
+    haz.mesh.visible = showHazard;
+    if (showHazard) {
+      const hazLaneIdx = (propLaneIdx + 1 + (i % 2)) % 3;
+      haz.lx = (hazLaneIdx - 1) * LANE_W;
+      haz.lz = -4.5;
+      haz.baseY = getTrackHeight(centerZ + haz.lz);
+      haz.mesh.position.set(haz.lx, haz.baseY, haz.lz);
+    }
 
     seg.decor.forEach((d, k) => {
       if (d.kind === 'lamp') {
@@ -1693,9 +1997,13 @@ export function createTrackGenerator(scene) {
 
   for (let s = 0; s < POOL_SIZE; s++) pool.push(buildSegment());
 
+  let prevTrackT = null;
+
   /* ---------- Daur ulang segmen + animasi angin & kolektibel ---------- */
   function updateTrack(playerZ, t = 0) {
     windUniform.value = t;
+    const dt = prevTrackT === null ? 0.016 : Math.min(0.05, Math.max(0, t - prevTrackT));
+    prevTrackT = t;
 
     const cur = Math.floor(-playerZ / L);
     const min = cur - TRACK.segmentsBehind;
@@ -1720,6 +2028,33 @@ export function createTrackGenerator(scene) {
         else if (d.kind === 'bush') d.obj.rotation.z = Math.sin(t * 2.1 + d.phase) * 0.035;
       }
 
+      if (seg.mascot0.visible && seg.mascot0.userData.armL) {
+        seg.mascot0.userData.armL.rotation.z = 0.55 + Math.sin(t * 4.4 + seg.index) * 0.35;
+        seg.mascot0.userData.armR.rotation.z = -0.55 - Math.cos(t * 4.4 + seg.index) * 0.35;
+      }
+
+      for (const p of seg.smashProps) {
+        if (!p.active || !p.hit || !p.mesh.visible) continue;
+        p.mesh.position.x += p.vx * dt;
+        p.mesh.position.y += p.vy * dt;
+        p.mesh.position.z += p.vz * dt;
+        p.vy -= 28 * dt;
+        p.mesh.rotation.x += p.rvx * dt;
+        p.mesh.rotation.z += p.rvz * dt;
+        if (p.mesh.position.y < FLOOR_Y - 6) p.mesh.visible = false;
+      }
+
+      if (seg.hazard.active && seg.hazard.hit && seg.hazard.mesh.visible) {
+        const hz = seg.hazard;
+        hz.mesh.position.x += hz.vx * dt;
+        hz.mesh.position.y += hz.vy * dt;
+        hz.mesh.position.z += hz.vz * dt;
+        hz.vy -= 30 * dt;
+        hz.mesh.rotation.x += hz.rvx * dt;
+        hz.mesh.rotation.z += hz.rvz * dt;
+        if (hz.mesh.position.y < FLOOR_Y - 6) hz.mesh.visible = false;
+      }
+
       if (seg.boost.visible) {
         for (const bw of seg.boosterWheels) {
           bw.mesh.rotation.x = -t * 22;
@@ -1739,6 +2074,9 @@ export function createTrackGenerator(scene) {
           gm.color.setHSL(hue, 0.92, 0.62);
           gm.emissive.setHSL(hue, 0.95, 0.52);
           item.groundRing.scale.setScalar(0.92 + Math.sin(t * 4.5 + item.phase) * 0.14);
+        } else if (item.kind === 'ring') {
+          item.fireRingMesh.rotation.z = t * 3.2 + item.phase;
+          item.fireRingMesh.rotation.y = Math.sin(t * 1.6 + item.phase) * 0.18;
         } else {
           item.fruitMesh.rotation.y = t * 2.4 + item.phase;
           item.fruitMesh.rotation.z = Math.sin(t * 1.9 + item.phase) * 0.1;
@@ -1749,9 +2087,11 @@ export function createTrackGenerator(scene) {
 
     matBoost.emissiveIntensity = 0.5 + Math.sin(t * 4) * 0.3;
     matChevron.emissiveIntensity = 0.35 + Math.sin(t * 4 + 1) * 0.2;
+    matBeaconRed.emissiveIntensity = 1.0 + Math.sin(t * 12) * 0.7;
+    matBeaconBlue.emissiveIntensity = 1.0 - Math.sin(t * 12) * 0.7;
   }
 
-  /* ---------- Deteksi pengambilan koin, buah & permata (zero-GC) ---------- */
+  /* ---------- Deteksi pengambilan koin, buah, permata & Fire Ring (zero-GC) ---------- */
   const _collected = [];
   function collectNearby(pos) {
     _collected.length = 0;
@@ -1765,10 +2105,11 @@ export function createTrackGenerator(scene) {
         const wx = item.lx;
         const wy = item.obj.position.y;
         const wz = centerZ + item.lz;
-        const hitPad = item.kind === 'fruit' ? 2.45 : 2.2;
+        const hitPad = item.kind === 'ring' ? 2.9 : item.kind === 'fruit' ? 2.45 : 2.2;
+        const hitY = item.kind === 'ring' ? 3.2 : 2.55;
         if (
           Math.abs(pos.x - wx) < hitPad &&
-          Math.abs(py - wy) < 2.55 &&
+          Math.abs(py - wy) < hitY &&
           Math.abs(pos.z - wz) < 2.45
         ) {
           item.collected = true;
@@ -1781,6 +2122,76 @@ export function createTrackGenerator(scene) {
     return _collected;
   }
 
+  const _smashed = [];
+  function checkPropSmash(pos, half = { x: 1.15, z: 1.75 }) {
+    _smashed.length = 0;
+    for (const seg of pool) {
+      if (seg.index === null) continue;
+      const centerZ = seg.group.position.z;
+      if (Math.abs(centerZ - pos.z) > L * 0.85) continue;
+      for (const p of seg.smashProps) {
+        if (!p.active || p.hit) continue;
+        const wz = centerZ + p.lz;
+        if (
+          Math.abs(pos.x - p.lx) < half.x + 0.55 &&
+          Math.abs(pos.z - wz) < half.z + 0.55 &&
+          Math.abs(pos.y - p.baseY) < 1.8
+        ) {
+          p.hit = true;
+          const dir = p.lx >= pos.x ? 1 : -1;
+          p.vx = dir * (6 + Math.random() * 6);
+          p.vy = 11 + Math.random() * 5;
+          p.vz = -(14 + Math.random() * 8);
+          p.rvx = (Math.random() > 0.5 ? 1 : -1) * 11;
+          p.rvz = (Math.random() > 0.5 ? 1 : -1) * 9;
+          _smashed.push({ kind: p.kind, x: p.lx, y: p.baseY + 0.5, z: wz });
+        }
+      }
+    }
+    return _smashed;
+  }
+
+  function checkHazardCollision(pos, half = { x: 0.95, z: 1.55 }) {
+    for (const seg of pool) {
+      if (seg.index === null) continue;
+      const hz = seg.hazard;
+      if (!hz.active || hz.hit) continue;
+      const centerZ = seg.group.position.z;
+      const wz = centerZ + hz.lz;
+      if (
+        Math.abs(pos.x - hz.lx) < half.x + 1.45 &&
+        Math.abs(pos.z - wz) < half.z + 0.45 &&
+        Math.abs(pos.y - hz.baseY) < 2.2
+      ) {
+        hz.hit = true;
+        hz.vx = (hz.lx >= pos.x ? 1 : -1) * 9;
+        hz.vy = 12;
+        hz.vz = -16;
+        hz.rvx = 8;
+        hz.rvz = -9;
+        return { x: hz.lx, y: hz.baseY + 0.8, z: wz };
+      }
+    }
+    return null;
+  }
+
+  const _upcomingHazards = [];
+  function getUpcomingHazards(playerZ, maxDist = 72) {
+    _upcomingHazards.length = 0;
+    for (const seg of pool) {
+      if (seg.index === null) continue;
+      const hz = seg.hazard;
+      if (!hz.active || hz.hit) continue;
+      const wz = seg.group.position.z + hz.lz;
+      const dist = playerZ - wz;
+      if (dist > 0.5 && dist <= maxDist) {
+        _upcomingHazards.push({ laneX: hz.lx, dist, z: wz });
+      }
+    }
+    _upcomingHazards.sort((a, b) => a.dist - b.dist);
+    return _upcomingHazards;
+  }
+
   function resetCollectibles() {
     for (const seg of pool) {
       for (const item of seg.collectibles) {
@@ -1789,6 +2200,22 @@ export function createTrackGenerator(scene) {
           item.obj.visible = true;
           item.groundRing.visible = item.kind === 'fruit' || item.kind === 'gem';
         }
+      }
+      for (const p of seg.smashProps) {
+        if (p.active) {
+          p.hit = false;
+          p.vx = 0; p.vy = 0; p.vz = 0;
+          p.mesh.rotation.set(0, 0, 0);
+          p.mesh.position.set(p.lx, p.baseY, p.lz);
+          p.mesh.visible = true;
+        }
+      }
+      if (seg.hazard.active) {
+        seg.hazard.hit = false;
+        seg.hazard.vx = 0; seg.hazard.vy = 0; seg.hazard.vz = 0;
+        seg.hazard.mesh.rotation.set(0, 0, 0);
+        seg.hazard.mesh.position.set(seg.hazard.lx, seg.hazard.baseY, seg.hazard.lz);
+        seg.hazard.mesh.visible = true;
       }
     }
   }
@@ -1829,8 +2256,11 @@ export function createTrackGenerator(scene) {
       for (const item of seg.collectibles) item.gemMesh.userData.gemMat.dispose();
     }
     [
-      geoDash, geoRamp, geoRampRail, geoRampStripe, geoBoost, geoChevron,
+      geoDash, geoRamp, geoRampRail, geoRampStripe, geoRampLipHazard, geoBoost, geoChevron,
       geoBoosterHousing, geoBoosterWheel, geoBoosterHub, geoConnectorBar, geoConnectorEar,
+      geoFireRingTorus, geoFireFlame, geoSkyLoop, geoConeBody, geoConeBase, geoConeCollar,
+      geoBarrelBody, geoBarrelBand, geoHazardBody, geoHazardSign, geoHazardBeacon,
+      geoMascotPlinth, geoMascotHead, geoMascotBody, geoMascotArm, geoMonsterWheel, geoMonsterCabin,
       geoGapCap, geoLoopStrut, geoForkSignPost, geoForkSignBoard,
       geoPillar, geoGuardPost, geoGuardBeam, geoTrunk, geoCanopy, geoBushLobe, geoBerry,
       geoPlantShadow, geoGrassTuft, geoFlower, geoLampBase, geoLampPole,
@@ -1839,7 +2269,9 @@ export function createTrackGenerator(scene) {
       geoCoinBody, geoCoinRim, geoCoinCore, geoGemStar, geoGemRing, geoGlowRing,
     ].forEach((g) => g.dispose());
     [
-      matAsphalt, matForkLeft, matLoopSurface, matGapCap, matForkSign,
+      matAsphalt, matForkLeft, matLoopSurface, matGapCap, matForkSign, matHazardStripe,
+      matFireRing, matFireFlame, matConeOrange, matConeWhite, matBarrelRed, matBarrelYellow,
+      matSkullSign, matBeaconRed, matBeaconBlue,
       matShoulderBlend, matDeckSide, matCurb, matLine, matConnectorBlue,
       matRamp, matRampStripe, matBoost, matChevron, matBoosterWheel, matBoosterHub,
       matPillar, ...matRailColors,
@@ -1851,13 +2283,15 @@ export function createTrackGenerator(scene) {
     ].forEach((m) => m.dispose());
     [
       roadTex.map, roadTex.normalMap, plantShadowTex, glowRingTex, forkSignTex,
+      hazardStripeTex, skullSignTex,
       ...floorTextures, ...blockTextures, archBannerTex,
     ].forEach((t) => t.dispose());
     pool.length = 0;
   }
 
   return {
-    updateTrack, collectNearby, getCollectibleTargets, resetCollectibles, dispose,
+    updateTrack, collectNearby, checkPropSmash, checkHazardCollision, getUpcomingHazards,
+    getCollectibleTargets, resetCollectibles, dispose,
     getTrackHeight, getTrackSlope, getTrackSurfaceAt, evalLoopPose,
     checkRampCollision, checkBoostCollision, getSegmentType,
     get segmentCount() { return pool.length; },

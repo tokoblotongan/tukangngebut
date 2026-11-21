@@ -39,7 +39,7 @@ export const PALETTE = Object.freeze({
   pastelButter: '#ffd166', pastelLavender: '#b583e0',
 });
 
-export const SLOT_COLORS = Object.freeze(['#00e5ff', '#ff007f', '#39ff14', '#ffe600']);
+export const SLOT_COLORS = Object.freeze(['#ff2a4b', '#ffd100', '#39ff14', '#9d4edd']);
 
 /* ---------- Kunci renderer (Strict Visual Lock) ---------- */
 export const RENDERER = Object.freeze({
@@ -94,7 +94,7 @@ export const TRACK = Object.freeze({
   hill: { amp1: 2.6, freq1: 0.021, amp2: 1.1, freq2: 0.052 },
   rampEvery: 5, boostEvery: 7, bridgeEvery: 9,
   loopRadius: 7.8, loopWidth: 6.4, narrowWidth: 5.5, forkWidthL: 4.3, forkWidthR: 5.5,
-  landmarkEvery: 2, landmarkOffset: 18.0, archEvery: 8,
+  landmarkEvery: 2, landmarkOffset: 18.0, archEvery: 8, lapDistance: 1000,
 });
 
 /* ---------- Lalu lintas Nusantara (dipakai trafficManager) ---------- */
@@ -111,7 +111,7 @@ export const TRAFFIC = Object.freeze({
 export const SCORE = Object.freeze({
   distancePerUnit: 1,
   rollBonus: 250, loopBonus: 300, boostPadBonus: 50, nearMissBonus: 25,
-  coinBonus: 35, fruitBonus: 95, gemBonus: 150,
+  coinBonus: 35, fruitBonus: 95, gemBonus: 150, ringBonus: 150, smashBonus: 15,
   comboWindow: 4,
 });
 
