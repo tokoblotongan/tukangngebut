@@ -40,6 +40,15 @@ async function init() {
     onMenu: () => loop?.toMenu(),
     onDifficulty: (id) => loop?.setDifficulty(id),
     onSelectVehicle: (key) => swapVehicle(key),
+    onRoomChange: (roomId) => {
+      const s = network?.joinRoom(roomId);
+      if (network) hud.setNetworkStatus(s || network.status, network.room, network.onlineCount);
+      hud.toast(`Pindah ke kamar ${roomId.toUpperCase()} 🌐`, 'good');
+    },
+    onNameChange: (name) => {
+      const saved = network?.setName(name);
+      if (saved) hud.toast(`Nama Juragan: ${saved} ✨`, 'good');
+    },
     onQuality: (high) => ctx?.setQuality(high),
   });
   hud.setLoading(0.02, 'Menyalakan golden hour…');
@@ -97,9 +106,13 @@ async function init() {
   traffic = await createTrafficManager(ctx.scene);
   network = createMultiplayerHook({
     scene: ctx.scene,
-    room: 'juragan-ngebut-nusantara-1',
+    room: hud.room,
     onStatusChange: ({ status, room, onlineCount }) => hud.setNetworkStatus(status, room, onlineCount),
+    onLobbyChange: (counts) => hud.setLobbyCounts(counts),
   });
+  hud.setPlayerName(network.identity.name);
+  hud.setActiveRoom(network.room);
+  hud.setLobbyCounts(network.lobbyCounts);
 
   /* ---------- 7. Loop & state MENU ---------- */
   loop = createGameLoop({

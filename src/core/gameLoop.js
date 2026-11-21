@@ -35,6 +35,8 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
 
   /* ---------------- Input ---------------- */
   const onKeyDown = (e) => {
+    const t = /** @type {HTMLElement | null} */ (e.target);
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     const c = e.code;
     if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(c)) e.preventDefault();
     keys.add(c);

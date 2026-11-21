@@ -6,6 +6,7 @@
    API ringkas ada di objek yang dikembalikan createHUD().
    ===================================================================== */
 import { VEHICLES, GAME, PALETTE as P } from '../config/gameConfig.js';
+import { PUBLIC_ROOMS, normalizeRoomId } from '../network/multiplayerHook.js';
 
 const EMOJI = { angkot: '🚐', bemo: '🛺', l300: '🛻', ojol: '🏍️' };
 const DIFFS = [
@@ -27,6 +28,10 @@ export function createHUD(opts = {}) {
     loader: $('jg-loader'), loadFill: $('jg-load-fill'), loadStatus: $('jg-load-status'),
     fatal: $('jg-fatal'), fatalMsg: $('jg-fatal-msg'),
     menu: $('jg-menu'), fleet: $('jg-fleet'), diffs: $('jg-diffs'), diffNote: $('jg-diff-note'),
+    rooms: $('jg-rooms'), roomActive: $('jg-room-active'),
+    roomInput: /** @type {HTMLInputElement | null} */ ($('jg-room-input')),
+    roomJoin: $('jg-room-join'),
+    nameInput: /** @type {HTMLInputElement | null} */ ($('jg-name-input')),
     bestMenu: $('jg-best-menu'), btnStart: $('jg-start'),
     hud: $('jg-hud'), score: $('jg-score'), dist: $('jg-dist'), coins: $('jg-coins'), coinsWrap: $('jg-coins-wrap'),
     hearts: $('jg-hearts'), combo: $('jg-combo'), speed: $('jg-speed'), speedBar: $('jg-speed-bar'),
@@ -50,6 +55,8 @@ export function createHUD(opts = {}) {
   if (!VEHICLES[selectedVehicle]) selectedVehicle = 'angkot';
   let selectedDiff = localStorage.getItem('jg_diff') || 'normal';
   if (!DIFFS.some((d) => d.id === selectedDiff)) selectedDiff = 'normal';
+  let selectedRoom = normalizeRoomId(localStorage.getItem('jg_room') || 'salatiga-1');
+  let lobbyCounts = {};
 
   /* ---------- Kartu armada ---------- */
   for (const [key, def] of Object.entries(VEHICLES)) {
@@ -100,6 +107,66 @@ export function createHUD(opts = {}) {
     el.diffNote.textContent = DIFFS.find((d) => d.id === selectedDiff).note;
   }
   paintFleet(); paintDiff();
+
+  /* ---------- Kamar Mabar (Public & Private Room + Nama Juragan) ---------- */
+  for (const rm of PUBLIC_ROOMS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'jg-room-btn';
+    b.dataset.room = rm.id;
+    b.innerHTML = `<span class="jg-room-name">${rm.label} <small>(${rm.tag})</small></span><span class="jg-room-cnt">0 pemain</span>`;
+    b.addEventListener('click', () => {
+      selectRoom(rm.id);
+      sfx.ui();
+    });
+    el.rooms?.appendChild(b);
+  }
+  function paintRooms() {
+    el.rooms?.querySelectorAll('.jg-room-btn').forEach((btn) => {
+      const node = /** @type {HTMLElement} */ (btn);
+      const rid = node.dataset.room || '';
+      node.classList.toggle('on', rid === selectedRoom);
+      const cntNode = node.querySelector('.jg-room-cnt');
+      const cnt = lobbyCounts[rid] || 0;
+      if (cntNode) cntNode.textContent = cnt > 0 ? `${cnt} online` : 'Kosong';
+    });
+    const isPublic = PUBLIC_ROOMS.some((r) => r.id === selectedRoom);
+    if (el.roomActive) {
+      el.roomActive.textContent = `${isPublic ? '🌐' : '🔒'} ${selectedRoom.toUpperCase()}`;
+    }
+  }
+  function selectRoom(rawId) {
+    selectedRoom = normalizeRoomId(rawId);
+    try { localStorage.setItem('jg_room', selectedRoom); } catch {}
+    paintRooms();
+    opts.onRoomChange?.(selectedRoom);
+  }
+  function joinPrivateRoom() {
+    const val = el.roomInput?.value || '';
+    if (!val.trim()) return;
+    selectRoom(val);
+    sfx.ui();
+    if (el.roomInput) el.roomInput.value = '';
+  }
+  el.roomJoin?.addEventListener('click', joinPrivateRoom);
+  el.roomInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); joinPrivateRoom(); }
+  });
+
+  if (el.nameInput) {
+    const savedName = localStorage.getItem('jg_player_name');
+    if (savedName) el.nameInput.value = savedName;
+    const commitName = () => {
+      const clean = (el.nameInput?.value || '').trim().slice(0, 18);
+      if (clean) opts.onNameChange?.(clean);
+    };
+    el.nameInput.addEventListener('change', commitName);
+    el.nameInput.addEventListener('blur', commitName);
+    el.nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); el.nameInput?.blur(); }
+    });
+  }
+  paintRooms();
 
   /* ---------- Tombol ---------- */
   el.btnStart.addEventListener('click', () => { sfx.resume(); sfx.ui(); opts.onStart?.(); });
@@ -158,6 +225,7 @@ export function createHUD(opts = {}) {
     input, sfx,
     get vehicle() { return selectedVehicle; },
     get difficulty() { return selectedDiff; },
+    get room() { return selectedRoom; },
 
     setLoading(ratio, text) {
       el.loadFill.style.width = `${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}%`;
@@ -257,19 +325,35 @@ export function createHUD(opts = {}) {
     },
     hideGameOver() { el.over.classList.remove('show'); },
 
-    setNetworkStatus(status, _room, onlineCount = 1) {
+    setPlayerName(name) {
+      if (el.nameInput && name && !el.nameInput.value) el.nameInput.value = name;
+    },
+    setActiveRoom(roomId) {
+      selectedRoom = normalizeRoomId(roomId);
+      paintRooms();
+    },
+    setLobbyCounts(counts) {
+      lobbyCounts = counts || {};
+      paintRooms();
+    },
+    setNetworkStatus(status, room = selectedRoom, onlineCount = 1) {
       const count = Math.max(1, Math.round(onlineCount || 1));
+      const roomLabel = String(room || selectedRoom || 'salatiga-1').toUpperCase();
       const map = {
-        solo: ['SOLO • AI MODE', 'solo'],
-        connecting: ['MENYAMBUNG…', 'warn'],
-        live: [`ONLINE • ${count} PEMAIN`, 'live'],
-        offline: ['OFFLINE • SOLO', 'warn'],
+        solo: [`SOLO • ${roomLabel} (AI)`, 'solo'],
+        connecting: [`MENYAMBUNG • ${roomLabel}…`, 'warn'],
+        live: [`ONLINE • ${roomLabel} (${count} PEMAIN)`, 'live'],
+        offline: [`OFFLINE • ${roomLabel}`, 'warn'],
       };
       const [label, cls] = map[status] || map.solo;
       for (const node of [el.net, el.netMenu]) {
         if (!node) continue;
         node.className = `jg-net ${cls}`;
         node.textContent = `● ${label}`;
+      }
+      if (room) {
+        selectedRoom = normalizeRoomId(room);
+        paintRooms();
       }
     },
 
@@ -429,10 +513,20 @@ function TEMPLATE() {
       </div>
     </div>
     <div class="jg-panel jg-menu-card">
+      <div class="jg-name-row">
+        <label for="jg-name-input">Nama Juragan</label>
+        <input id="jg-name-input" class="jg-input" type="text" maxlength="18" placeholder="Tulis namamu di trek…" autocomplete="off" />
+      </div>
       <div class="jg-menu-head">
         <h2>Pilih Armada</h2><span id="jg-best-menu" class="jg-chip gold">🏆 Rekor: 0</span>
       </div>
       <div id="jg-fleet" class="jg-fleet"></div>
+      <div class="jg-menu-head mt"><h2>Pilih Kamar Server</h2><span id="jg-room-active" class="jg-chip live-room">🌐 SALATIGA-1</span></div>
+      <div id="jg-rooms" class="jg-rooms"></div>
+      <div class="jg-private-row">
+        <input id="jg-room-input" class="jg-input" type="text" maxlength="20" placeholder="Buat / Gabung Kamar Privat (cth: KOP-88 atau SALATIGA)…" autocomplete="off" />
+        <button id="jg-room-join" class="jg-btn small" type="button">Gabung 🔒</button>
+      </div>
       <div class="jg-menu-head mt"><h2>Tingkat Ngebut</h2><span id="jg-diff-note" class="jg-chip">3 nyawa • skor ×1.0</span></div>
       <div id="jg-diffs" class="jg-diffs"></div>
       <button id="jg-start" class="jg-btn primary big">GAS! 🏁</button>
@@ -442,7 +536,7 @@ function TEMPLATE() {
         <span><kbd>P</kbd> jeda • <kbd>R</kbd> ulang • <kbd>M</kbd> suara</span>
         <span>📱 Sentuh pads kiri/kanan di layar</span>
       </div>
-      <div class="jg-objective">🎯 Jauhkan jarak, salip ketat, hajar ramp, raih rantai stunt._checkpoint tiap 500 m memberi bonus.</div>
+      <div class="jg-objective">🎯 Kumpulkan koin &amp; buah segar, salip ketat, hajar ramp, dan raih rantai stunt. Checkpoint tiap 500 m memberi bonus!</div>
     </div>
   </div>
 
@@ -595,6 +689,20 @@ function injectStyles() {
   .jg-diff{pointer-events:auto;display:flex;align-items:center;justify-content:center;gap:6px;font-weight:800;font-size:13px;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:13px;padding:11px;transition:transform .15s,border-color .2s}
   .jg-diff:hover{transform:translateY(-2px);border-color:var(--jg-amber)}
   .jg-diff.on{background:linear-gradient(135deg,var(--jg-amber),var(--jg-orange));color:#fff;border-color:var(--jg-orange)}
+  .jg-name-row{display:flex;align-items:center;gap:10px;margin-bottom:13px;padding-bottom:12px;border-bottom:1.5px dashed var(--jg-line)}
+  .jg-name-row label{font-family:var(--jg-disp);font-weight:600;font-size:15px;white-space:nowrap}
+  .jg-input{pointer-events:auto;user-select:text;flex:1;min-width:0;font-family:var(--jg-body);font-weight:700;font-size:13px;color:var(--jg-ink);background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:12px;padding:9px 12px;outline:none;transition:border-color .2s,box-shadow .2s}
+  .jg-input:focus{border-color:var(--jg-blue);box-shadow:0 0 0 3px rgba(58,134,255,.2)}
+  .jg-chip.live-room{background:rgba(236,253,245,.95);border-color:rgba(16,185,129,.45);color:#0f766e}
+  .jg-rooms{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .jg-room-btn{pointer-events:auto;display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:13px;padding:9px 11px;transition:transform .15s,border-color .2s,box-shadow .2s}
+  .jg-room-btn:hover{transform:translateY(-2px);border-color:var(--jg-amber)}
+  .jg-room-btn.on{border-color:var(--jg-green);background:linear-gradient(160deg,#ecfdf5,#d1fae5);box-shadow:0 0 0 3px rgba(56,176,0,.18)}
+  .jg-room-name{font-family:var(--jg-disp);font-weight:600;font-size:13.5px;color:var(--jg-ink)}
+  .jg-room-name small{font-family:var(--jg-body);font-size:10px;font-weight:700;color:var(--jg-soft)}
+  .jg-room-cnt{font-size:10.5px;font-weight:800;color:#0f766e}
+  .jg-private-row{display:flex;gap:8px;margin-top:8px}
+  .jg-btn.small{padding:9px 14px;font-size:12.5px;border-radius:12px;white-space:nowrap}
   .jg-legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:13px;font-size:11px;font-weight:700;color:var(--jg-soft)}
   .jg-legend b{color:var(--jg-red)}
   .jg-objective{margin-top:11px;font-size:11.5px;font-weight:700;line-height:1.5;color:var(--jg-soft);background:rgba(63,163,77,.1);border:1.5px solid rgba(63,163,77,.3);border-radius:12px;padding:9px 12px}
@@ -680,6 +788,8 @@ function injectStyles() {
   }
   @media (max-width:720px){
     .jg-fleet{grid-template-columns:1fr 1fr}
+    .jg-rooms{grid-template-columns:1fr}
+    .jg-name-row{flex-direction:column;align-items:stretch;gap:6px}
     .jg-card-tag{min-height:0}
     .jg-menu-card{padding:15px;max-height:none}
     .jg-menu{padding:12px}

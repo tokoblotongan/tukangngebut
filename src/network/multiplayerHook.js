@@ -1,16 +1,23 @@
 /* =====================================================================
    multiplayerHook.js — Sinkronisasi Supabase Realtime Multiplayer
-   (Presence + Broadcast ~20Hz / 50ms) dengan fallback aman ke mode
-   Solo/AI bila environment variables belum tersedia.
-   Room default: juragan-ngebut-nusantara-1.
-   Kontrak: syncLocalState(playerState), getRemotePlayers(), update(dt).
+   (Lobby Directory + Room Presence + Broadcast ~20Hz / 50ms) dengan
+   fallback aman ke mode Solo/AI bila environment variables belum ada.
+   Channel kamar dinamis: juragan-room-<roomId>.
+   Lobby directory: juragan-lobby-directory.
    ===================================================================== */
 import * as THREE from 'three';
 import { createClient } from '@supabase/supabase-js';
 import { loadVehicle } from '../entities/assetFactory.js';
 import { VEHICLES, getVehicleDef } from '../config/gameConfig.js';
 
-const DEFAULT_ROOM = 'juragan-ngebut-nusantara-1';
+export const PUBLIC_ROOMS = Object.freeze([
+  { id: 'salatiga-1', label: 'Salatiga-1', tag: 'Umum' },
+  { id: 'nusantara-2', label: 'Nusantara-2', tag: 'Umum' },
+  { id: 'mabar-3', label: 'Mabar-3', tag: 'Umum' },
+]);
+
+const DEFAULT_ROOM = 'salatiga-1';
+const LOBBY_CHANNEL = 'juragan-lobby-directory';
 const SEND_INTERVAL = 0.05; // ~20 Hz (50ms throttle)
 const PEER_TTL = 4.0;       // detik tanpa kabar → dianggap pergi
 const NAMES = [
@@ -18,6 +25,16 @@ const NAMES = [
   'Nona Salatiga', 'Mas Blotongan', 'Juragan Kopi', 'Pembalap Merbabu',
 ];
 const VEHICLE_EMOJIS = { angkot: '🚐', bemo: '🛺', l300: '🛻', ojol: '🏍️' };
+
+export function normalizeRoomId(raw) {
+  const cleaned = String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 20);
+  return cleaned || DEFAULT_ROOM;
+}
 
 function getOrCreateIdentity() {
   const fallbackName = NAMES[Math.floor(Math.random() * NAMES.length)];
@@ -35,21 +52,20 @@ function getOrCreateIdentity() {
 
 function makeNameplateSprite(name, vehicleType) {
   const c = document.createElement('canvas');
-  c.width = 320;
+  c.width = 340;
   c.height = 84;
   const g = c.getContext('2d');
   g.clearRect(0, 0, c.width, c.height);
 
-  // Pill mainan Pixar hangat dengan garis emas
-  g.fillStyle = 'rgba(34, 24, 24, 0.86)';
+  g.fillStyle = 'rgba(34, 24, 24, 0.88)';
   g.beginPath();
-  g.roundRect(10, 14, 300, 56, 26);
+  g.roundRect(8, 12, 324, 58, 26);
   g.fill();
 
   g.strokeStyle = '#ffbe0b';
   g.lineWidth = 4;
   g.beginPath();
-  g.roundRect(10, 14, 300, 56, 26);
+  g.roundRect(8, 12, 324, 58, 26);
   g.stroke();
 
   const em = VEHICLE_EMOJIS[vehicleType] || '🚐';
@@ -58,7 +74,7 @@ function makeNameplateSprite(name, vehicleType) {
   g.textAlign = 'center';
   g.textBaseline = 'middle';
   const label = `${em} ${String(name || 'Juragan').slice(0, 16)}`;
-  g.fillText(label, 160, 43);
+  g.fillText(label, 170, 42);
 
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -70,7 +86,7 @@ function makeNameplateSprite(name, vehicleType) {
     depthWrite: false,
   });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(3.6, 0.95, 1);
+  sprite.scale.set(3.8, 0.95, 1);
   sprite.renderOrder = 6;
   sprite.userData = { tex, mat };
   return sprite;
@@ -100,23 +116,34 @@ export function createMultiplayerHook({
   room = DEFAULT_ROOM,
   enabled = true,
   onStatusChange = null,
+  onLobbyChange = null,
 } = {}) {
   const identity = getOrCreateIdentity();
   const id = identity.id;
+  let currentRoom = normalizeRoomId(room);
 
   const peers = new Map();      // id -> { id, name, vehicleType, x, y, z, rollAngle, speed, score, state, seen }
   const presenceIds = new Set();
-  const ghosts = new Map();     // id -> { root, vehicleMesh, nameplate, target, roll, type, loading }
+  const ghosts = new Map();     // id -> { root, vehicleMesh, nameplate, plateName, target, roll, type, loading }
+  let lobbyCounts = {};
 
   let supabaseClient = null;
-  let transport = null, unsubscribe = null, channel = null;
+  let transport = null, unsubscribe = null, channel = null, lobbyChannel = null;
   let status = 'solo';
   let onlineCount = 1;
   let acc = 0, lastPayload = null, lastTrackedVehicle = '';
   let disposed = false;
 
   function emitStatus() {
-    onStatusChange?.({ status, room, onlineCount, peerCount: peers.size });
+    onStatusChange?.({ status, room: currentRoom, onlineCount, peerCount: peers.size });
+  }
+
+  function emitLobby() {
+    const merged = { ...lobbyCounts };
+    if (status === 'live') {
+      merged[currentRoom] = Math.max(merged[currentRoom] || 0, onlineCount);
+    }
+    onLobbyChange?.(merged);
   }
 
   function recomputeOnlineCount() {
@@ -126,6 +153,7 @@ export function createMultiplayerHook({
       onlineCount = 1;
     }
     emitStatus();
+    emitLobby();
   }
 
   function disposeGhostEntry(entry) {
@@ -194,21 +222,60 @@ export function createMultiplayerHook({
     for (const pid of [...peers.keys()]) removePeer(pid);
   }
 
-  /* ---------- Supabase Realtime (Presence + Broadcast self:false) ---------- */
-  function connectSupabase(client, roomName = room) {
+  /* ---------- Lobby Directory Channel (juragan-lobby-directory) ---------- */
+  function connectLobby(client) {
+    if (!client?.channel || lobbyChannel) return;
+    try {
+      lobbyChannel = client.channel(LOBBY_CHANNEL, {
+        config: { presence: { key: id } },
+      });
+      lobbyChannel.on('presence', { event: 'sync' }, () => {
+        if (!lobbyChannel) return;
+        const pState = lobbyChannel.presenceState();
+        const counts = {};
+        for (const metas of Object.values(pState || {})) {
+          const meta = Array.isArray(metas) && metas.length ? metas[metas.length - 1] : null;
+          const rm = normalizeRoomId(meta?.room || DEFAULT_ROOM);
+          counts[rm] = (counts[rm] || 0) + 1;
+        }
+        lobbyCounts = counts;
+        emitLobby();
+      });
+      lobbyChannel.subscribe(async (s) => {
+        if (disposed) return;
+        if (s === 'SUBSCRIBED') {
+          try {
+            await lobbyChannel.track({ id, room: currentRoom, name: identity.name });
+          } catch {}
+        }
+      });
+    } catch (err) {
+      console.warn('[Multiplayer] Lobby directory gagal:', err);
+    }
+  }
+
+  /* ---------- Room Channel Dinamis: juragan-room-<roomId> ---------- */
+  function connectSupabase(client, roomName = currentRoom) {
+    currentRoom = normalizeRoomId(roomName);
     if (!client?.channel) {
       status = 'solo';
       recomputeOnlineCount();
       return status;
     }
+    supabaseClient = client;
+
     if (channel) {
+      try { channel.send({ type: 'broadcast', event: 'state', payload: { id, leave: true } }); } catch {}
       try { channel.unsubscribe(); } catch {}
       channel = null;
     }
     detach();
 
+    connectLobby(client);
+
     try {
-      channel = client.channel(roomName, {
+      const topic = `juragan-room-${currentRoom}`;
+      channel = client.channel(topic, {
         config: {
           broadcast: { self: false },
           presence: { key: id },
@@ -225,20 +292,26 @@ export function createMultiplayerHook({
           presenceIds.add(key);
           if (key === id) continue;
           const meta = Array.isArray(metas) && metas.length ? metas[metas.length - 1] : null;
-          if (meta && !peers.has(key)) {
-            const vType = VEHICLES[meta.vehicleType] ? meta.vehicleType : 'angkot';
-            peers.set(key, {
-              id: key,
-              name: meta.name || 'Juragan',
-              vehicleType: vType,
-              vehicle: vType,
-              x: 0, y: 0, z: 0, rollAngle: 0, speed: 0, score: 0,
-              state: 'MENU',
-              seen: performance.now() / 1000,
-            });
+          if (meta) {
+            const existing = peers.get(key);
+            const vType = VEHICLES[meta.vehicleType] ? meta.vehicleType : (existing?.vehicleType || 'angkot');
+            if (!existing) {
+              peers.set(key, {
+                id: key,
+                name: meta.name || 'Juragan',
+                vehicleType: vType,
+                vehicle: vType,
+                x: 0, y: 0, z: 0, rollAngle: 0, speed: 0, score: 0,
+                state: 'MENU',
+                seen: performance.now() / 1000,
+              });
+            } else {
+              if (meta.name) existing.name = meta.name;
+              existing.vehicleType = vType;
+              existing.vehicle = vType;
+            }
           }
         }
-        // Bersihkan peer yang sudah tidak ada di presence
         for (const pid of [...peers.keys()]) {
           if (!presenceIds.has(pid)) removePeer(pid);
         }
@@ -263,17 +336,19 @@ export function createMultiplayerHook({
       status = 'connecting';
       emitStatus();
 
-      channel.subscribe(async (s) => {
-        if (disposed) return;
+      const activeChannel = channel;
+      activeChannel.subscribe(async (s) => {
+        if (disposed || activeChannel !== channel) return;
         if (s === 'SUBSCRIBED') {
           status = 'live';
           try {
-            await channel.track({
+            await activeChannel.track({
               id,
               name: identity.name,
               vehicleType: lastPayload?.vehicleType || 'angkot',
             });
             lastTrackedVehicle = lastPayload?.vehicleType || 'angkot';
+            lobbyChannel?.track({ id, room: currentRoom, name: identity.name }).catch(() => {});
           } catch {}
         } else if (s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') {
           status = 'offline';
@@ -296,11 +371,27 @@ export function createMultiplayerHook({
     return status;
   }
 
+  function joinRoom(roomId) {
+    const nextRoom = normalizeRoomId(roomId);
+    try { localStorage.setItem('jg_room', nextRoom); } catch {}
+    if (nextRoom === currentRoom && (status === 'live' || status === 'connecting')) {
+      return status;
+    }
+    currentRoom = nextRoom;
+    if (supabaseClient) {
+      return connectSupabase(supabaseClient, nextRoom);
+    }
+    detach();
+    status = 'solo';
+    recomputeOnlineCount();
+    return status;
+  }
+
   /* ---------- Auto-init dari VITE_SUPABASE_URL & VITE_SUPABASE_ANON_KEY ---------- */
   if (enabled) {
     supabaseClient = createSupabaseFromEnv();
     if (supabaseClient) {
-      connectSupabase(supabaseClient, room);
+      connectSupabase(supabaseClient, currentRoom);
     } else {
       status = 'solo';
       onlineCount = 1;
@@ -330,7 +421,6 @@ export function createMultiplayerHook({
     const now = performance.now() / 1000;
     let removed = false;
     for (const [pid, p] of peers) {
-      // Hanya kadaluarsakan jika juga tidak ada di presence atau sudah sangat lama diam
       const ttl = presenceIds.has(pid) ? PEER_TTL * 4 : PEER_TTL;
       if (now - p.seen > ttl) {
         removePeer(pid);
@@ -342,6 +432,20 @@ export function createMultiplayerHook({
   }
 
   /* ---------- Kendaraan remote + Nameplate mengambang ---------- */
+  function attachNameplate(entry, name, vehicleType) {
+    if (entry.nameplate) {
+      entry.root.remove(entry.nameplate);
+      entry.nameplate.userData.tex?.dispose();
+      entry.nameplate.userData.mat?.dispose();
+    }
+    const def = getVehicleDef(vehicleType);
+    const plate = makeNameplateSprite(name, vehicleType);
+    plate.position.set(0, def.targetSize.y + 1.05, 0);
+    entry.nameplate = plate;
+    entry.plateName = name;
+    entry.root.add(plate);
+  }
+
   async function spawnOrSwapVehicle(peer, entry) {
     if (!scene || entry.loading || !VEHICLES[peer.vehicleType]) return;
     entry.loading = true;
@@ -361,16 +465,7 @@ export function createMultiplayerHook({
       entry.vehicleMesh = mesh;
       entry.root.add(mesh);
 
-      if (entry.nameplate) {
-        entry.root.remove(entry.nameplate);
-        entry.nameplate.userData.tex?.dispose();
-        entry.nameplate.userData.mat?.dispose();
-      }
-      const def = getVehicleDef(peer.vehicleType);
-      const plate = makeNameplateSprite(peer.name, peer.vehicleType);
-      plate.position.set(0, def.targetSize.y + 1.05, 0);
-      entry.nameplate = plate;
-      entry.root.add(plate);
+      attachNameplate(entry, peer.name, peer.vehicleType);
     } catch {
       // biarkan entry bersih jika gagal memuat
     } finally {
@@ -389,6 +484,7 @@ export function createMultiplayerHook({
       root,
       vehicleMesh: null,
       nameplate: null,
+      plateName: peer.name,
       target: new THREE.Vector3(peer.x, peer.y, peer.z),
       roll: peer.rollAngle || 0,
       type: peer.vehicleType,
@@ -429,6 +525,8 @@ export function createMultiplayerHook({
       const entry = ghosts.get(p.id);
       if (entry.type !== p.vehicleType && !entry.loading) {
         spawnOrSwapVehicle(p, entry);
+      } else if (entry.vehicleMesh && entry.plateName !== p.name && !entry.loading) {
+        attachNameplate(entry, p.name, entry.type);
       }
 
       const showVehicle = p.state === 'PLAYING' || p.state === 'PAUSED';
@@ -470,13 +568,18 @@ export function createMultiplayerHook({
         vehicleType: lastPayload?.vehicleType || 'angkot',
       }).catch(() => {});
     }
+    if (lobbyChannel) {
+      lobbyChannel.track({ id, room: currentRoom, name: identity.name }).catch(() => {});
+    }
     return identity.name;
   }
 
   function disconnect() {
     try { transport?.send?.('state', { id, leave: true }); } catch {}
     try { channel?.unsubscribe?.(); } catch {}
+    try { lobbyChannel?.unsubscribe?.(); } catch {}
     channel = null;
+    lobbyChannel = null;
     detach();
     status = 'solo';
     recomputeOnlineCount();
@@ -491,11 +594,12 @@ export function createMultiplayerHook({
 
   return {
     syncLocalState, getRemotePlayers, update,
-    attachTransport, connectSupabase, setName, disconnect, dispose,
+    attachTransport, connectSupabase, joinRoom, setName, disconnect, dispose,
     get status() { return status; },
-    get room() { return room; },
+    get room() { return currentRoom; },
     get identity() { return identity; },
     get peerCount() { return peers.size; },
     get onlineCount() { return onlineCount; },
+    get lobbyCounts() { return { ...lobbyCounts }; },
   };
 }
