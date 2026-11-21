@@ -33,7 +33,7 @@ export function createHUD(opts = {}) {
     turboWrap: $('jg-turbo'), turboFill: $('jg-turbo-fill'),
     cpFill: $('jg-cp-fill'), cpLabel: $('jg-cp-label'), fleetTag: $('jg-fleet-tag'),
     banner: $('jg-banner'), bannerTitle: $('jg-banner-title'), bannerPts: $('jg-banner-pts'),
-    airHint: $('jg-airhint'), toasts: $('jg-toasts'), net: $('jg-net'),
+    airHint: $('jg-airhint'), toasts: $('jg-toasts'), net: $('jg-net'), netMenu: $('jg-net-menu'),
     pause: $('jg-pause'), over: $('jg-over'),
     overScore: $('jg-over-score'), overDist: $('jg-over-dist'), overRolls: $('jg-over-rolls'),
     overCoins: $('jg-over-coins'), overBest: $('jg-over-best'), overRecord: $('jg-over-record'), overTitle: $('jg-over-title'),
@@ -257,11 +257,20 @@ export function createHUD(opts = {}) {
     },
     hideGameOver() { el.over.classList.remove('show'); },
 
-    setNetworkStatus(status, room) {
-      const map = { solo: ['SOLO', 'solo'], connecting: ['MENYAMBUNG…', 'warn'], live: ['LIVE', 'live'], offline: ['OFFLINE', 'warn'] };
+    setNetworkStatus(status, _room, onlineCount = 1) {
+      const count = Math.max(1, Math.round(onlineCount || 1));
+      const map = {
+        solo: ['SOLO • AI MODE', 'solo'],
+        connecting: ['MENYAMBUNG…', 'warn'],
+        live: [`ONLINE • ${count} PEMAIN`, 'live'],
+        offline: ['OFFLINE • SOLO', 'warn'],
+      };
       const [label, cls] = map[status] || map.solo;
-      el.net.className = `jg-net ${cls}`;
-      el.net.textContent = `● ${label} • ${room}`;
+      for (const node of [el.net, el.netMenu]) {
+        if (!node) continue;
+        node.className = `jg-net ${cls}`;
+        node.textContent = `● ${label}`;
+      }
     },
 
     setMuted(m) { muted = m; sfx.setMuted(m); paintAudio(); },
@@ -415,6 +424,7 @@ function TEMPLATE() {
         <div><h1>JURAGAN <em>NGEBUT</em></h1><span class="jg-brand-sub">MINI RACE NUSANTARA • SALATIGA</span></div>
       </div>
       <div class="jg-menu-tools">
+        <span id="jg-net-menu" class="jg-net solo">● SOLO • AI MODE</span>
         <button id="jg-audio-menu" class="jg-icon" aria-pressed="true">🔊</button>
       </div>
     </div>
@@ -450,7 +460,7 @@ function TEMPLATE() {
     </div>
     <div class="jg-hud-right">
       <div class="jg-tools">
-        <span id="jg-net" class="jg-net solo">● SOLO • nusantara-1</span>
+        <span id="jg-net" class="jg-net solo">● SOLO • AI MODE</span>
         <button id="jg-quality" class="jg-icon txt" aria-pressed="true">HD</button>
         <button id="jg-audio" class="jg-icon" aria-pressed="true">🔊</button>
         <button id="jg-pause-btn" class="jg-icon" title="Jeda (P)">⏸</button>
@@ -604,8 +614,9 @@ function injectStyles() {
   .jg-cp span{display:block;margin-top:3px;font-size:9px;font-weight:800;letter-spacing:.6px;color:var(--jg-soft)}
   .jg-hud-right{position:absolute;top:14px;right:14px;display:flex;flex-direction:column;align-items:flex-end;gap:8px}
   .jg-tools{display:flex;align-items:center;gap:7px}
-  .jg-net{font-size:9.5px;font-weight:800;letter-spacing:.8px;border-radius:99px;padding:6px 10px;background:var(--jg-surface);border:1.5px solid var(--jg-line);backdrop-filter:blur(8px)}
-  .jg-net.solo{color:#2b7a38}.jg-net.live{color:var(--jg-blue)}.jg-net.warn{color:var(--jg-orange)}
+  .jg-menu-tools{display:flex;align-items:center;gap:8px}
+  .jg-net{font-size:9.5px;font-weight:800;letter-spacing:.7px;border-radius:99px;padding:6px 11px;background:var(--jg-surface);border:1.5px solid var(--jg-line);backdrop-filter:blur(8px);white-space:nowrap}
+  .jg-net.solo{color:#2b7a38}.jg-net.live{color:#0f766e;border-color:rgba(16,185,129,.45);background:rgba(236,253,245,.95)}.jg-net.warn{color:var(--jg-orange)}
   .jg-speedo{padding:10px 14px;min-width:150px;text-align:right}
   .jg-speed{font-family:var(--jg-disp);font-weight:700;font-size:31px;line-height:1}
   .jg-unit{font-size:10px;font-weight:800;color:var(--jg-soft);margin-left:4px}
@@ -678,7 +689,7 @@ function injectStyles() {
     .jg-hud-right{top:10px;right:10px}
     .jg-speedo{min-width:118px;padding:8px 11px}
     .jg-speed{font-size:24px}
-    .jg-net{display:none}
+    .jg-net{font-size:8.5px;padding:5px 8px}
     .jg-pad{width:88px;height:88px;bottom:16px}
     .jg-pad.left{left:14px}.jg-pad.right{right:14px}
     .jg-legend{font-size:10px}

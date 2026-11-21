@@ -95,7 +95,11 @@ async function init() {
   /* ---------- 6. Lalu lintas & jaringan ---------- */
   hud.setLoading(0.96, 'Memanggil angkot, bemo, L300 & ojol…');
   traffic = await createTrafficManager(ctx.scene);
-  network = createMultiplayerHook({ scene: ctx.scene, room: 'nusantara-1' });
+  network = createMultiplayerHook({
+    scene: ctx.scene,
+    room: 'juragan-ngebut-nusantara-1',
+    onStatusChange: ({ status, room, onlineCount }) => hud.setNetworkStatus(status, room, onlineCount),
+  });
 
   /* ---------- 7. Loop & state MENU ---------- */
   loop = createGameLoop({
@@ -138,7 +142,7 @@ async function init() {
     get stats() { return loop?.stats; },
     connectSupabase: (client, room) => {
       const s = network.connectSupabase(client, room);
-      hud.setNetworkStatus(network.status, network.room);
+      hud.setNetworkStatus(network.status, network.room, network.onlineCount);
       return s;
     },
     modules: { ctx, track, landmarks, player, traffic, network, loop, hud },

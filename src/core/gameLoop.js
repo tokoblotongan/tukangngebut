@@ -292,9 +292,19 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
       hud.sfx.setEngine(false);
     }
 
-    /* Jaringan (stub aman saat solo) */
+    /* Jaringan (Supabase Realtime / Solo fallback) */
     const ps = player.getState();
-    network.syncLocalState({ vehicle: ps.type, x: ps.pos.x, y: ps.pos.y, z: ps.pos.z, score, state });
+    network.syncLocalState({
+      vehicleType: ps.type,
+      vehicle: ps.type,
+      x: ps.pos.x,
+      y: ps.pos.y,
+      z: ps.pos.z,
+      rollAngle: ps.rollAngle,
+      speed: ps.speed,
+      score,
+      state,
+    });
     network.update(dt);
 
     ctx.update(dt, elapsed);
@@ -311,7 +321,7 @@ export function createGameLoop({ ctx, track, landmarks, player, traffic, hud, ne
     track.updateTrack(MENU_Z, 0);
     landmarks.update(MENU_Z);
     hud.showMenu(best);
-    hud.setNetworkStatus(network.status, network.room);
+    hud.setNetworkStatus(network.status, network.room, network.onlineCount);
     clock.getDelta();
     ctx.renderer.setAnimationLoop(frame);
   }
