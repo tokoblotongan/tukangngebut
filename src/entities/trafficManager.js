@@ -13,14 +13,16 @@ import {
 } from '../config/gameConfig.js';
 import { loadVehicle, setVehicleUnderglow, createNeonRibbonTrail } from './assetFactory.js';
 import {
-  getTrackHeight, getTrackSlope, getSegmentType, getTrackSurfaceAt,
-  getForkProfile, evalLoopPose, checkRampCollision, checkBoostCollision,
-  LOOP_ARC_LEN, LOOP_HALF_W,
-} from '../world/trackGenerator.js';
+  getTrackHeight, getTrackSlope, getTrackCenterX, getTrackYaw, getTrackBank, getRampSide,
+  getSegmentType, getTrackSurfaceAt, getForkProfile, evalLoopPose,
+  checkRampCollision, checkBoostCollision, getActiveArenaId,
+  LOOP_ARC_LEN, LOOP_HALF_W, LOOP_CENTER_X, BYPASS_CENTER_X,
+} from '../world/activeTrack.js';
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const LANE_W = TRACK.width / TRACK.lanes;
 const LANES = [-LANE_W, 0, LANE_W];
+const AI_LANE_PREFS = [-4.4, 0, 4.4];
 const WEIGHTS = [['angkot', 0.3], ['bemo', 0.2], ['l300', 0.25], ['ojol', 0.25]];
 const AI_NAMES = {
   angkot: 'AI • Kang Angkot',
@@ -104,6 +106,7 @@ export async function createTrafficManager(scene) {
   const aiSlots = [0, 1, 2].map((idx) => ({
     slotIdx: idx,
     slotColor: SLOT_COLORS[(idx + 1) % SLOT_COLORS.length],
+    prefLaneX: AI_LANE_PREFS[idx],
     id: `ai_slot_${idx}`,
     type: 'bemo',
     name: AI_NAMES.bemo,
@@ -127,7 +130,8 @@ export async function createTrafficManager(scene) {
     flamePhase: idx * 2.1,
     loopState: null,
     lastLoopSeg: -1,
-    skillBias: (idx === 0 ? 0.09 : idx === 1 ? 0.04 : -0.02),
+    finishTime: 0,
+    skillBias: (idx === 0 ? 0.12 : idx === 1 ? 0.02 : -0.07),
     rightVec: new THREE.Vector3(1, 0, 0),
   }));
 
@@ -162,11 +166,18 @@ export async function createTrafficManager(scene) {
 
   function assignAIRacers(playerType = 'angkot', resetPositions = false) {
     const others = VEHICLE_TYPES.filter((t) => t !== playerType);
-    const startOffsets = [
-      { x: -3.7, z: -2.4 },
-      { x: 3.7, z: -2.4 },
-      { x: 0.0, z: -5.4 },
-    ];
+    const isSkyway = getActiveArenaId() === 'skyway';
+    const startOffsets = isSkyway
+      ? [
+          { x: -6.8, z: -0.6 },
+          { x: 3.6, z: -0.6 },
+          { x: 7.2, z: -0.8 },
+        ]
+      : [
+          { x: -4.6, z: -2.8 },
+          { x: 4.6, z: -3.2 },
+          { x: 0.0, z: -6.2 },
+        ];
     for (let i = 0; i < aiSlots.length; i++) {
       const slot = aiSlots[i];
       const vType = others[i % others.length];
@@ -191,6 +202,7 @@ export async function createTrafficManager(scene) {
         slot.turboTimer = 0;
         slot.loopState = null;
         slot.lastLoopSeg = -1;
+        slot.finishTime = 0;
         slot.rightVec.set(1, 0, 0);
         slot.rig.root.position.set(slot.x, slot.y, slot.z);
         slot.rig.mesh.quaternion.identity();
@@ -216,7 +228,7 @@ export async function createTrafficManager(scene) {
     const lane = Math.floor(Math.random() * 3);
     const z = playerZ - TRAFFIC.safeSpawnAhead - rand(0, 30);
     const segType = getSegmentType(Math.floor(-z / TRACK.segmentLength));
-    if (segType === 'loop' || segType === 'ramp' || segType === 'narrow') {
+    if (segType === 'loop' || segType === 'ramp' || segType === 'narrow' || segType === 'fork' || segType === 'skullTunnel') {
       freeByType[type].push(group);
       return;
     }
@@ -227,8 +239,9 @@ export async function createTrafficManager(scene) {
       }
     }
 
-    const surf = getTrackSurfaceAt(LANES[lane], z);
-    const initX = surf.onTrack ? LANES[lane] : surf.safeCenterX;
+    const cx = getTrackCenterX(z);
+    const surf = getTrackSurfaceAt(cx + LANES[lane], z);
+    const initX = surf.onTrack ? (cx + LANES[lane]) : surf.safeCenterX;
     const baseSpeed = PHYSICS.baseSpeed * TRAFFIC.speedFactor[type];
     const e = {
       group, type, def, lane,
@@ -255,7 +268,7 @@ export async function createTrafficManager(scene) {
     active.splice(idx, 1);
   }
 
-  function updateAIRacers(rawDt, playerZ, t, playerType, remotePlayers, track) {
+  function updateAIRacers(rawDt, playerZ, t, playerType, remotePlayers, track, playerX = 0, lapGoal = 1500) {
     if (playerType && aiSlots[0]?.type === playerType) {
       assignAIRacers(playerType, false);
     }
@@ -324,17 +337,18 @@ export async function createTrafficManager(scene) {
           ai.lastLoopSeg = ai.loopState.segIndex;
           ai.z = ai.loopState.zEnd - 0.1;
           ai.y = getTrackHeight(ai.z);
-          ai.x = ai.loopState.latX;
+          ai.x = getTrackCenterX(ai.z) + LOOP_CENTER_X + ai.loopState.latX;
           ai.loopState = null;
           ai.turboTimer = 1.4;
           ai.score += SCORE.loopBonus;
           ai.rig.mesh.quaternion.identity();
           ai.rightVec.set(1, 0, 0);
+          if (!ai.finishTime && -ai.z >= lapGoal) ai.finishTime = t || 1;
         }
         continue;
       }
 
-      /* Kecepatan rubber-banding kompetitif */
+      /* Kecepatan rubber-banding kompetitif (menyebar alami) */
       let desiredSpd = PHYSICS.maxSpeed * def.perf.speedMul * (0.82 + ai.skillBias);
       if (gapToPlayer > 10) desiredSpd += Math.min(11, gapToPlayer * 0.28);
       else if (gapToPlayer < -24) desiredSpd -= Math.min(7.5, (-gapToPlayer - 24) * 0.18);
@@ -342,12 +356,18 @@ export async function createTrafficManager(scene) {
       ai.speed += (desiredSpd - ai.speed) * (1 - Math.exp(-2.8 * rawDt));
 
       const effSpd = ai.speed * (ai.turboTimer > 0 ? 1.42 : 1);
+      const prevZ = ai.z;
       ai.z -= effSpd * rawDt;
+      const cxPrev = getTrackCenterX(prevZ);
+      const cxNow = getTrackCenterX(ai.z);
+      ai.x += cxNow - cxPrev;
       ai.score += effSpd * SCORE.distancePerUnit * rawDt;
+      if (!ai.finishTime && -ai.z >= lapGoal) ai.finishTime = t || 1;
 
-      /* Cek masuk Loop 360° */
+      /* Cek masuk Loop 360° (hanya jalur kiri di sekitar cxNow + LOOP_CENTER_X) */
       const segIdx = Math.floor(-ai.z / TRACK.segmentLength);
-      if (!ai.airborne && getSegmentType(segIdx) === 'loop' && segIdx !== ai.lastLoopSeg) {
+      const loopWorldCx = cxNow + LOOP_CENTER_X;
+      if (!ai.airborne && getSegmentType(segIdx) === 'loop' && segIdx !== ai.lastLoopSeg && Math.abs(ai.x - loopWorldCx) <= LOOP_HALF_W + 0.4) {
         const zStart = -segIdx * TRACK.segmentLength;
         const zEnd = -(segIdx + 1) * TRACK.segmentLength;
         ai.loopState = {
@@ -357,28 +377,38 @@ export async function createTrafficManager(scene) {
           y0: getTrackHeight(zStart),
           y1: getTrackHeight(zEnd),
           u: Math.max(0, Math.min(0.18, (zStart - ai.z) / TRACK.segmentLength)),
-          latX: THREE.MathUtils.clamp(ai.x, -(LOOP_HALF_W - 0.9), LOOP_HALF_W - 0.9),
+          latX: THREE.MathUtils.clamp(ai.x - loopWorldCx, -(LOOP_HALF_W - 0.85), LOOP_HALF_W - 0.85),
         };
         continue;
       }
 
-      /* Kemudi pintar lookahead: narrow, fork, ramp, buah, & hindari traffic */
-      const lookZ = ai.z - 11;
+      /* Kemudi pintar lookahead: narrow, loop/bypass, fork, ramp 1 sisi, buah, & hindari traffic */
+      const lookZ = ai.z - 12;
+      const lookCx = getTrackCenterX(lookZ);
       const lookSeg = Math.floor(-lookZ / TRACK.segmentLength);
       const lookType = getSegmentType(lookSeg);
       const curSurf = getTrackSurfaceAt(ai.x, ai.z);
 
-      let desiredX = Math.sin(t * 0.42 + ai.slotIdx * 2.1) * 2.4;
-      if (lookType === 'narrow' || lookType === 'loop' || lookType === 'ramp') {
-        desiredX = 0;
+      let desiredX = lookCx + ai.prefLaneX + Math.sin(t * 0.45 + ai.slotIdx * 2.1) * 0.9;
+      if (lookType === 'narrow') {
+        desiredX = lookCx + THREE.MathUtils.clamp(ai.prefLaneX * 0.35, -1.9, 1.9);
+      } else if (lookType === 'ramp') {
+        const rSide = getRampSide(lookSeg);
+        const takeJump = ((lookSeg + ai.slotIdx) % 3) === 0;
+        desiredX = lookCx + (takeJump ? rSide * 4.0 : -rSide * 4.0);
+      } else if (lookType === 'loop') {
+        const takeLoop = ((lookSeg + ai.slotIdx) % 2) === 0;
+        desiredX = lookCx + (takeLoop
+          ? LOOP_CENTER_X + (ai.slotIdx - 1) * 0.4
+          : BYPASS_CENTER_X + (ai.slotIdx - 1) * 0.5);
       } else if (lookType === 'fork') {
         const z0 = -lookSeg * TRACK.segmentLength;
         const ft = Math.min(1, Math.max(0, (z0 - lookZ) / TRACK.segmentLength));
         const fp = getForkProfile(ft);
         const takeLeft = ((lookSeg + ai.slotIdx) % 2) === 0;
-        desiredX = takeLeft ? fp.cxL : fp.cxR;
+        desiredX = lookCx + (takeLeft ? fp.cxL : fp.cxR);
       } else {
-        /* Cari buah/permata terdekat di depan */
+        /* Cari buah/permata terdekat di depan sambil mempertahankan preferensi lajur */
         let bestTarget = null;
         let bestWeight = 999;
         for (let k = 0; k < _targetsBuf.length; k++) {
@@ -386,8 +416,9 @@ export async function createTrafficManager(scene) {
           const dz = ai.z - tg.z;
           if (dz < 2.5 || dz > 22) continue;
           const dx = Math.abs(tg.x - ai.x);
+          const laneDev = Math.abs(tg.x - (lookCx + ai.prefLaneX));
           const bonusPri = tg.kind === 'gem' ? -5 : tg.kind === 'fruit' ? -3 : 0;
-          const cost = dz * 0.45 + dx * 1.4 + bonusPri;
+          const cost = dz * 0.45 + dx * 1.15 + laneDev * 0.85 + bonusPri;
           if (cost < bestWeight) {
             bestWeight = cost;
             bestTarget = tg;
@@ -397,33 +428,50 @@ export async function createTrafficManager(scene) {
       }
 
       /* Hindari penghalang tengkorak & mobil ambient di depan */
-      const hazards = track?.getUpcomingHazards?.(ai.z, 24);
+      const hazards = track?.getUpcomingHazards?.(ai.z, 26);
       if (hazards && hazards.length > 0) {
         const hz = hazards[0];
-        if (Math.abs(hz.laneX - desiredX) < 2.2) {
-          desiredX = hz.laneX >= 0 ? Math.max(-4.5, hz.laneX - 4.0) : Math.min(4.5, hz.laneX + 4.0);
+        if (Math.abs(hz.laneX - desiredX) < 2.5) {
+          desiredX = hz.laneX >= cxNow ? Math.max(cxNow - 6.2, hz.laneX - 4.4) : Math.min(cxNow + 6.2, hz.laneX + 4.4);
         }
       }
       for (const e of active) {
         const dz = ai.z - e.z;
-        if (dz > 1 && dz < 13 && Math.abs(e.x - ai.x) < 2.5) {
-          desiredX = e.x >= 0 ? Math.max(-4.5, e.x - 3.6) : Math.min(4.5, e.x + 3.6);
+        if (dz > 1 && dz < 13 && Math.abs(e.x - ai.x) < 2.6) {
+          desiredX = e.x >= cxNow ? Math.max(cxNow - 6.2, e.x - 3.8) : Math.min(cxNow + 6.2, e.x + 3.8);
           break;
         }
+      }
+
+      /* Repulsi lateral aktif antar pembalap AI & player agar tidak saling bertumpuk */
+      for (let j = 0; j < aiSlots.length; j++) {
+        if (j === i) continue;
+        const peer = aiSlots[j];
+        if (!peer.active || peer.loopState) continue;
+        if (Math.abs(ai.z - peer.z) < 7.5 && Math.abs(ai.x - peer.x) < 3.4) {
+          const dir = ai.x !== peer.x ? (ai.x > peer.x ? 1 : -1) : (i > j ? 1 : -1);
+          desiredX += dir * (3.4 - Math.abs(ai.x - peer.x)) * 1.1;
+        }
+      }
+      if (Math.abs(ai.z - playerZ) < 7.5 && Math.abs(ai.x - playerX) < 3.4) {
+        const dir = ai.x >= playerX ? 1 : -1;
+        desiredX += dir * (3.4 - Math.abs(ai.x - playerX)) * 0.95;
       }
 
       /* Pastikan tetap aman di segmen aktif */
       if (curSurf.type === 'narrow') {
         const lim = Math.max(0.4, curSurf.safeHalfW - 0.85);
-        desiredX = THREE.MathUtils.clamp(desiredX, -lim, lim);
-      } else if (curSurf.type === 'fork') {
+        desiredX = THREE.MathUtils.clamp(desiredX, cxNow - lim, cxNow + lim);
+      } else if (curSurf.type === 'fork' || curSurf.type === 'loop') {
         desiredX = THREE.MathUtils.clamp(
           desiredX,
-          curSurf.safeCenterX - Math.max(0.4, curSurf.safeHalfW - 0.8),
-          curSurf.safeCenterX + Math.max(0.4, curSurf.safeHalfW - 0.8)
+          curSurf.safeCenterX - Math.max(0.4, curSurf.safeHalfW - 0.85),
+          curSurf.safeCenterX + Math.max(0.4, curSurf.safeHalfW - 0.85)
         );
+      } else if (curSurf.type === 'ramp' && curSurf.inGap) {
+        desiredX = curSurf.safeCenterX;
       } else {
-        desiredX = THREE.MathUtils.clamp(desiredX, -4.8, 4.8);
+        desiredX = THREE.MathUtils.clamp(desiredX, cxNow - 6.4, cxNow + 6.4);
       }
 
       ai.targetX = desiredX;
@@ -494,11 +542,13 @@ export async function createTrafficManager(scene) {
       }
 
       const slope = getTrackSlope(ai.z);
+      const trackYaw = getTrackYaw(ai.z);
+      const trackBank = getTrackBank(ai.z);
       ai.rig.root.position.set(ai.x, ai.y, ai.z);
       ai.rig.mesh.rotation.order = 'YXZ';
       ai.rig.mesh.rotation.x = ai.airborne ? 0 : Math.atan(-slope);
-      ai.rig.mesh.rotation.z = ai.airborne ? ai.rollAngle : 0;
-      ai.rig.mesh.rotation.y = ai.airborne ? 0 : THREE.MathUtils.clamp(-ai.latVel * 0.016, -0.22, 0.22);
+      ai.rig.mesh.rotation.z = ai.airborne ? ai.rollAngle : trackBank;
+      ai.rig.mesh.rotation.y = trackYaw + (ai.airborne ? 0 : THREE.MathUtils.clamp(-ai.latVel * 0.016, -0.22, 0.22));
 
       ai.rightVec.set(1, 0, 0).applyEuler(ai.rig.mesh.rotation);
 
@@ -530,33 +580,39 @@ export async function createTrafficManager(scene) {
 
     for (let i = active.length - 1; i >= 0; i--) {
       const e = active[i];
+      const cxCur = getTrackCenterX(e.z);
 
       /* ---- AI lalu lintas ambient per tipe ---- */
       if (e.type === 'angkot') {
         if (e.state === 'cruise' && e.willNgetem && e.z <= e.ngetemAt) {
           e.state = 'ngetem';
           e.ngetemTimer = rand(TRAFFIC.ngetem.duration[0], TRAFFIC.ngetem.duration[1]);
-          e.targetX = LANES[0];
+          e.targetX = cxCur + LANES[0];
         }
         if (e.state === 'ngetem') {
           e.ngetemTimer -= dt;
           e.speed += (0 - e.speed) * (1 - Math.exp(-6 * dt));
-          if (e.ngetemTimer <= 0) { e.state = 'cruise'; e.willNgetem = false; e.targetX = LANES[e.lane]; }
+          if (e.ngetemTimer <= 0) { e.state = 'cruise'; e.willNgetem = false; e.targetX = cxCur + LANES[e.lane]; }
         } else {
           e.speed += (e.baseSpeed - e.speed) * (1 - Math.exp(-2 * dt));
+          e.targetX = cxCur + LANES[e.lane];
         }
       } else if (e.type === 'ojol') {
         e.speed = e.baseSpeed;
-        e.targetX = LANES[e.lane] + Math.sin(t * TRAFFIC.ojolWeave.freq + e.phase) * TRAFFIC.ojolWeave.amp;
+        e.targetX = cxCur + LANES[e.lane] + Math.sin(t * TRAFFIC.ojolWeave.freq + e.phase) * TRAFFIC.ojolWeave.amp;
       } else if (e.type === 'bemo') {
         e.speed = e.baseSpeed;
-        e.targetX = LANES[e.lane] + Math.sin(t * 0.6 + e.phase) * 0.25;
+        e.targetX = cxCur + LANES[e.lane] + Math.sin(t * 0.6 + e.phase) * 0.25;
       } else {
         e.speed = e.baseSpeed;
-        e.targetX = LANES[e.lane];
+        e.targetX = cxCur + LANES[e.lane];
       }
 
       e.z -= e.speed * dt;
+      const cxNext = getTrackCenterX(e.z);
+      e.x += cxNext - cxCur;
+      e.targetX += cxNext - cxCur;
+
       const surf = getTrackSurfaceAt(e.x, e.z);
       if (surf.type === 'loop' || surf.inGap) {
         despawn(i);
@@ -574,7 +630,8 @@ export async function createTrafficManager(scene) {
       e.group.position.set(e.x, y, e.z);
       e.group.rotation.order = 'YXZ';
       e.group.rotation.x = Math.atan(-slope);
-      e.group.rotation.y = (clampedTarget - e.x) * -0.02;
+      e.group.rotation.y = getTrackYaw(e.z) + (clampedTarget - e.x) * -0.02;
+      e.group.rotation.z = getTrackBank(e.z);
 
       const wr = e.def.wheelRadius || 0.34;
       for (const w of e.group.userData.wheels || []) w.rotation.x -= (e.speed / wr) * dt;
@@ -597,7 +654,7 @@ export async function createTrafficManager(scene) {
     /* Update 3 Pembalap AI kompetitif jika berada di mode balapan */
     if (opts.raceActive !== false) {
       const rawDt = opts.rawDt ?? dt;
-      updateAIRacers(rawDt, playerZ, t, opts.playerType, opts.remotePlayers, opts.track);
+      updateAIRacers(rawDt, playerZ, t, opts.playerType, opts.remotePlayers, opts.track, playerX, opts.lapGoal || TRACK.lapDistance);
     }
   }
 
@@ -621,9 +678,11 @@ export async function createTrafficManager(scene) {
         id: ai.id,
         name: ai.name,
         type: ai.type,
+        x: ai.x,
         z: ai.z,
         coins: Math.round(ai.coins),
         score: Math.round(ai.score),
+        finishTime: ai.finishTime || 0,
         slotColor: ai.slotColor,
         isAI: true,
       });

@@ -1,27 +1,30 @@
 /* =====================================================================
    main.js — Penghubung utama seluruh modul Juragan Ngebut.
-   Urutan: HUD → scene terkunci → preload aset dual-mode → trek →
-   landmark → player → lalu lintas → jaringan → game loop (MENU).
-   index.html otomatis menjalankan file ini bila tersedia.
+   Urutan: HUD → scene terkunci → preload aset dual-mode → Arena Salatiga
+   & Nusantara Skyway → landmark → player → lalu lintas → jaringan → loop.
    ===================================================================== */
+import * as THREE from 'three';
 import { createSceneContext } from './core/sceneSetup.js';
 import { createGameLoop } from './core/gameLoop.js';
 import { preloadAll, loadVehicle, setVehicleUnderglow } from './entities/assetFactory.js';
 import { createPlayerController } from './entities/playerController.js';
 import { createTrafficManager } from './entities/trafficManager.js';
 import { createTrackGenerator } from './world/trackGenerator.js';
+import { createFantasyTrack } from './world/fantasyTrack.js';
+import { setActiveArena } from './world/activeTrack.js';
 import { createLandmarkManager } from './world/salatigaLandmark.js';
 import { createHUD } from './ui/hudManager.js';
 import { createMultiplayerHook } from './network/multiplayerHook.js';
-import { GAME, VEHICLES, SLOT_COLORS } from './config/gameConfig.js';
+import { GAME, VEHICLES, ARENAS, SLOT_COLORS } from './config/gameConfig.js';
 
 const LOAD_LINES = [
   'Merakit angkot…', 'Memanaskan bemo…', 'Mengisi bak L300…', 'Memarkir ojol…',
   'Mengecat Koperasi Merah Putih…', 'Menata Pasar Raya II…',
-  'Membuka gerbang Rumdin…', 'Mengilapkan emas Monas…',
+  'Membangun Nusantara Skyway…', 'Mengilapkan Garuda Emas…',
 ];
 
-let hud = null, ctx = null, track = null, landmarks = null;
+let hud = null, ctx = null, track = null, skywayTrack = null, landmarks = null;
+let salatigaRoot = null, skywayRoot = null;
 let player = null, traffic = null, network = null, loop = null;
 let vehicleSwapToken = 0;
 
@@ -40,6 +43,11 @@ async function init() {
     onRestart: () => loop?.start(),
     onMenu: () => loop?.toMenu(),
     onDifficulty: (id) => loop?.setDifficulty(id),
+    onSelectArena: (arenaId) => {
+      loop?.setArena(arenaId);
+      const def = ARENAS[arenaId];
+      if (def) hud.toast(`Arena dipilih: ${def.emoji} ${def.label}`, 'good');
+    },
     onSelectVehicle: (key) => swapVehicle(key),
     onRoomChange: (roomId) => {
       const s = network?.joinRoom(roomId);
@@ -69,14 +77,22 @@ async function init() {
   /* ---------- 3. Pipeline aset dual-mode (GLB → prosedural) ---------- */
   hud.setLoading(0.06, 'Mencari berkas .glb di public/assets…');
   await preloadAll((i, total, label) => {
-    hud.setLoading(0.06 + (i / total) * 0.7, LOAD_LINES[i - 1] || `Merakit ${label}…`);
+    hud.setLoading(0.06 + (i / total) * 0.65, LOAD_LINES[i - 1] || `Merakit ${label}…`);
   });
 
-  /* ---------- 4. Dunia ---------- */
-  hud.setLoading(0.8, 'Menggelar aspal naik-turun…');
-  track = createTrackGenerator(ctx.scene);
-  hud.setLoading(0.86, 'Menanam landmark Salatiga…');
-  landmarks = await createLandmarkManager(ctx.scene);
+  /* ---------- 4. Dua Arena Dunia (Salatiga Klasik + Nusantara Skyway) ---------- */
+  setActiveArena(hud.arena);
+  salatigaRoot = new THREE.Group();
+  skywayRoot = new THREE.Group();
+  ctx.scene.add(salatigaRoot, skywayRoot);
+
+  hud.setLoading(0.75, 'Menggelar Sirkuit Kota Salatiga…');
+  track = createTrackGenerator(salatigaRoot, { maxAnisotropy: ctx.maxAnisotropy });
+  hud.setLoading(0.81, 'Menanam landmark Salatiga…');
+  landmarks = await createLandmarkManager(salatigaRoot);
+
+  hud.setLoading(0.87, 'Merakit Nusantara Skyway & Garuda Emas…');
+  skywayTrack = createFantasyTrack(skywayRoot, { maxAnisotropy: ctx.maxAnisotropy });
 
   /* ---------- 5. Player ---------- */
   hud.setLoading(0.92, 'Menyiapkan armada juragan…');
@@ -88,17 +104,16 @@ async function init() {
     callbacks: {
       onLaunch: () => { hud.sfx.launch(); ctx.addShake(0.18); },
       onRollStart: () => hud.sfx.roll(),
-      onBoost: () => { hud.sfx.boost(); ctx.addShake(0.3); hud.showStunt('TURBO!', 0); },
-      onLand: (rolls, bonus) => {
+      onBoost: () => { hud.sfx.boost(); ctx.addShake(0.3); },
+      onLand: (rolls) => {
         ctx.addShake(rolls > 0 ? 0.55 : 0.22);
         if (rolls > 0) {
           loop?.addRolls?.(rolls);
           hud.sfx.stunt(rolls);
-          hud.showStunt(rolls > 1 ? `BARREL ROLL ×${rolls}!` : 'BARREL ROLL!', bonus);
-          hud.toast('Mendarat mulus → TURBO 🔥', 'good');
+          hud.toast(rolls > 1 ? `🔥 BARREL ROLL ×${rolls}!` : '🔥 BARREL ROLL → TURBO!', 'good');
         } else hud.sfx.land();
       },
-      onCrash: () => { /* feedback ditangani gameLoop (nyawa & flash) */ },
+      onCrash: () => {},
       onAbyssFall: (kind) => loop?.onAbyssFall?.(kind),
       onAbyssRecover: () => loop?.onAbyssRecover?.(),
       onLoopComplete: () => loop?.onLoopComplete?.(),
@@ -115,14 +130,26 @@ async function init() {
     onLobbyChange: (counts) => hud.setLobbyCounts(counts),
   });
   setVehicleUnderglow(vehicle, SLOT_COLORS[0]);
+  ctx.refineSceneTextures?.(ctx.scene);
   hud.setPlayerName(network.identity.name);
   hud.setActiveRoom(network.room);
   hud.setLobbyCounts(network.lobbyCounts);
 
   /* ---------- 7. Loop & state MENU ---------- */
   loop = createGameLoop({
-    ctx, track, landmarks, player, traffic, hud, network,
+    ctx,
+    track,
+    salatigaTrack: track,
+    skywayTrack,
+    salatigaRoot,
+    skywayRoot,
+    landmarks,
+    player,
+    traffic,
+    hud,
+    network,
     difficulty: hud.difficulty,
+    arena: hud.arena,
   });
   loop.init();
 
@@ -137,6 +164,7 @@ async function init() {
       const g = await loadVehicle(key);
       if (token !== vehicleSwapToken) return;
       setVehicleUnderglow(g, SLOT_COLORS[0]);
+      ctx.refineSceneTextures?.(g);
       player.setVehicle(g, key);
       hud.toast(`${VEHICLES[key].label} siap di garis start! ${VEHICLES[key].tagline}`, 'good');
     } catch (err) {
@@ -149,21 +177,21 @@ async function init() {
   window.addEventListener('pagehide', () => {
     try {
       loop?.dispose(); network?.dispose(); traffic?.dispose();
-      landmarks?.dispose(); track?.dispose(); player?.dispose();
-      ctx?.dispose(); hud?.dispose();
+      landmarks?.dispose(); track?.dispose(); skywayTrack?.dispose();
+      player?.dispose(); ctx?.dispose(); hud?.dispose();
     } catch {}
   }, { once: true });
 
-  /* Akses debug tanpa mengganggu permainan */
   window.__JURAGAN__ = {
     version: GAME.version,
     get state() { return loop?.state; },
+    get arena() { return loop?.arena; },
     get stats() { return loop?.stats; },
     connectSupabase: (client, room) => {
       const s = network.connectSupabase(client, room);
       hud.setNetworkStatus(network.status, network.room, network.onlineCount);
       return s;
     },
-    modules: { ctx, track, landmarks, player, traffic, network, loop, hud },
+    modules: { ctx, track, skywayTrack, landmarks, player, traffic, network, loop, hud },
   };
 }

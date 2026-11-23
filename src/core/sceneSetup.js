@@ -20,35 +20,66 @@ export function createSceneContext(canvas) {
 
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = RENDERER.exposure;
+  renderer.toneMappingExposure = 1.08;
   renderer.shadowMap.enabled = !isSoftwareGl;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, RENDERER.maxPixelRatio));
+  const maxAnisotropy = Math.max(1, renderer.capabilities.getMaxAnisotropy());
+
+  function applyCanvasTextureFiltering(tex) {
+    if (!tex) return tex;
+    tex.anisotropy = maxAnisotropy;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.generateMipmaps = true;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  function refineSceneTextures(rootObj = scene) {
+    if (!rootObj) return;
+    const seen = new Set();
+    const texSlots = ['map', 'normalMap', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'alphaMap'];
+    rootObj.traverse((obj) => {
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const m of mats) {
+        if (!m) continue;
+        for (const slot of texSlots) {
+          const t = m[slot];
+          if (t && t.isCanvasTexture && !seen.has(t)) {
+            seen.add(t);
+            applyCanvasTextureFiltering(t);
+          }
+        }
+      }
+    });
+  }
 
   /* ---------------- Scene + fog atmosfer (linear di cakrawala jauh) ---------------- */
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(LIGHTING.fog.color);
-  scene.fog = new THREE.Fog(LIGHTING.fog.color, LIGHTING.fog.near, LIGHTING.fog.far);
+  scene.background = new THREE.Color(0xbfe9ff);
+  scene.fog = new THREE.Fog(0xbfe9ff, 140, 460);
 
   /* Studio environment map halus agar emas koin, buah glossy & plastik mainan berkilau */
   const pmrem = new THREE.PMREMGenerator(renderer);
   const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
   scene.environment = envTex;
-  scene.environmentIntensity = 0.46;
+  scene.environmentIntensity = 0.56;
   pmrem.dispose();
 
   const camera = new THREE.PerspectiveCamera(CAMERA.fov, 1, CAMERA.near, CAMERA.far);
   camera.position.set(0, CAMERA.height, CAMERA.distance);
   camera.up.set(0, 1, 0); // horizon-lock: up tidak pernah berubah
 
-  /* ---------------- Tiga titik cahaya lembut ala Source 2 / Dota 2 ---------------- */
-  const hemi = new THREE.HemisphereLight(LIGHTING.hemi.sky, LIGHTING.hemi.ground, LIGHTING.hemi.intensity);
+  /* ---------------- Tiga titik cahaya daylight lembut ---------------- */
+  const hemi = new THREE.HemisphereLight(0x8be0ff, 0xffe6c7, 0.95);
   scene.add(hemi);
 
   const keyDir = new THREE.Vector3(LIGHTING.key.dir.x, LIGHTING.key.dir.y, LIGHTING.key.dir.z).normalize();
   const key = new THREE.DirectionalLight(LIGHTING.key.color, LIGHTING.key.intensity);
   key.castShadow = !isSoftwareGl;
   key.shadow.mapSize.set(RENDERER.shadowMapSize, RENDERER.shadowMapSize);
+  key.shadow.radius = 3.5;
   key.shadow.bias = RENDERER.shadowBias;
   key.shadow.normalBias = RENDERER.shadowNormalBias;
   const sc = key.shadow.camera;
@@ -61,17 +92,38 @@ export function createSceneContext(canvas) {
   const rim = new THREE.DirectionalLight(LIGHTING.rim.color, LIGHTING.rim.intensity);
   scene.add(rim, rim.target);
 
-  /* ---------------- Langit gradien biru cerah → cakrawala emas hangat (#FFD89B) ---------------- */
-  const skyTex = makeSkyTexture();
+  /* ---------------- Langit gradien: Salatiga vs Nusantara Skyway ---------------- */
+  const skyTexSalatiga = applyCanvasTextureFiltering(makeSkyTexture());
+  const skyTexSkyway = applyCanvasTextureFiltering(makeSkywaySkyTexture());
+  const skyMat = new THREE.MeshBasicMaterial({ map: skyTexSalatiga, side: THREE.BackSide, fog: false, depthWrite: false });
   const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(380, 28, 18),
-    new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false, depthWrite: false })
+    new THREE.SphereGeometry(480, 28, 18),
+    skyMat
   );
   sky.renderOrder = -10; sky.frustumCulled = false;
   scene.add(sky);
 
+  let currentAtmosphere = 'salatiga';
+  function setAtmosphere(arenaId) {
+    const isSky = arenaId === 'skyway';
+    currentAtmosphere = isSky ? 'skyway' : 'salatiga';
+    skyMat.map = isSky ? skyTexSkyway : skyTexSalatiga;
+    skyMat.needsUpdate = true;
+    scene.background.setHex(0xbfe9ff);
+    scene.fog.color.setHex(0xbfe9ff);
+    scene.fog.near = 140;
+    scene.fog.far = 460;
+    hemi.color.setHex(0x8be0ff);
+    hemi.groundColor.setHex(0xffe6c7);
+    hemi.intensity = 0.95;
+    key.color.set(isSky ? '#fff6e0' : '#ffefd0');
+    key.intensity = isSky ? 1.78 : 1.72;
+    rim.color.setHex(0xd8f3ff);
+    rim.intensity = isSky ? 0.76 : 0.70;
+  }
+
   /* Matahari: inti + halo aditif, searah key light */
-  const sunTex = makeGlowTexture();
+  const sunTex = applyCanvasTextureFiltering(makeGlowTexture());
   const sunCore = new THREE.Sprite(new THREE.SpriteMaterial({
     map: sunTex, color: '#fff9e6', transparent: true, opacity: 0.92,
     blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
@@ -129,7 +181,7 @@ export function createSceneContext(canvas) {
     [PALETTE.toyPurple, PALETTE.pastelCoral, PALETTE.warmWhite],
     [PALETTE.toyOrange, PALETTE.toyYellow, PALETTE.toyRed],
   ];
-  const balloonTextures = balloonPalettes.map((cols) => makeBalloonStripeTexture(cols));
+  const balloonTextures = balloonPalettes.map((cols) => applyCanvasTextureFiltering(makeBalloonStripeTexture(cols)));
   const balloonEnvMats = balloonTextures.map((tex) => new THREE.MeshStandardMaterial({
     map: tex, roughness: 0.42, metalness: 0.05,
   }));
@@ -179,6 +231,100 @@ export function createSceneContext(canvas) {
     balloons.push(g);
   }
 
+  /* ---------------- Pelangi 3D pastel-gloss & bintang kecil berkelap-kelip ---------------- */
+  const RAINBOW_COLORS = ['#ff758f', '#ff9f43', '#ffe066', '#6ee7b7', '#60a5fa', '#c084fc'];
+  const rainbowBandGeos = RAINBOW_COLORS.map((_, idx) =>
+    new THREE.TorusGeometry(64 - idx * 2.15, 0.95, 10, 52, Math.PI)
+  );
+  const rainbowBandMats = RAINBOW_COLORS.map((col) => new THREE.MeshPhysicalMaterial({
+    color: col,
+    emissive: col,
+    emissiveIntensity: 0.24,
+    roughness: 0.22,
+    metalness: 0.04,
+    clearcoat: 0.9,
+    clearcoatRoughness: 0.1,
+    transparent: true,
+    opacity: 0.88,
+  }));
+  const rainbows = [];
+  const rainbowConfigs = [
+    { x: -24, y: 4, zOff: -155, ry: 0.22, sc: 1.05 },
+    { x: 34, y: 6, zOff: -255, ry: -0.26, sc: 1.2 },
+  ];
+  for (const cfg of rainbowConfigs) {
+    const rg = new THREE.Group();
+    for (let b = 0; b < RAINBOW_COLORS.length; b++) {
+      const band = new THREE.Mesh(rainbowBandGeos[b], rainbowBandMats[b]);
+      band.renderOrder = -6;
+      rg.add(band);
+    }
+    rg.position.set(cfg.x, cfg.y, cfg.zOff);
+    rg.rotation.y = cfg.ry;
+    rg.scale.setScalar(cfg.sc);
+    rg.userData = { baseX: cfg.x, baseY: cfg.y };
+    scene.add(rg);
+    rainbows.push(rg);
+  }
+
+  const starShape = new THREE.Shape();
+  for (let p = 0; p < 10; p++) {
+    const r = p % 2 === 0 ? 0.62 : 0.27;
+    const a = (p / 10) * Math.PI * 2 - Math.PI / 2;
+    if (p === 0) starShape.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+    else starShape.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+  }
+  starShape.closePath();
+  const starGeo = new THREE.ExtrudeGeometry(starShape, {
+    depth: 0.16, bevelEnabled: true, bevelThickness: 0.06, bevelSize: 0.05, bevelSegments: 2,
+  });
+  starGeo.center();
+  const starTex = applyCanvasTextureFiltering(makeGlowTexture(64));
+  const stars = [];
+  const STAR_COUNT = 22;
+  const starWrapR = 150;
+  for (let i = 0; i < STAR_COUNT; i++) {
+    const sg = new THREE.Group();
+    const sMat = new THREE.MeshStandardMaterial({
+      color: '#fff3b0',
+      emissive: i % 3 === 0 ? '#ffd166' : i % 3 === 1 ? '#fde68a' : '#bae6fd',
+      emissiveIntensity: 0.9,
+      roughness: 0.2,
+      metalness: 0.45,
+      fog: false,
+    });
+    const body = new THREE.Mesh(starGeo, sMat);
+    const haloMat = new THREE.SpriteMaterial({
+      map: starTex,
+      color: '#fff8d6',
+      transparent: true,
+      opacity: 0.65,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: false,
+    });
+    const halo = new THREE.Sprite(haloMat);
+    halo.scale.setScalar(2.4);
+    sg.add(body, halo);
+    const ang = (i / STAR_COUNT) * Math.PI * 2 + 0.19;
+    const rad = 42 + (i % 5) * 24;
+    const baseY = 30 + (i % 4) * 6.5;
+    sg.position.set(Math.cos(ang) * rad, baseY, Math.sin(ang) * rad);
+    const baseScale = 0.95 + (i % 3) * 0.35;
+    sg.scale.setScalar(baseScale);
+    sg.userData = {
+      mat: sMat,
+      halo,
+      baseY,
+      baseScale,
+      phase: i * 1.13,
+      twinkleSpd: 2.2 + (i % 4) * 0.65,
+      spinSpd: (i % 2 === 0 ? 1 : -1) * (0.45 + (i % 3) * 0.18),
+    };
+    scene.add(sg);
+    stars.push(sg);
+  }
+
   /* ---------------- Debu cahaya golden hour (Points aditif) ---------------- */
   const moteCount = LIGHTING.motes.count;
   const moteBox = LIGHTING.motes.box;
@@ -194,7 +340,7 @@ export function createSceneContext(canvas) {
   }
   const moteGeo = new THREE.BufferGeometry();
   moteGeo.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
-  const moteTex = makeGlowTexture(64);
+  const moteTex = applyCanvasTextureFiltering(makeGlowTexture(64));
   const motes = new THREE.Points(moteGeo, new THREE.PointsMaterial({
     map: moteTex, color: '#ffd9a0', size: LIGHTING.motes.size, sizeAttenuation: true,
     transparent: true, opacity: LIGHTING.motes.opacity,
@@ -271,8 +417,65 @@ export function createSceneContext(canvas) {
     sparkleGeo.attributes.color.needsUpdate = true;
   }
 
+  /* ---------------- 3D Celebratory Fireworks Pool (zero-GC) ---------------- */
+  const FIREWORK_MAX = 240;
+  const fwPos = new Float32Array(FIREWORK_MAX * 3);
+  const fwCol = new Float32Array(FIREWORK_MAX * 3);
+  const fwVel = new Float32Array(FIREWORK_MAX * 3);
+  const fwBaseCol = new Float32Array(FIREWORK_MAX * 3);
+  const fwLife = new Float32Array(FIREWORK_MAX);
+  const fwMaxLife = new Float32Array(FIREWORK_MAX);
+  for (let i = 0; i < FIREWORK_MAX; i++) fwPos[i * 3 + 1] = -999;
+
+  const fwGeo = new THREE.BufferGeometry();
+  fwGeo.setAttribute('position', new THREE.BufferAttribute(fwPos, 3));
+  fwGeo.setAttribute('color', new THREE.BufferAttribute(fwCol, 3));
+  const fwMat = new THREE.PointsMaterial({
+    map: moteTex, size: 1.55, sizeAttenuation: true,
+    vertexColors: true, transparent: true, opacity: 1,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const fireworks = new THREE.Points(fwGeo, fwMat);
+  fireworks.frustumCulled = false;
+  scene.add(fireworks);
+
+  const FIREWORK_PALETTES = ['#ffbe0b', '#ff2a4b', '#38bdf8', '#39ff14', '#c084fc', '#ff6b00'];
+  let fwCursor = 0;
+  function spawnFireworks(x, y, z) {
+    const burst = 44;
+    const baseHue = Math.random();
+    for (let k = 0; k < burst; k++) {
+      const idx = fwCursor;
+      fwCursor = (fwCursor + 1) % FIREWORK_MAX;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const spd = 8.5 + Math.random() * 11.5;
+      fwPos[idx * 3] = x + (Math.random() - 0.5) * 0.6;
+      fwPos[idx * 3 + 1] = y + (Math.random() - 0.5) * 0.6;
+      fwPos[idx * 3 + 2] = z + (Math.random() - 0.5) * 0.6;
+      fwVel[idx * 3] = Math.sin(phi) * Math.cos(theta) * spd;
+      fwVel[idx * 3 + 1] = Math.abs(Math.cos(phi)) * spd * 0.85 + 4.5;
+      fwVel[idx * 3 + 2] = Math.sin(phi) * Math.sin(theta) * spd;
+
+      if (k % 3 === 0) _tmpCol.setHSL((baseHue + k * 0.02) % 1, 0.96, 0.66);
+      else _tmpCol.set(FIREWORK_PALETTES[k % FIREWORK_PALETTES.length]);
+
+      fwBaseCol[idx * 3] = _tmpCol.r;
+      fwBaseCol[idx * 3 + 1] = _tmpCol.g;
+      fwBaseCol[idx * 3 + 2] = _tmpCol.b;
+      fwCol[idx * 3] = _tmpCol.r;
+      fwCol[idx * 3 + 1] = _tmpCol.g;
+      fwCol[idx * 3 + 2] = _tmpCol.b;
+      const ml = 0.95 + Math.random() * 0.45;
+      fwLife[idx] = ml;
+      fwMaxLife[idx] = ml;
+    }
+    fwGeo.attributes.position.needsUpdate = true;
+    fwGeo.attributes.color.needsUpdate = true;
+  }
+
   /* ---------------- Contact shadow dinamis di bawah player ---------------- */
-  const csTex = makeContactShadowTexture();
+  const csTex = applyCanvasTextureFiltering(makeContactShadowTexture());
   const contactShadow = new THREE.Mesh(
     new THREE.PlaneGeometry(1, 1),
     new THREE.MeshBasicMaterial({ map: csTex, transparent: true, depthWrite: false, color: '#1a0f08' })
@@ -316,49 +519,97 @@ export function createSceneContext(canvas) {
   let camInit = false, currentFov = CAMERA.fov;
 
   function snapCamera(pos) {
-    camPos.set(pos.x * 0.90, pos.y + CAMERA.height, pos.z + CAMERA.distance);
+    const h = currentAtmosphere === 'skyway' ? (CAMERA.skywayHeight ?? CAMERA.height) : CAMERA.height;
+    const d = currentAtmosphere === 'skyway' ? (CAMERA.skywayDistance ?? CAMERA.distance) : CAMERA.distance;
+    camPos.set(pos.x * 0.90, pos.y + h, pos.z + d);
     aim.set(pos.x * 0.96, pos.y + CAMERA.lookHeight, pos.z - CAMERA.lookAhead);
     camInit = true;
   }
 
-  /** Ikuti player tanpa pernah ikut roll — kamera chase 45° intim & horizon-locked */
-  function followCamera(pos, dt, { speedRatio = 0, turbo = false, inLoop = false, loopCenterZ = 0, falling = false } = {}) {
+  /** Ikuti player tanpa pernah ikut roll — damping eksponensial halus anti-jitter */
+  function followCamera(pos, dt, {
+    speedRatio = 0, turbo = false, inLoop = false, loopCenterZ = 0,
+    falling = false, aimOffsetX = 0, arenaId = currentAtmosphere, introProgress = 1,
+  } = {}) {
     if (!camInit) snapCamera(pos);
+    const safeDt = Math.min(Math.max(dt || 0.016, 0), 0.05);
+    const isSky = arenaId === 'skyway';
     const sr = THREE.MathUtils.clamp(speedRatio, 0, 1.6);
-    const kp = 1 - Math.exp(-(inLoop ? 4.8 : CAMERA.posLerp) * dt);
-    const ka = 1 - Math.exp(-(inLoop ? 6.5 : CAMERA.aimLerp) * dt);
+    const basePosLerp = isSky ? (CAMERA.skywayPosLerp ?? 5.2) : CAMERA.posLerp;
+    const baseAimLerp = isSky ? (CAMERA.skywayAimLerp ?? 7.2) : CAMERA.aimLerp;
+    const kpX = 1 - Math.exp(-(inLoop ? 5.2 : basePosLerp) * safeDt);
+    const kpY = 1 - Math.exp(-(inLoop ? 5.2 : basePosLerp * 0.86) * safeDt);
+    const kpZ = 1 - Math.exp(-(inLoop ? 5.8 : basePosLerp * 2.2) * safeDt);
+    const kaX = 1 - Math.exp(-(inLoop ? 6.8 : baseAimLerp) * safeDt);
+    const kaY = 1 - Math.exp(-(inLoop ? 6.8 : baseAimLerp * 0.85) * safeDt);
+    const kaZ = 1 - Math.exp(-(inLoop ? 7.4 : baseAimLerp * 1.9) * safeDt);
+    const camH = isSky ? (CAMERA.skywayHeight ?? 7.0) : CAMERA.height;
+    const camD = isSky ? (CAMERA.skywayDistance ?? 7.4) : CAMERA.distance;
 
     if (inLoop) {
-      desiredPos.set(9.8, Math.max(pos.y * 0.45 + 6.5, 8.2), loopCenterZ + 19.5);
-      desiredAim.set(pos.x * 0.65, pos.y + 0.8, pos.z);
+      desiredPos.set(pos.x + 11.5, Math.max(pos.y * 0.45 + 6.5, 8.2), loopCenterZ + 19.5);
+      desiredAim.set(pos.x, pos.y + 0.8, pos.z);
     } else if (falling) {
-      desiredPos.set(pos.x * 0.85, Math.max(pos.y + 8.5, camPos.y - 3.5 * dt), pos.z + 10.5);
+      desiredPos.set(pos.x * 0.94, Math.max(pos.y + 8.5, camPos.y - 3.5 * safeDt), pos.z + 10.5);
       desiredAim.set(pos.x, pos.y - 0.6, pos.z);
+    } else if (introProgress < 0.999) {
+      const e = introProgress * introProgress * (3 - 2 * introProgress);
+      const chaseX = pos.x * 0.94;
+      const chaseY = pos.y + camH - sr * 0.3;
+      const chaseZ = pos.z + camD + sr * 0.4;
+      desiredPos.set(
+        THREE.MathUtils.lerp(pos.x + 9.0, chaseX, e),
+        THREE.MathUtils.lerp(pos.y + 15.5, chaseY, e),
+        THREE.MathUtils.lerp(pos.z + 20.0, chaseZ, e)
+      );
+      desiredAim.set(
+        pos.x + aimOffsetX * e,
+        THREE.MathUtils.lerp(pos.y + 2.8, pos.y + CAMERA.lookHeight, e),
+        THREE.MathUtils.lerp(pos.z - 28.0, pos.z - CAMERA.lookAhead, e)
+      );
     } else {
       desiredPos.set(
-        pos.x * 0.90,
-        pos.y + CAMERA.height - sr * 0.38,
-        pos.z + CAMERA.distance + sr * 0.45
+        pos.x * 0.94,
+        pos.y + camH - sr * (isSky ? 0.22 : 0.38),
+        pos.z + camD + sr * 0.45
       );
-      desiredAim.set(pos.x * 0.96, pos.y + CAMERA.lookHeight, pos.z - CAMERA.lookAhead - sr * 1.6);
+      desiredAim.set(pos.x + aimOffsetX, pos.y + CAMERA.lookHeight, pos.z - CAMERA.lookAhead - sr * 1.4);
     }
 
-    camPos.lerp(desiredPos, kp);
-    aim.lerp(desiredAim, ka);
+    camPos.x += (desiredPos.x - camPos.x) * kpX;
+    camPos.y += (desiredPos.y - camPos.y) * kpY;
+    camPos.z += (desiredPos.z - camPos.z) * kpZ;
+    aim.x += (desiredAim.x - aim.x) * kaX;
+    aim.y += (desiredAim.y - aim.y) * kaY;
+    aim.z += (desiredAim.z - aim.z) * kaZ;
+
+    const shakeMul = isSky ? (CAMERA.skywayShakeMul ?? 0.35) : 1.0;
     camera.position.copy(camPos);
-    camera.position.x += shakeOffset.x;
-    camera.position.y += shakeOffset.y;
+    camera.position.x += shakeOffset.x * shakeMul;
+    camera.position.y += shakeOffset.y * shakeMul;
     camera.up.set(0, 1, 0);
     camera.lookAt(aim);
-    const maxFov = CAMERA.maxFov ?? 68;
-    const baseGain = Math.min(1, sr) * (CAMERA.fovSpeedGain ?? 6.5);
+    const maxFov = isSky ? 65 : (CAMERA.maxFov ?? 67);
+    const baseGain = Math.min(1, sr) * (CAMERA.fovSpeedGain ?? 6.0);
     const targetFov = (turbo || inLoop) ? maxFov : Math.min(maxFov, CAMERA.fov + baseGain);
-    const fovLerp = 1 - Math.exp(-((turbo || inLoop) ? 7.5 : 4.5) * dt);
+    const fovLerp = 1 - Math.exp(-((turbo || inLoop) ? 7.2 : 4.2) * safeDt);
     currentFov += (targetFov - currentFov) * fovLerp;
     if (Math.abs(currentFov - camera.fov) > 0.01) {
       camera.fov = currentFov;
       camera.updateProjectionMatrix();
     }
+  }
+
+  /* ---------------- Proyeksi koordinat 3D → layar (zero-GC) ---------------- */
+  const _projVec = new THREE.Vector3();
+  function projectToScreen(wx, wy, wz, out) {
+    _projVec.set(wx, wy, wz).project(camera);
+    const w = renderer.domElement.clientWidth || window.innerWidth;
+    const h = renderer.domElement.clientHeight || window.innerHeight;
+    out.x = (_projVec.x * 0.5 + 0.5) * w;
+    out.y = (-_projVec.y * 0.5 + 0.5) * h;
+    out.visible = _projVec.z >= -1 && _projVec.z <= 1;
+    return out;
   }
 
   /* ---------------- Camera shake (trauma, tanpa roll) ---------------- */
@@ -390,6 +641,27 @@ export function createSceneContext(canvas) {
       if (b.position.x - anchor.x < -balloonWrapR) b.position.x += balloonWrapR * 2;
       if (b.position.z - anchor.z > balloonWrapR) b.position.z -= balloonWrapR * 2;
       if (b.position.z - anchor.z < -balloonWrapR) b.position.z += balloonWrapR * 2;
+    }
+
+    for (const rg of rainbows) {
+      if (rg.position.z - anchor.z > 85) rg.position.z -= 260;
+      if (rg.position.z - anchor.z < -265) rg.position.z += 260;
+      rg.position.x = anchor.x + rg.userData.baseX;
+      rg.position.y = rg.userData.baseY + Math.sin(t * 0.35 + rg.userData.baseX) * 0.8;
+    }
+
+    for (const st of stars) {
+      const ud = st.userData;
+      const tw = 0.5 + 0.5 * Math.sin(t * ud.twinkleSpd + ud.phase);
+      st.scale.setScalar(ud.baseScale * (0.78 + tw * 0.42));
+      st.rotation.y += ud.spinSpd * dt;
+      st.position.y = ud.baseY + Math.sin(t * 0.8 + ud.phase) * 0.8;
+      ud.mat.emissiveIntensity = 0.55 + tw * 0.95;
+      ud.halo.material.opacity = 0.32 + tw * 0.48;
+      if (st.position.x - anchor.x > starWrapR) st.position.x -= starWrapR * 2;
+      if (st.position.x - anchor.x < -starWrapR) st.position.x += starWrapR * 2;
+      if (st.position.z - anchor.z > starWrapR) st.position.z -= starWrapR * 2;
+      if (st.position.z - anchor.z < -starWrapR) st.position.z += starWrapR * 2;
     }
 
     const arr = moteGeo.attributes.position.array;
@@ -427,6 +699,33 @@ export function createSceneContext(canvas) {
       sparkleGeo.attributes.color.needsUpdate = true;
     }
 
+    let fwDirty = false;
+    const drag = Math.exp(-1.5 * dt);
+    for (let i = 0; i < FIREWORK_MAX; i++) {
+      if (fwLife[i] <= 0) continue;
+      fwDirty = true;
+      fwLife[i] -= dt;
+      if (fwLife[i] <= 0) {
+        fwPos[i * 3 + 1] = -999;
+        fwCol[i * 3] = 0; fwCol[i * 3 + 1] = 0; fwCol[i * 3 + 2] = 0;
+      } else {
+        fwVel[i * 3] *= drag;
+        fwVel[i * 3 + 1] = fwVel[i * 3 + 1] * drag - 8.8 * dt;
+        fwVel[i * 3 + 2] *= drag;
+        fwPos[i * 3] += fwVel[i * 3] * dt;
+        fwPos[i * 3 + 1] += fwVel[i * 3 + 1] * dt;
+        fwPos[i * 3 + 2] += fwVel[i * 3 + 2] * dt;
+        const fade = Math.pow(fwLife[i] / fwMaxLife[i], 0.75);
+        fwCol[i * 3] = fwBaseCol[i * 3] * fade;
+        fwCol[i * 3 + 1] = fwBaseCol[i * 3 + 1] * fade;
+        fwCol[i * 3 + 2] = fwBaseCol[i * 3 + 2] * fade;
+      }
+    }
+    if (fwDirty) {
+      fwGeo.attributes.position.needsUpdate = true;
+      fwGeo.attributes.color.needsUpdate = true;
+    }
+
     sunHalo.material.opacity = 0.22 + Math.sin(t * 0.7) * 0.04;
   }
 
@@ -452,7 +751,7 @@ export function createSceneContext(canvas) {
   function dispose() {
     window.removeEventListener('resize', resize);
     envTex.dispose();
-    sky.geometry.dispose(); sky.material.map.dispose(); sky.material.dispose();
+    sky.geometry.dispose(); skyTexSalatiga.dispose(); skyTexSkyway.dispose(); skyMat.dispose();
     sunCore.material.dispose(); sunHalo.material.dispose(); sunTex.dispose();
     puffGeo.dispose(); cloudMat.dispose();
     balloonEnvGeo.dispose(); balloonCollarGeo.dispose(); balloonBasketGeo.dispose();
@@ -460,17 +759,22 @@ export function createSceneContext(canvas) {
     balloonTextures.forEach((t) => t.dispose());
     balloonEnvMats.forEach((m) => m.dispose());
     basketMat.dispose(); ropeMat.dispose(); collarMat.dispose(); burnerMat.dispose();
+    rainbowBandGeos.forEach((g) => g.dispose());
+    rainbowBandMats.forEach((m) => m.dispose());
+    starGeo.dispose(); starTex.dispose();
+    stars.forEach((st) => { st.userData.mat.dispose(); st.userData.halo.material.dispose(); });
     moteGeo.dispose(); motes.material.dispose(); moteTex.dispose();
     sparkleGeo.dispose(); sparkleMat.dispose();
+    fwGeo.dispose(); fwMat.dispose();
     contactShadow.geometry.dispose(); contactShadow.material.dispose(); csTex.dispose();
     renderer.dispose();
   }
 
   return {
-    renderer, scene, camera,
+    renderer, scene, camera, maxAnisotropy, refineSceneTextures,
     keyLight: key, hemiLight: hemi, rimLight: rim,
-    contactShadow, updateContactShadow, spawnSparkles,
-    setAnchor, snapCamera, followCamera, addShake,
+    contactShadow, updateContactShadow, spawnSparkles, spawnFireworks,
+    projectToScreen, setAnchor, setAtmosphere, snapCamera, followCamera, addShake,
     update, setQuality, resize, render, dispose,
   };
 }
@@ -482,10 +786,25 @@ function makeSkyTexture() {
   const grad = g.createLinearGradient(0, 0, 0, 512);
   grad.addColorStop(0, PALETTE.skyZenith);     // deep crisp sky blue (#1d4ed8)
   grad.addColorStop(0.24, PALETTE.skyMid);     // bright cerulean (#38bdf8)
-  grad.addColorStop(0.45, '#93c5fd');
-  grad.addColorStop(0.62, PALETTE.horizon);    // warm golden horizon (#ffd89b)
-  grad.addColorStop(0.84, '#ffe5b8');
-  grad.addColorStop(1, '#ffd89b');
+  grad.addColorStop(0.46, '#93d5ff');
+  grad.addColorStop(0.62, '#bfe9ff');          // atmospheric horizon fog blend
+  grad.addColorStop(0.84, '#dff4ff');
+  grad.addColorStop(1, '#bfe9ff');
+  g.fillStyle = grad; g.fillRect(0, 0, 2, 512);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function makeSkywaySkyTexture() {
+  const c = document.createElement('canvas'); c.width = 2; c.height = 512;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 512);
+  grad.addColorStop(0, '#0284c7');
+  grad.addColorStop(0.26, '#38bdf8');
+  grad.addColorStop(0.52, '#7dd3fc');
+  grad.addColorStop(0.74, '#bfe9ff');
+  grad.addColorStop(1, '#dff4ff');
   g.fillStyle = grad; g.fillRect(0, 0, 2, 512);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;

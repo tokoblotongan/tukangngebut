@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import { createClient } from '@supabase/supabase-js';
 import { loadVehicle, setVehicleUnderglow, createNeonRibbonTrail } from '../entities/assetFactory.js';
+import { getTrackYaw, getTrackBank } from '../world/activeTrack.js';
 import { VEHICLES, SLOT_COLORS, getVehicleDef } from '../config/gameConfig.js';
 
 export const PUBLIC_ROOMS = Object.freeze([
@@ -565,9 +566,12 @@ export function createMultiplayerHook({
 
       entry.roll += ((p.rollAngle || 0) - entry.roll) * alpha;
 
+      const trackYaw = getTrackYaw(entry.root.position.z);
+      const trackBank = getTrackBank(entry.root.position.z);
       if (entry.vehicleMesh) {
-        entry.vehicleMesh.rotation.z = entry.roll;
-        entry.vehicleMesh.rotation.y = THREE.MathUtils.clamp(-dx * 0.025, -0.22, 0.22);
+        entry.vehicleMesh.rotation.order = 'YXZ';
+        entry.vehicleMesh.rotation.z = entry.roll + (Math.abs(entry.roll) < 0.1 ? trackBank : 0);
+        entry.vehicleMesh.rotation.y = trackYaw + THREE.MathUtils.clamp(-dx * 0.025, -0.22, 0.22);
         const wr = getVehicleDef(entry.type).wheelRadius || 0.34;
         const spin = ((p.speed || 16) / wr) * dt;
         for (const w of entry.vehicleMesh.userData.wheels || []) {
@@ -587,7 +591,7 @@ export function createMultiplayerHook({
           }
         }
       }
-      const ry = entry.vehicleMesh?.rotation?.y || 0;
+      const ry = entry.vehicleMesh?.rotation?.y || trackYaw;
       entry.ribbon?.setBoostMode(!!p.turbo || Math.abs(p.rollAngle || 0) > 0.35);
       entry.ribbon?.update(
         entry.root.position.x,

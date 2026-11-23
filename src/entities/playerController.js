@@ -9,10 +9,11 @@ import * as THREE from 'three';
 import { PHYSICS, SCORE, TRACK, getVehicleDef } from '../config/gameConfig.js';
 import {
   getTrackHeight as defHeight, getTrackSlope as defSlope,
+  getTrackCenterX, getTrackYaw, getTrackBank,
   checkRampCollision as defRamp, checkBoostCollision as defBoost,
   getSegmentType, getTrackSurfaceAt, evalLoopPose,
-  LOOP_ARC_LEN, LOOP_HALF_W,
-} from '../world/trackGenerator.js';
+  LOOP_ARC_LEN, LOOP_HALF_W, LOOP_CENTER_X,
+} from '../world/activeTrack.js';
 
 const TWO_PI = Math.PI * 2;
 
@@ -22,6 +23,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
   if (group && !group.parent) scene.add(group);
 
   const pos = new THREE.Vector3(0, defHeight(0), 0);
+  const camAnchor = new THREE.Vector3(0, defHeight(0), 0);
   const rightVec = new THREE.Vector3(1, 0, 0);
   let speed = PHYSICS.baseSpeed;
   let vy = 0;
@@ -54,10 +56,84 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
   const _rollQuat = new THREE.Quaternion();
   const _zAxis = new THREE.Vector3(0, 0, 1);
 
+  /* Pool asap knalpot tipis & transparan (zero-GC, tidak pernah menutupi bodi) */
+  const PUFF_MAX = 14;
+  const puffGeo = new THREE.SphereGeometry(0.13, 7, 6);
+  const puffs = [];
+  for (let i = 0; i < PUFF_MAX; i++) {
+    const mat = new THREE.MeshBasicMaterial({
+      color: '#f8fafc',
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(puffGeo, mat);
+    mesh.visible = false;
+    mesh.renderOrder = 4;
+    scene.add(mesh);
+    puffs.push({ mesh, mat, active: false, age: 0, life: 0.28, vx: 0, vy: 0, vz: 0, baseScale: 0.8, startOp: 0.25 });
+  }
+  let puffTimer = 0;
+
+  function clearPuffs() {
+    puffTimer = 0;
+    for (let i = 0; i < PUFF_MAX; i++) {
+      puffs[i].active = false;
+      puffs[i].mesh.visible = false;
+    }
+  }
+
+  function updatePuffs(dt, spawnActive, turboOn) {
+    for (let i = 0; i < PUFF_MAX; i++) {
+      const p = puffs[i];
+      if (!p.active) continue;
+      p.age += dt;
+      if (p.age >= p.life) {
+        p.active = false;
+        p.mesh.visible = false;
+        continue;
+      }
+      const k = p.age / p.life;
+      p.mesh.position.x += p.vx * dt;
+      p.mesh.position.y += p.vy * dt;
+      p.mesh.position.z += p.vz * dt;
+      p.mesh.scale.setScalar(p.baseScale * (0.65 + k * 0.85));
+      p.mat.opacity = p.startOp * Math.pow(1 - k, 1.65);
+    }
+
+    if (!spawnActive) return;
+    puffTimer -= dt;
+    if (puffTimer > 0) return;
+    puffTimer = turboOn ? 0.055 : 0.085;
+
+    for (let i = 0; i < PUFF_MAX; i++) {
+      const p = puffs[i];
+      if (p.active) continue;
+      p.active = true;
+      p.age = 0;
+      p.life = 0.28;
+      p.baseScale = turboOn ? 0.96 : 0.76;
+      p.startOp = turboOn ? 0.32 : 0.23;
+      p.vx = (Math.random() - 0.5) * 0.45;
+      p.vy = 0.25 + Math.random() * 0.20;
+      p.vz = 2.5 + Math.random() * 1.1;
+      p.mesh.position.set(
+        pos.x + (Math.random() - 0.5) * 0.34,
+        pos.y + suspOffset + 0.24,
+        pos.z + (def.targetSize?.z || 4.0) * 0.48
+      );
+      p.mesh.scale.setScalar(p.baseScale * 0.65);
+      p.mat.opacity = p.startOp;
+      p.mesh.visible = true;
+      break;
+    }
+  }
+
   function topSpeed() { return PHYSICS.maxSpeed * def.perf.speedMul; }
 
   function reset() {
     pos.set(0, defHeight(0), 0);
+    camAnchor.copy(pos);
     rightVec.set(1, 0, 0);
     speed = PHYSICS.baseSpeed;
     vy = 0; airborne = false; latVel = 0;
@@ -66,6 +142,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
     loopState = null; lastLoopSeg = -1;
     falling = false; fallTimer = 0;
     respawning = false; respawnTimer = 0;
+    clearPuffs();
     if (group) {
       group.position.copy(pos);
       group.quaternion.identity();
@@ -83,6 +160,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
     loopState = null;
     turboTimer = 0;
     rolling = false;
+    clearPuffs();
     vy = Math.min(-2.5, vy);
     audio?.playAbyssWhistle?.();
     callbacks.onAbyssFall?.(kind);
@@ -90,17 +168,13 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
 
   function startRespawnDrop() {
     let safeZ = pos.z;
-    let safeSurf = getTrackSurfaceAt(0, safeZ);
+    let safeSurf = getTrackSurfaceAt(getTrackCenterX(safeZ), safeZ);
     for (let step = 0; step < 12; step++) {
       if (safeSurf.onTrack && !safeSurf.inGap) break;
       safeZ -= 2.2;
-      safeSurf = getTrackSurfaceAt(0, safeZ);
+      safeSurf = getTrackSurfaceAt(getTrackCenterX(safeZ), safeZ);
     }
-    if (!safeSurf.onTrack) {
-      const s = getTrackSurfaceAt(safeSurf.safeCenterX, safeZ);
-      safeSurf = s;
-    }
-    respawnTargetX = safeSurf.safeCenterX || 0;
+    respawnTargetX = safeSurf.safeCenterX || getTrackCenterX(safeZ);
     respawnTargetY = safeSurf.groundY;
     respawnFromX = pos.x;
     respawnStartY = respawnTargetY + 8.5;
@@ -113,6 +187,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
     falling = false;
     respawning = true;
     respawnTimer = 0;
+    camAnchor.copy(pos);
     rightVec.set(1, 0, 0);
   }
 
@@ -169,9 +244,11 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
       pos.y = THREE.MathUtils.lerp(respawnStartY, respawnTargetY, ease);
       if (group) {
         group.position.copy(pos);
-        group.rotation.set(0, 0, 0);
+        group.rotation.order = 'YXZ';
+        group.rotation.set(0, getTrackYaw(pos.z), getTrackBank(pos.z));
         updateFlames(dt, false);
       }
+      updatePuffs(dt, false, false);
       if (t >= 1) {
         respawning = false;
         pos.y = getTrackSurfaceAt(pos.x, pos.z).groundY;
@@ -179,8 +256,13 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
         speed = P.baseSpeed * 0.85;
         callbacks.onAbyssRecover?.();
       }
+      const camAlphaX = 1 - Math.exp(-10 * dt);
+      const camAlphaY = 1 - Math.exp(-9 * dt);
+      camAnchor.x += (pos.x - camAnchor.x) * camAlphaX;
+      camAnchor.y += (pos.y - camAnchor.y) * camAlphaY;
+      camAnchor.z = pos.z;
       return {
-        pos, speed, airborne: true, stuntBonus: 0,
+        pos, camAnchor, speed, airborne: true, stuntBonus: 0,
         turbo: false, inBoost: false, rollAngle: 0, totalStunt,
         inLoop: false, loopCenterZ: 0, falling: false, respawning: true, rightVec,
       };
@@ -199,12 +281,17 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
         group.rotation.z += (latVel >= 0 ? -3.8 : 3.8) * dt;
         updateFlames(dt, false);
       }
+      updatePuffs(dt, false, false);
       const refY = H(pos.z);
       if (fallTimer > 0.72 || pos.y < refY - 9.5) {
         startRespawnDrop();
       }
+      const fallK = 1 - Math.exp(-8 * dt);
+      camAnchor.x += (pos.x - camAnchor.x) * fallK;
+      camAnchor.y += (pos.y - camAnchor.y) * fallK;
+      camAnchor.z = pos.z;
       return {
-        pos, speed, airborne: true, stuntBonus: 0,
+        pos, camAnchor, speed, airborne: true, stuntBonus: 0,
         turbo: false, inBoost: false, rollAngle, totalStunt,
         inLoop: false, loopCenterZ: 0, falling: true, respawning: false, rightVec,
       };
@@ -225,8 +312,8 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
       latVel += (targetLat - latVel) * (1 - Math.exp(-P.steer.lerp * dt));
       loopState.latX = THREE.MathUtils.clamp(
         loopState.latX + latVel * dt,
-        -(LOOP_HALF_W - 0.6),
-        LOOP_HALF_W - 0.6
+        -(LOOP_HALF_W - 0.65),
+        LOOP_HALF_W - 0.65
       );
 
       const uEval = Math.min(1, loopState.u);
@@ -246,11 +333,17 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
         for (const w of group.userData.wheels || []) w.rotation.x -= (loopSpeed / wr) * dt;
         updateFlames(dt, true);
       }
+      updatePuffs(dt, false, true);
+
+      const lpAlpha = 1 - Math.exp(-10 * dt);
+      camAnchor.x += (pos.x - camAnchor.x) * lpAlpha;
+      camAnchor.y += (pos.y - camAnchor.y) * lpAlpha;
+      camAnchor.z = pos.z;
 
       const loopCenterZ = (loopState.zStart + loopState.zEnd) * 0.5;
       if (loopState.u >= 1) {
         lastLoopSeg = loopState.segIndex;
-        pos.set(loopState.latX, H(loopState.zEnd), loopState.zEnd - 0.06);
+        pos.set(getTrackCenterX(loopState.zEnd) + LOOP_CENTER_X + loopState.latX, H(loopState.zEnd), loopState.zEnd - 0.06);
         rightVec.set(1, 0, 0);
         loopState = null;
         turboTimer = Math.max(turboTimer, 1.5);
@@ -259,23 +352,29 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
         audio?.playLoopWhoosh?.();
         callbacks.onLoopComplete?.();
         return {
-          pos, speed: loopSpeed, airborne: false, stuntBonus,
+          pos, camAnchor, speed: loopSpeed, airborne: false, stuntBonus,
           turbo: true, inBoost: true, rollAngle: 0, totalStunt,
           inLoop: false, loopCenterZ, falling: false, respawning: false, rightVec,
         };
       }
 
       return {
-        pos, speed: loopSpeed, airborne: false, stuntBonus,
+        pos, camAnchor, speed: loopSpeed, airborne: false, stuntBonus,
         turbo: true, inBoost: true, rollAngle: 0, totalStunt,
         inLoop: true, loopCenterZ, falling: false, respawning: false, rightVec,
       };
     }
 
-    /* 4) Maju normal di -Z */
+    /* 4) Maju normal di -Z sambil mengikuti kurva S-curve */
+    const prevZ = pos.z;
     pos.z -= effSpeed * dt;
+    const cxPrev = getTrackCenterX(prevZ);
+    const cxNow = getTrackCenterX(pos.z);
+    pos.x += cxNow - cxPrev;
+
     const segIdx = Math.floor(-pos.z / TRACK.segmentLength);
-    if (!airborne && getSegmentType(segIdx) === 'loop' && segIdx !== lastLoopSeg && Math.abs(pos.x) <= LOOP_HALF_W + 0.4) {
+    const loopWorldCx = cxNow + LOOP_CENTER_X;
+    if (!airborne && getSegmentType(segIdx) === 'loop' && segIdx !== lastLoopSeg && Math.abs(pos.x - loopWorldCx) <= LOOP_HALF_W + 0.4) {
       const zStart = -segIdx * TRACK.segmentLength;
       const zEnd = -(segIdx + 1) * TRACK.segmentLength;
       loopState = {
@@ -285,7 +384,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
         y0: H(zStart),
         y1: H(zEnd),
         u: Math.max(0, Math.min(0.18, (zStart - pos.z) / TRACK.segmentLength)),
-        latX: THREE.MathUtils.clamp(pos.x, -(LOOP_HALF_W - 0.6), LOOP_HALF_W - 0.6),
+        latX: THREE.MathUtils.clamp(pos.x - loopWorldCx, -(LOOP_HALF_W - 0.65), LOOP_HALF_W - 0.65),
       };
       evalLoopPose(
         loopState.zStart, loopState.zEnd, loopState.y0, loopState.y1,
@@ -306,18 +405,18 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
     }
 
     let surf = getTrackSurfaceAt(pos.x, pos.z);
-    const maxSteerX = surf.hasGuardrails ? P.steer.maxX : 7.4;
+    const maxSteerX = surf.hasGuardrails ? Math.max(P.steer.maxX, (surf.safeHalfW || 8) - 1.1) : 8.4;
 
     if (!airborne) {
       const targetLat = steer * P.steer.maxLatSpeed * def.perf.steerMul;
       latVel += (targetLat - latVel) * (1 - Math.exp(-P.steer.lerp * dt));
-      pos.x = THREE.MathUtils.clamp(pos.x + latVel * dt, -maxSteerX, maxSteerX);
+      pos.x = THREE.MathUtils.clamp(pos.x + latVel * dt, cxNow - maxSteerX, cxNow + maxSteerX);
       surf = getTrackSurfaceAt(pos.x, pos.z);
 
       if (!surf.onTrack) {
         triggerAbyssFall(surf.type);
         return {
-          pos, speed: effSpeed, airborne: true, stuntBonus: 0,
+          pos, camAnchor, speed: effSpeed, airborne: true, stuntBonus: 0,
           turbo: false, inBoost: false, rollAngle, totalStunt,
           inLoop: false, loopCenterZ: 0, falling: true, respawning: false, rightVec,
         };
@@ -349,7 +448,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
         rollAngle += steer * P.barrelRoll.speed * dt;
       }
       latVel *= Math.exp(-3 * dt);
-      pos.x = THREE.MathUtils.clamp(pos.x + latVel * dt * 0.35, -7.4, 7.4);
+      pos.x = THREE.MathUtils.clamp(pos.x + latVel * dt * 0.35, cxNow - 8.4, cxNow + 8.4);
 
       vy += P.gravity * dt;
       pos.y += vy * dt;
@@ -359,7 +458,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
         if (!surf.onTrack) {
           triggerAbyssFall(surf.type);
           return {
-            pos, speed: effSpeed, airborne: true, stuntBonus: 0,
+            pos, camAnchor, speed: effSpeed, airborne: true, stuntBonus: 0,
             turbo: false, inBoost: false, rollAngle, totalStunt,
             inLoop: false, loopCenterZ: 0, falling: true, respawning: false, rightVec,
           };
@@ -393,22 +492,32 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
     const targetPitch = airborne ? pitch * 0.4 : Math.atan(-slope);
     pitch += (targetPitch - pitch) * (1 - Math.exp(-8 * dt));
 
-    /* Terapkan transform visual */
+    /* Terapkan transform visual mengikuti S-curve yaw & bank */
     if (group) {
+      const trackYaw = getTrackYaw(pos.z);
+      const trackBank = getTrackBank(pos.z);
       group.position.set(pos.x, pos.y + suspOffset, pos.z);
       group.rotation.order = 'YXZ';
       group.rotation.x = pitch;
-      group.rotation.z = airborne ? rollAngle : rollAngle * 0.2;
-      group.rotation.y = airborne ? 0 : -latVel * 0.015;
+      group.rotation.z = airborne ? rollAngle : rollAngle * 0.2 + trackBank;
+      group.rotation.y = trackYaw + (airborne ? 0 : -latVel * 0.015);
       rightVec.set(1, 0, 0).applyEuler(group.rotation);
 
       const wr = def.wheelRadius || 0.34;
       for (const w of group.userData.wheels || []) w.rotation.x -= (effSpeed / wr) * dt;
       updateFlames(dt, turboActive);
     }
+    updatePuffs(dt, !airborne, turboActive);
+
+    /* Eksponensial smoothing frame-rate-independent untuk target kamera chase */
+    const anchorKX = 1 - Math.exp(-11.5 * dt);
+    const anchorKY = 1 - Math.exp(-(airborne ? 6.8 : 9.5) * dt);
+    camAnchor.x += (pos.x - camAnchor.x) * anchorKX;
+    camAnchor.y += ((pos.y + suspOffset * 0.25) - camAnchor.y) * anchorKY;
+    camAnchor.z = pos.z;
 
     return {
-      pos, speed: effSpeed, airborne, stuntBonus,
+      pos, camAnchor, speed: effSpeed, airborne, stuntBonus,
       turbo: turboActive,
       inBoost: turboActive || (airborne && Math.abs(rollAngle) > 0.25),
       rollAngle, totalStunt,
@@ -427,12 +536,19 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
 
   function getState() {
     return {
-      pos, speed, airborne, turboTimer, rollAngle, totalStunt, type,
+      pos, camAnchor, speed, airborne, turboTimer, rollAngle, totalStunt, type,
       inLoop: !!loopState, falling, respawning, rightVec,
     };
   }
 
-  function dispose() { if (group) scene.remove(group); }
+  function dispose() {
+    if (group) scene.remove(group);
+    for (let i = 0; i < PUFF_MAX; i++) {
+      scene.remove(puffs[i].mesh);
+      puffs[i].mat.dispose();
+    }
+    puffGeo.dispose();
+  }
 
   reset();
   return {

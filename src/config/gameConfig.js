@@ -43,7 +43,7 @@ export const SLOT_COLORS = Object.freeze(['#ff2a4b', '#ffd100', '#39ff14', '#9d4
 
 /* ---------- Kunci renderer (Strict Visual Lock) ---------- */
 export const RENDERER = Object.freeze({
-  exposure: 0.95,
+  exposure: 1.08,
   maxPixelRatio: 2,
   shadowMapSize: 2048,
   shadowBias: -0.0005,
@@ -53,26 +53,28 @@ export const RENDERER = Object.freeze({
   shadowFar: 95,
 });
 
-/* ---------- Pencahayaan Dota 2 lembut: warm key + cool-sky/warm-earth hemi ---------- */
+/* ---------- Pencahayaan daylight lembut: warm sun key + soft sky/ground hemi ---------- */
 export const LIGHTING = Object.freeze({
-  key: { color: '#ffe8b8', intensity: 1.75, dir: { x: -0.55, y: 0.56, z: -0.62 }, distance: 46 },
-  hemi: { sky: '#bae6fd', ground: '#4d7c0f', intensity: 0.9 },
-  rim: { color: '#bae6fd', intensity: 0.42, dir: { x: 0.5, y: 0.35, z: 0.8 }, distance: 40 },
-  fog: { color: '#ffd89b', near: 110, far: 280 },
-  sunSprite: { distance: 330, coreScale: 24, haloScale: 80 },
+  key: { color: '#fff1d0', intensity: 1.72, dir: { x: -0.55, y: 0.56, z: -0.62 }, distance: 46 },
+  hemi: { sky: '#8be0ff', ground: '#ffe6c7', intensity: 0.95 },
+  rim: { color: '#d8f3ff', intensity: 0.72, dir: { x: 0.5, y: 0.35, z: 0.8 }, distance: 40 },
+  fog: { color: '#bfe9ff', near: 140, far: 460 },
+  sunSprite: { distance: 350, coreScale: 24, haloScale: 80 },
   clouds: { count: 9, driftSpeed: 0.5, wrapRadius: 155 },
   balloons: { count: 9, wrapRadius: 155 },
   motes: { count: 110, box: { x: 60, y: 18, z: 60 }, size: 0.32, opacity: 0.42 },
 });
 
-/* ---------- Kamera chase 45° lebih dekat & intim (~22% lebih rapat) ---------- */
+/* ---------- Kamera chase 45° halus dengan damping eksponensial ---------- */
 export const CAMERA = Object.freeze({
-  fov: 55, maxFov: 68, near: 0.1, far: 500,
+  fov: 55, maxFov: 67, near: 0.1, far: 560,
   height: 6.4, distance: 6.6,
   lookAhead: 10.5, lookHeight: 1.25,
-  posLerp: 6.5, aimLerp: 9.0,
-  fovSpeedGain: 6.5,
-  shakeDecay: 1.8, shakeAmp: 0.38,
+  posLerp: 6.2, aimLerp: 8.4,
+  skywayHeight: 7.0, skywayDistance: 7.4,
+  skywayPosLerp: 5.2, skywayAimLerp: 7.2, skywayShakeMul: 0.35,
+  fovSpeedGain: 6.0,
+  shakeDecay: 1.8, shakeAmp: 0.36,
 });
 
 /* ---------- Fisika arcade (dipakai playerController & gameLoop) ---------- */
@@ -80,21 +82,22 @@ export const PHYSICS = Object.freeze({
   gravity: -34,
   baseSpeed: 16, maxSpeed: 30, accel: 2.2,
   turbo: { multiplier: 1.65, duration: 2.6 },
-  steer: { maxLatSpeed: 9, lerp: 8, maxX: 5.2 },
+  steer: { maxLatSpeed: 9.8, lerp: 8, maxX: 6.8 },
   suspension: { stiffness: 90, damping: 12, maxCompress: 0.22 },
   ramp: { launchVy: 13.5, minSpeed: 10 },
   barrelRoll: { speed: 10.5, bonusPerRoll: 250, landingBoost: true },
-  contactShadow: { footprint: 3.4, baseOpacity: 0.5, lift: 0.02 },
+  contactShadow: { footprint: 3.8, baseOpacity: 0.52, lift: 0.02 },
 });
 
 /* ---------- Trek streaming undulasi (dipakai trackGenerator) ---------- */
 export const TRACK = Object.freeze({
-  width: 13, lanes: 3,
+  width: 16, lanes: 3,
   segmentLength: 24, segmentsAhead: 10, segmentsBehind: 2,
-  hill: { amp1: 2.6, freq1: 0.021, amp2: 1.1, freq2: 0.052 },
+  hill: { amp1: 3.1, freq1: 0.020, amp2: 1.5, freq2: 0.048 },
+  curve: { amp: 3.8, freq: 0.0135, startZ: 96, rampZ: 168, bankGain: 0.055 },
   rampEvery: 5, boostEvery: 7, bridgeEvery: 9,
-  loopRadius: 7.8, loopWidth: 6.4, narrowWidth: 5.5, forkWidthL: 4.3, forkWidthR: 5.5,
-  landmarkEvery: 2, landmarkOffset: 18.0, archEvery: 8, lapDistance: 1000,
+  loopRadius: 7.8, loopWidth: 6.2, narrowWidth: 7.8, forkWidthL: 6.8, forkWidthR: 8.6,
+  landmarkEvery: 2, landmarkOffset: 26.5, archEvery: 8, lapDistance: 1500,
 });
 
 /* ---------- Lalu lintas Nusantara (dipakai trafficManager) ---------- */
@@ -130,7 +133,7 @@ export const VEHICLES = Object.freeze({
     id: 'angkot', label: 'Angkot', glbName: 'angkot',
     tagline: 'Si Raja Ngetem',
     desc: 'Minibus hijau-kuning legendaris trayek Salatiga. Badan tebal, suspensi membal, dan kebiasaan berhenti mendadak yang bikin deg-degan.',
-    targetSize: { x: 2.1, y: 2.85, z: 4.75 }, wheelRadius: 0.34,
+    targetSize: { x: 2.48, y: 3.36, z: 5.61 }, wheelRadius: 0.34,
     colors: { body: PALETTE.angkotGreen, roof: PALETTE.angkotYellow, stripe: PALETTE.angkotYellow, cabin: PALETTE.cream },
     stats: { speed: 6, accel: 5, grip: 7, weight: 8 },
     perf: { speedMul: 0.95, accelMul: 0.9, steerMul: 0.95 },
@@ -139,7 +142,7 @@ export const VEHICLES = Object.freeze({
     id: 'bemo', label: 'Bemo', glbName: 'bemo',
     tagline: 'Legenda Tiga Roda',
     desc: 'Bemo oranye warisan jalanan Salatiga sejak era 60-an. Mungil, lincah menyelip, bangku kayu berhadapan — penuh cerita di setiap tikungan.',
-    targetSize: { x: 1.85, y: 2.25, z: 3.6 }, wheelRadius: 0.3,
+    targetSize: { x: 2.18, y: 2.66, z: 4.25 }, wheelRadius: 0.3,
     colors: { body: PALETTE.bemoOrange, roof: PALETTE.bemoCream, bench: PALETTE.wood },
     stats: { speed: 4, accel: 4, grip: 6, weight: 6 },
     perf: { speedMul: 0.85, accelMul: 0.8, steerMul: 1.0 },
@@ -148,7 +151,7 @@ export const VEHICLES = Object.freeze({
     id: 'l300', label: 'L300 Pick Up', glbName: 'l300',
     tagline: 'Jagoan Bak Kayu',
     desc: 'Pick up bak kayu andalan pasar dan kebun. Bobot paling mantap, cengkeraman juara — muatan peti dan karung pun tetap stabil dihajar ramp.',
-    targetSize: { x: 2.05, y: 2.2, z: 4.7 }, wheelRadius: 0.36,
+    targetSize: { x: 2.42, y: 2.60, z: 5.55 }, wheelRadius: 0.36,
     colors: { body: PALETTE.l300White, bed: PALETTE.wood, cargo: PALETTE.woodDark },
     stats: { speed: 7, accel: 6, grip: 8, weight: 9 },
     perf: { speedMul: 1.0, accelMul: 0.95, steerMul: 1.05 },
@@ -157,7 +160,7 @@ export const VEHICLES = Object.freeze({
     id: 'ojol', label: 'Ojol', glbName: 'ojol',
     tagline: 'Satelit Jalanan',
     desc: 'Motor hijau jaket kebanggaan dengan boks antar di belakang. Paling ringan, paling ngebut, paling gesit menyalip — tapi gampang terpental.',
-    targetSize: { x: 1.05, y: 2.0, z: 2.5 }, wheelRadius: 0.3,
+    targetSize: { x: 1.24, y: 2.36, z: 2.95 }, wheelRadius: 0.3,
     colors: { body: PALETTE.ojolGreen, jacket: PALETTE.ojolGreen, helmet: PALETTE.warmWhite },
     stats: { speed: 9, accel: 9, grip: 6, weight: 2 },
     perf: { speedMul: 1.12, accelMul: 1.2, steerMul: 1.15 },
@@ -201,8 +204,30 @@ export const LANDMARKS = Object.freeze({
   },
 });
 
+/* ---------- ARENA: 2 Sirkuit Nusantara ---------- */
+export const ARENAS = Object.freeze({
+  salatiga: {
+    id: 'salatiga',
+    label: 'Sirkuit Kota Salatiga',
+    shortLabel: 'Kota Salatiga',
+    badge: 'KLASIK',
+    emoji: '🏙️',
+    desc: 'Trek mainan oranye ikonik melintasi landmark kota Salatiga di bawah cahaya golden hour.',
+  },
+  skyway: {
+    id: 'skyway',
+    label: 'Nusantara Skyway',
+    shortLabel: 'Nusantara Skyway',
+    badge: 'DUNIA BARU',
+    emoji: '🐉',
+    desc: 'Skyway bertingkat di atas samudra biru, tikungan kuning miring, jembatan ganda & terowongan Garuda Emas.',
+  },
+});
+
 /* ---------- Helper aman ---------- */
+export const ARENA_TYPES = Object.freeze(Object.keys(ARENAS));
 export const VEHICLE_TYPES = Object.freeze(Object.keys(VEHICLES));
 export const LANDMARK_TYPES = Object.freeze(Object.keys(LANDMARKS));
+export const getArenaDef = (type) => ARENAS[type] || ARENAS.salatiga;
 export const getVehicleDef = (type) => VEHICLES[type] || VEHICLES.angkot;
 export const getLandmarkDef = (type) => LANDMARKS[type] || LANDMARKS.koperasi;

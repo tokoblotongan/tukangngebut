@@ -1,11 +1,11 @@
 /* =====================================================================
-   hudManager.js — Seluruh antarmuka game: layar muat, menu armada,
-   HUD balapan (skor, jarak, nyawa, combo, speed, turbo), banner stunt,
-   kontrol sentuh, jeda, mogok/rekor, toast, dan mesin audio sintetis
-   (WebAudio, tanpa aset eksternal — gratis & offline).
-   API ringkas ada di objek yang dikembalikan createHUD().
+   hudManager.js — Antarmuka Juragan Ngebut: layar muat, menu Start
+   terpusat (Armada, Kamar Mabar Supabase, Tingkat Ngebut), HUD balapan
+   ultra-bersih (Klasemen 1st–4th ikonik + badge koin kiri-atas, rail
+   START→FINISH kanan, counter melayang di atas kendaraan, audio/pause
+   minimal), Podium Juara animasi, dan mesin audio WebAudio + Telolet Basuri.
    ===================================================================== */
-import { VEHICLES, GAME, PALETTE as P } from '../config/gameConfig.js';
+import { VEHICLES, ARENAS, GAME, PALETTE as P } from '../config/gameConfig.js';
 import { PUBLIC_ROOMS, normalizeRoomId } from '../network/multiplayerHook.js';
 import { createTeloletSynthesizer } from '../audio/soundManager.js';
 
@@ -15,6 +15,49 @@ const DIFFS = [
   { id: 'normal', label: 'Normal', note: '3 nyawa • skor ×1.0', emoji: '🔥' },
   { id: 'ngebut', label: 'Ngebut', note: '2 nyawa • skor ×1.35', emoji: '⚡' },
 ];
+
+const VEHICLE_SVG_PATHS = {
+  angkot: (col) => `
+    <svg viewBox="0 0 44 24" class="jg-vsvg" aria-hidden="true">
+      <rect x="4" y="5" width="33" height="12" rx="3.5" fill="${col}" stroke="#18181b" stroke-width="1.8"/>
+      <rect x="9" y="2.2" width="18" height="2.6" rx="1.2" fill="#ffbe0b" stroke="#18181b" stroke-width="1.1"/>
+      <path d="M25 7.2h8.5l2.2 4.3H25z" fill="#e0f2fe" stroke="#18181b" stroke-width="1.2"/>
+      <rect x="8" y="7.5" width="7" height="4" rx="1" fill="#e0f2fe" stroke="#18181b" stroke-width="1.1"/>
+      <rect x="16.5" y="7.5" width="6.5" height="4" rx="1" fill="#e0f2fe" stroke="#18181b" stroke-width="1.1"/>
+      <circle cx="12" cy="18.2" r="4" fill="#18181b" stroke="#fff8eb" stroke-width="1.3"/>
+      <circle cx="31" cy="18.2" r="4" fill="#18181b" stroke="#fff8eb" stroke-width="1.3"/>
+    </svg>`,
+  bemo: (col) => `
+    <svg viewBox="0 0 44 24" class="jg-vsvg" aria-hidden="true">
+      <path d="M7 6h19c3 0 6 2 8 6.2l2.5 4.3H7z" fill="${col}" stroke="#18181b" stroke-width="1.8" stroke-linejoin="round"/>
+      <rect x="10" y="8" width="9" height="4.2" rx="1" fill="#fef08a" stroke="#18181b" stroke-width="1.1"/>
+      <path d="M21 8h5.5l2.8 4.2H21z" fill="#e0f2fe" stroke="#18181b" stroke-width="1.1"/>
+      <circle cx="13" cy="18.2" r="3.9" fill="#18181b" stroke="#fff8eb" stroke-width="1.3"/>
+      <circle cx="32.5" cy="18.2" r="3.9" fill="#18181b" stroke="#fff8eb" stroke-width="1.3"/>
+    </svg>`,
+  l300: (col) => `
+    <svg viewBox="0 0 44 24" class="jg-vsvg" aria-hidden="true">
+      <rect x="4" y="10.5" width="18" height="6.5" rx="1.5" fill="${col}" stroke="#18181b" stroke-width="1.8"/>
+      <path d="M22 5.2h10.5l4.2 5.3V17H22z" fill="${col}" stroke="#18181b" stroke-width="1.8" stroke-linejoin="round"/>
+      <path d="M24.2 7.2h6.8l2.6 3.5h-9.4z" fill="#e0f2fe" stroke="#18181b" stroke-width="1.1"/>
+      <circle cx="12" cy="18.2" r="4" fill="#18181b" stroke="#fff8eb" stroke-width="1.3"/>
+      <circle cx="32" cy="18.2" r="4" fill="#18181b" stroke="#fff8eb" stroke-width="1.3"/>
+    </svg>`,
+  ojol: (col) => `
+    <svg viewBox="0 0 44 24" class="jg-vsvg" aria-hidden="true">
+      <path d="M10 15.5l8-4.5h9l6 4.5" fill="none" stroke="${col}" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M10 15.5l8-4.5h9l6 4.5" fill="none" stroke="#18181b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="21" cy="6.2" r="3.6" fill="#2ec4b6" stroke="#18181b" stroke-width="1.4"/>
+      <path d="M18 11.2l4.5-2.6" stroke="#18181b" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="11.5" cy="17.8" r="4.1" fill="#18181b" stroke="#fff8eb" stroke-width="1.3"/>
+      <circle cx="32.5" cy="17.8" r="4.1" fill="#18181b" stroke="#fff8eb" stroke-width="1.3"/>
+    </svg>`,
+};
+
+function vehicleSvg(type, color = '#ff6b00') {
+  const fn = VEHICLE_SVG_PATHS[type] || VEHICLE_SVG_PATHS.angkot;
+  return fn(color);
+}
 
 export function createHUD(opts = {}) {
   injectStyles();
@@ -28,21 +71,22 @@ export function createHUD(opts = {}) {
   const el = {
     loader: $('jg-loader'), loadFill: $('jg-load-fill'), loadStatus: $('jg-load-status'),
     fatal: $('jg-fatal'), fatalMsg: $('jg-fatal-msg'),
-    menu: $('jg-menu'), fleet: $('jg-fleet'), diffs: $('jg-diffs'), diffNote: $('jg-diff-note'),
+    menu: $('jg-menu'), arenas: $('jg-arenas'), arenaBadge: $('jg-arena-badge'),
+    fleet: $('jg-fleet'), diffs: $('jg-diffs'), diffNote: $('jg-diff-note'),
     rooms: $('jg-rooms'), roomActive: $('jg-room-active'),
     roomInput: /** @type {HTMLInputElement | null} */ ($('jg-room-input')),
     roomJoin: $('jg-room-join'),
     nameInput: /** @type {HTMLInputElement | null} */ ($('jg-name-input')),
     bestMenu: $('jg-best-menu'), btnStart: $('jg-start'),
-    hud: $('jg-hud'), score: $('jg-score'), dist: $('jg-dist'), coins: $('jg-coins'), coinsWrap: $('jg-coins-wrap'),
-    rank: $('jg-rank'),
-    hearts: $('jg-hearts'), combo: $('jg-combo'), speed: $('jg-speed'), speedBar: $('jg-speed-bar'),
-    turboWrap: $('jg-turbo'), turboFill: $('jg-turbo-fill'),
-    cpFill: $('jg-cp-fill'), cpLabel: $('jg-cp-label'), fleetTag: $('jg-fleet-tag'),
-    banner: $('jg-banner'), bannerTitle: $('jg-banner-title'), bannerPts: $('jg-banner-pts'),
-    airHint: $('jg-airhint'), toasts: $('jg-toasts'), net: $('jg-net'), netMenu: $('jg-net-menu'),
+    hud: $('jg-hud'),
+    coins: $('jg-coins'), coinsWrap: $('jg-coins-wrap'),
+    lapTimer: $('jg-lap-timer'),
+    lb: $('jg-lb'),
+    minimap: /** @type {HTMLCanvasElement | null} */ ($('jg-minimap')),
+    speedVal: $('jg-speed-val'), speedArc: $('jg-speed-arc'), boostFill: $('jg-boost-fill'), boostWrap: $('jg-boost-wrap'),
+    overhead: $('jg-overhead'), overheadCrown: $('jg-overhead-crown'), overheadCoins: $('jg-overhead-coins'),
+    toasts: $('jg-toasts'), netMenu: $('jg-net-menu'),
     pause: $('jg-pause'), over: $('jg-over'), podium: $('jg-podium'),
-    warnings: $('jg-warnings'), warnL: $('jg-warn-l'), warnC: $('jg-warn-c'), warnR: $('jg-warn-r'),
     progressDots: $('jg-progress-dots'),
     overScore: $('jg-over-score'), overDist: $('jg-over-dist'), overRolls: $('jg-over-rolls'),
     overCoins: $('jg-over-coins'), overBest: $('jg-over-best'), overRecord: $('jg-over-record'), overTitle: $('jg-over-title'),
@@ -52,6 +96,25 @@ export function createHUD(opts = {}) {
     padL: $('jg-pad-l'), padR: $('jg-pad-r'), telolet: $('jg-telolet'), crashFlash: $('jg-crash'),
     speedLines: /** @type {HTMLCanvasElement | null} */ ($('jg-speedlines')),
   };
+
+  /* Prebuild 4 baris klasemen kiri-atas agar update frame zero-thrash */
+  const lbRows = [];
+  if (el.lb) {
+    for (let i = 0; i < 4; i++) {
+      const row = document.createElement('div');
+      row.className = 'jg-lb-row';
+      row.innerHTML = `<span class="jg-lb-pos"></span><span class="jg-lb-ico"></span><span class="jg-lb-name"></span>`;
+      row.style.display = 'none';
+      el.lb.appendChild(row);
+      lbRows.push({
+        row,
+        pos: row.querySelector('.jg-lb-pos'),
+        ico: row.querySelector('.jg-lb-ico'),
+        name: row.querySelector('.jg-lb-name'),
+        lastSig: '',
+      });
+    }
+  }
 
   /* ---------- Edge Speed Lines Canvas ---------- */
   const speedCtx = el.speedLines?.getContext('2d') || null;
@@ -100,16 +163,114 @@ export function createHUD(opts = {}) {
   resizeSpeedLines();
   window.addEventListener('resize', resizeSpeedLines);
 
+  const minimapCtx = el.minimap?.getContext('2d') || null;
+  function drawMinimap(pts, racers, playerPos) {
+    if (!minimapCtx || !el.minimap) return;
+    const w = el.minimap.width, h = el.minimap.height;
+    const cx = w * 0.5, cy = h * 0.5, rad = w * 0.46;
+    minimapCtx.clearRect(0, 0, w, h);
+
+    minimapCtx.save();
+    minimapCtx.beginPath();
+    minimapCtx.arc(cx, cy, rad, 0, Math.PI * 2);
+    minimapCtx.fillStyle = 'rgba(15, 23, 42, 0.58)';
+    minimapCtx.fill();
+    minimapCtx.lineWidth = 2;
+    minimapCtx.strokeStyle = 'rgba(255, 255, 255, 0.34)';
+    minimapCtx.stroke();
+    minimapCtx.clip();
+
+    // Subtle radar crosshair
+    minimapCtx.strokeStyle = 'rgba(255,255,255,0.09)';
+    minimapCtx.lineWidth = 1;
+    minimapCtx.beginPath();
+    minimapCtx.moveTo(cx, 6); minimapCtx.lineTo(cx, h - 6);
+    minimapCtx.moveTo(6, cy); minimapCtx.lineTo(w - 6, cy);
+    minimapCtx.stroke();
+
+    const px = playerPos?.x ?? 0;
+    const pz = playerPos?.z ?? 0;
+    const scale = 0.58;
+    const mapX = (wx) => cx + (wx - px) * scale;
+    const mapY = (wz) => (h * 0.72) + (wz - pz) * scale;
+
+    if (Array.isArray(pts) && pts.length > 1) {
+      minimapCtx.lineCap = 'round';
+      minimapCtx.lineJoin = 'round';
+      for (let i = 1; i < pts.length; i++) {
+        const p0 = pts[i - 1], p1 = pts[i];
+        const isLower = (p1.y ?? 0) < 2.5;
+        minimapCtx.strokeStyle = isLower ? 'rgba(255, 190, 11, 0.85)' : 'rgba(56, 189, 248, 0.88)';
+        minimapCtx.lineWidth = 5.5;
+        minimapCtx.beginPath();
+        minimapCtx.moveTo(mapX(p0.x), mapY(p0.z));
+        minimapCtx.lineTo(mapX(p1.x), mapY(p1.z));
+        minimapCtx.stroke();
+      }
+    }
+
+    if (Array.isArray(racers)) {
+      for (let i = 0; i < racers.length; i++) {
+        const r = racers[i];
+        const rx = Math.max(10, Math.min(w - 10, mapX(r.x ?? 0)));
+        const ry = Math.max(10, Math.min(h - 10, mapY(r.z ?? 0)));
+        minimapCtx.beginPath();
+        minimapCtx.arc(rx, ry, r.isPlayer ? 5.2 : 3.8, 0, Math.PI * 2);
+        minimapCtx.fillStyle = r.color || '#ff2a4b';
+        minimapCtx.fill();
+        minimapCtx.lineWidth = r.isPlayer ? 2 : 1.2;
+        minimapCtx.strokeStyle = '#ffffff';
+        minimapCtx.stroke();
+      }
+    }
+    minimapCtx.restore();
+  }
+
   const input = { left: false, right: false };
   const sfx = createAudioEngine(() => pulseTeloletBtn());
   let muted = localStorage.getItem('jg_muted') === '1';
   let hd = true;
+  let selectedArena = localStorage.getItem('jg_arena') || 'salatiga';
+  if (!ARENAS[selectedArena]) selectedArena = 'salatiga';
   let selectedVehicle = localStorage.getItem('jg_vehicle') || 'angkot';
   if (!VEHICLES[selectedVehicle]) selectedVehicle = 'angkot';
   let selectedDiff = localStorage.getItem('jg_diff') || 'normal';
   if (!DIFFS.some((d) => d.id === selectedDiff)) selectedDiff = 'normal';
   let selectedRoom = normalizeRoomId(localStorage.getItem('jg_room') || 'salatiga-1');
   let lobbyCounts = {};
+
+  /* ---------- Kartu Arena ---------- */
+  for (const [key, def] of Object.entries(ARENAS)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'jg-arena-card';
+    b.dataset.key = key;
+    b.innerHTML = `
+      <span class="jg-arena-em">${def.emoji}</span>
+      <span class="jg-arena-meta">
+        <span class="jg-arena-top"><strong>${def.label}</strong><em class="jg-arena-badge ${key === 'skyway' ? 'new' : ''}">${def.badge}</em></span>
+        <span class="jg-arena-desc">${def.desc}</span>
+      </span>
+      <span class="jg-card-check">✓</span>`;
+    b.addEventListener('click', () => {
+      selectedArena = key;
+      try { localStorage.setItem('jg_arena', key); } catch {}
+      paintArenas(); sfx.ui();
+      opts.onSelectArena?.(key);
+    });
+    el.arenas?.appendChild(b);
+  }
+  function paintArenas() {
+    el.arenas?.querySelectorAll('.jg-arena-card').forEach((c) => {
+      const node = /** @type {HTMLElement} */ (c);
+      node.classList.toggle('on', node.dataset.key === selectedArena);
+    });
+    if (el.arenaBadge) {
+      const def = ARENAS[selectedArena] || ARENAS.salatiga;
+      el.arenaBadge.textContent = `${def.emoji} ${def.shortLabel}`;
+    }
+  }
+  paintArenas();
 
   /* ---------- Kartu armada ---------- */
   for (const [key, def] of Object.entries(VEHICLES)) {
@@ -139,7 +300,6 @@ export function createHUD(opts = {}) {
   }
   function paintFleet() {
     el.fleet.querySelectorAll('.jg-card').forEach((c) => c.classList.toggle('on', c.dataset.key === selectedVehicle));
-    el.fleetTag.textContent = `${EMOJI[selectedVehicle]} ${VEHICLES[selectedVehicle].label}`;
   }
 
   /* ---------- Difficulty ---------- */
@@ -235,6 +395,7 @@ export function createHUD(opts = {}) {
   function paintAudio() {
     const icon = muted ? '🔇' : '🔊';
     for (const b of [el.btnAudio, el.btnAudioMenu, el.btnAudioPause]) {
+      if (!b) continue;
       b.textContent = icon;
       b.setAttribute('aria-pressed', String(!muted));
       b.title = muted ? 'Nyalakan suara (M)' : 'Bisukan suara (M)';
@@ -247,12 +408,12 @@ export function createHUD(opts = {}) {
     if (!muted) { sfx.resume(); sfx.ui(); }
     opts.onAudio?.(!muted);
   }
-  for (const b of [el.btnAudio, el.btnAudioMenu, el.btnAudioPause]) b.addEventListener('click', toggleAudio);
+  for (const b of [el.btnAudio, el.btnAudioMenu, el.btnAudioPause]) b?.addEventListener('click', toggleAudio);
   sfx.setMuted(muted); paintAudio();
 
-  el.btnQuality.addEventListener('click', () => {
+  el.btnQuality?.addEventListener('click', () => {
     hd = !hd;
-    el.btnQuality.textContent = hd ? 'HD' : 'ECO';
+    el.btnQuality.textContent = hd ? 'Grafik: HD' : 'Grafik: ECO';
     el.btnQuality.setAttribute('aria-pressed', String(hd));
     sfx.ui(); opts.onQuality?.(hd);
   });
@@ -293,12 +454,13 @@ export function createHUD(opts = {}) {
 
   /* ---------- Cache nilai agar tidak thrash DOM ---------- */
   const last = {};
-  function setText(node, key, val) { if (last[key] !== val) { last[key] = val; node.textContent = val; } }
+  function setText(node, key, val) { if (node && last[key] !== val) { last[key] = val; node.textContent = val; } }
 
-  let bannerTimer = 0, toastSeq = 0;
+  let toastSeq = 0;
 
   const api = {
     input, sfx, triggerTelolet,
+    get arena() { return selectedArena; },
     get vehicle() { return selectedVehicle; },
     get difficulty() { return selectedDiff; },
     get room() { return selectedRoom; },
@@ -319,24 +481,33 @@ export function createHUD(opts = {}) {
 
     showMenu(best) {
       clearSpeedLines();
-      api.setWarnings([]);
       el.menu.classList.add('show');
       el.hud.classList.remove('show');
+      el.toasts?.classList.remove('in-race');
       el.pause.classList.remove('show');
       el.over.classList.remove('show');
+      if (el.overhead) el.overhead.classList.remove('show');
       el.bestMenu.textContent = `🏆 Rekor: ${Math.round(best).toLocaleString('id-ID')}`;
+      paintArenas();
       paintFleet();
     },
     hideMenu() { el.menu.classList.remove('show'); },
-    showHUD() { el.hud.classList.add('show'); },
-    hideHUD() { clearSpeedLines(); api.setWarnings([]); el.hud.classList.remove('show'); },
+    showHUD() {
+      el.hud.classList.add('show');
+      el.toasts?.classList.add('in-race');
+    },
+    hideHUD() {
+      clearSpeedLines();
+      if (el.overhead) el.overhead.classList.remove('show');
+      el.hud.classList.remove('show');
+      el.toasts?.classList.remove('in-race');
+    },
 
     updateHUD(s) {
-      setText(el.score, 'score', Math.round(s.score).toLocaleString('id-ID'));
-      setText(el.dist, 'dist', `${Math.round(s.distance)} m`);
+      /* 1. Badge Koin / Buah & Lap/Timer Kompak di Kiri-Atas */
       const coinVal = Math.round(s.coins ?? 0);
       if (last.coinsNum !== coinVal) {
-        if (last.coinsNum !== undefined && coinVal > last.coinsNum) {
+        if (last.coinsNum !== undefined && coinVal > last.coinsNum && el.coinsWrap) {
           el.coinsWrap.classList.remove('pop');
           void el.coinsWrap.offsetWidth;
           el.coinsWrap.classList.add('pop');
@@ -344,26 +515,73 @@ export function createHUD(opts = {}) {
         last.coinsNum = coinVal;
       }
       setText(el.coins, 'coins', coinVal.toLocaleString('id-ID'));
-      setText(el.speed, 'speed', String(Math.round(s.speed * 3.6)));
-      el.speedBar.style.width = `${Math.min(100, s.speedRatio * 100)}%`;
-      const hearts = '❤️'.repeat(s.hearts) + '🖤'.repeat(Math.max(0, s.maxHearts - s.hearts));
-      setText(el.hearts, 'hearts', hearts);
-      if (s.combo > 1) {
-        el.combo.classList.add('show');
-        setText(el.combo, 'combo', `×${s.combo} RANTAI`);
-      } else el.combo.classList.remove('show');
-      el.turboWrap.classList.toggle('show', s.turbo > 0);
-      el.turboFill.style.width = `${Math.max(0, Math.min(1, s.turbo)) * 100}%`;
-      el.cpFill.style.width = `${Math.min(100, (s.distance % 500) / 5)}%`;
-      setText(el.cpLabel, 'cp', `Checkpoint ${s.nextCheckpoint} m`);
-      const rankNum = Math.max(1, Math.min(4, Math.round(s.rank || 1)));
-      const totalRacers = Math.max(1, Math.round(s.totalRacers || 4));
-      const rankMedals = ['🥇', '🥈', '🥉', '🏁'];
-      const ord = ['1ST', '2ND', '3RD', '4TH'][rankNum - 1] || `${rankNum}TH`;
-      if (el.rank) {
-        setText(el.rank, 'rank', `${rankMedals[rankNum - 1] || '🏁'} ${ord} / ${totalRacers}`);
-        el.rank.className = `jg-chip rank rank-${rankNum}`;
+
+      if (el.lapTimer) {
+        const lapNo = s.lapNumber || 1;
+        const distM = Math.min(s.lapGoal || 1500, Math.round(s.distance || 0));
+        const goalM = Math.round(s.lapGoal || 1500);
+        const rt = Math.max(0, s.raceTime || 0);
+        const mins = Math.floor(rt / 60);
+        const secs = (rt % 60).toFixed(1).padStart(4, '0');
+        const txt = `LAP ${lapNo} · ${distM}/${goalM}m · ${String(mins).padStart(2, '0')}:${secs}`;
+        setText(el.lapTimer, 'lapTimer', txt);
       }
+
+      /* 2. Klasemen Langsung 1st–4th dengan ikon kendaraan & mahkota P1 */
+      const standings = Array.isArray(s.standings) ? s.standings : [];
+      for (let i = 0; i < lbRows.length; i++) {
+        const slot = lbRows[i];
+        const r = standings[i];
+        if (!r) {
+          slot.row.style.display = 'none';
+          continue;
+        }
+        slot.row.style.display = '';
+        const posNum = i + 1;
+        const posLabel = posNum === 1 ? '👑' : `${posNum}`;
+        const shortName = r.isPlayer ? 'KAMU' : String(r.name || 'AI').replace(/^AI\s*•\s*/i, '').slice(0, 10);
+        const sig = `${posNum}|${r.type}|${r.slotColor}|${shortName}|${!!r.isPlayer}`;
+        if (slot.lastSig !== sig) {
+          slot.lastSig = sig;
+          slot.row.className = `jg-lb-row pos-${posNum}${r.isPlayer ? ' me' : ''}`;
+          if (slot.pos) slot.pos.textContent = posLabel;
+          if (slot.ico) slot.ico.innerHTML = vehicleSvg(r.type, r.slotColor || '#ff6b00');
+          if (slot.name) slot.name.textContent = shortName;
+        }
+      }
+
+      /* 3. Speedometer Digital Melengkung + Bar Boost di Kanan-Bawah */
+      const kmh = Math.round((s.speed || 0) * 4.4);
+      setText(el.speedVal, 'speedVal', String(kmh));
+      const arcFill = Math.max(0, Math.min(1, s.speedRatio || 0));
+      if (el.speedArc) {
+        const maxDash = 118;
+        el.speedArc.style.strokeDashoffset = String((maxDash * (1 - arcFill)).toFixed(1));
+      }
+      const turboFrac = Math.max(0, Math.min(1, s.turbo || 0));
+      if (el.boostFill) {
+        el.boostFill.style.width = `${Math.round((turboFrac > 0 ? turboFrac : arcFill * 0.55) * 100)}%`;
+      }
+      el.boostWrap?.classList.toggle('turbo', turboFrac > 0);
+
+      /* 4. Minimap Bundar Transparan di Kiri-Bawah */
+      if (s.minimapPts && s.minimapRacers) {
+        drawMinimap(s.minimapPts, s.minimapRacers, s.playerPos);
+      }
+
+      /* 5. Penghitung koin/buah & mahkota melayang tepat di atas kendaraan player */
+      const ov = s.overhead;
+      if (el.overhead && ov && ov.visible) {
+        el.overhead.classList.add('show');
+        el.overhead.classList.toggle('first', !!ov.isFirst);
+        el.overhead.style.transform = `translate3d(${Math.round(ov.x)}px, ${Math.round(ov.y)}px, 0) translate(-50%, -100%)`;
+        if (el.overheadCrown) el.overheadCrown.style.display = ov.isFirst ? '' : 'none';
+        setText(el.overheadCoins, 'ovCoins', String(Math.round(ov.coins ?? coinVal)));
+      } else if (el.overhead) {
+        el.overhead.classList.remove('show');
+      }
+
+      /* 6. Rel Progress Vertikal START -> FINISH di tepi kanan */
       if (el.progressDots && Array.isArray(s.racerMarkers)) {
         const markers = s.racerMarkers;
         while (el.progressDots.children.length < markers.length) {
@@ -382,35 +600,16 @@ export function createHUD(opts = {}) {
           dot.classList.toggle('me', !!mk.isPlayer);
         }
       }
+
       el.hud.classList.toggle('invuln', s.invuln > 0);
       const isTurbo = s.turbo > 0;
-      const lineStrength = isTurbo ? 1 : Math.max(0, (s.speedRatio - 0.68) / 0.32);
+      const lineStrength = isTurbo ? 1 : Math.max(0, (s.speedRatio - 0.72) / 0.28);
       drawSpeedLines(lineStrength, isTurbo);
     },
 
-    setWarnings(list = []) {
-      let onL = false, onC = false, onR = false;
-      for (const w of list) {
-        if (w.laneX < -1.5) onL = true;
-        else if (w.laneX > 1.5) onR = true;
-        else onC = true;
-      }
-      el.warnL?.classList.toggle('show', onL);
-      el.warnC?.classList.toggle('show', onC);
-      el.warnR?.classList.toggle('show', onR);
-    },
-
-    setAirHint(on) { el.airHint.classList.toggle('show', on); },
-
-    showStunt(title, points) {
-      el.bannerTitle.textContent = title;
-      el.bannerPts.textContent = points > 0 ? `+${Math.round(points).toLocaleString('id-ID')}` : '';
-      el.banner.classList.remove('show');
-      void el.banner.offsetWidth;
-      el.banner.classList.add('show');
-      clearTimeout(bannerTimer);
-      bannerTimer = setTimeout(() => el.banner.classList.remove('show'), 1500);
-    },
+    setWarnings() {},
+    setAirHint() {},
+    showStunt() {},
 
     flashCrash() {
       el.crashFlash.classList.remove('on');
@@ -424,8 +623,8 @@ export function createHUD(opts = {}) {
       t.textContent = msg;
       el.toasts.appendChild(t);
       const id = ++toastSeq;
-      setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 350); }, 2000);
-      while (el.toasts.children.length > 4) el.toasts.firstChild.remove();
+      setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 300); }, 1650);
+      while (el.toasts.children.length > 3) el.toasts.firstChild.remove();
       return id;
     },
 
@@ -441,21 +640,26 @@ export function createHUD(opts = {}) {
       const rank = r.rank || 1;
       if (r.isLapFinish) {
         el.overTitle.textContent = rank === 1
-          ? `🏁 JUARA BABAK ${r.lapNumber || 1}!`
-          : `🏁 FINIS BABAK ${r.lapNumber || 1} (#${rank})`;
-        if (el.btnOverContinue) el.btnOverContinue.style.display = '';
+          ? `🏁 JUARA 1 GARIS FINIS!`
+          : `🏁 FINIS BABAK ${r.lapNumber || 1} • POSISI #${rank}`;
+        if (el.btnOverContinue) {
+          el.btnOverContinue.style.display = '';
+          el.btnOverContinue.textContent = 'Balapan Berikutnya 🏁';
+        }
         el.btnOverRestart?.classList.remove('primary');
       } else {
         el.overTitle.textContent = r.newRecord
           ? 'REKOR BARU, JURAGAN!'
-          : rank === 1 ? 'JUARA 1 DI SALATIGA!' : `FINIS POSISI #${rank}!`;
+          : rank === 1
+            ? (r.arenaId === 'skyway' ? 'JUARA 1 DI NUSANTARA SKYWAY!' : 'JUARA 1 DI SALATIGA!')
+            : `FINIS POSISI #${rank}!`;
         if (el.btnOverContinue) el.btnOverContinue.style.display = 'none';
         el.btnOverRestart?.classList.add('primary');
       }
       renderPodium(el.podium, r.standings || []);
       el.over.classList.add('show');
       clearSpeedLines();
-      api.setWarnings([]);
+      if (el.overhead) el.overhead.classList.remove('show');
       el.hud.classList.remove('show');
     },
     hideGameOver() { el.over.classList.remove('show'); },
@@ -481,10 +685,9 @@ export function createHUD(opts = {}) {
         offline: [`OFFLINE • ${roomLabel}`, 'warn'],
       };
       const [label, cls] = map[status] || map.solo;
-      for (const node of [el.net, el.netMenu]) {
-        if (!node) continue;
-        node.className = `jg-net ${cls}`;
-        node.textContent = `● ${label}`;
+      if (el.netMenu) {
+        el.netMenu.className = `jg-net ${cls}`;
+        el.netMenu.textContent = `● ${label}`;
       }
       if (room) {
         selectedRoom = normalizeRoomId(room);
@@ -496,7 +699,6 @@ export function createHUD(opts = {}) {
     toggleAudio,
 
     dispose() {
-      clearTimeout(bannerTimer);
       window.removeEventListener('resize', resizeSpeedLines);
       sfx.dispose();
       wrap.remove();
@@ -509,7 +711,6 @@ export function createHUD(opts = {}) {
 function createAudioEngine(onHorn) {
   let ac = null, master = null, muted = false;
   let engOsc = null, engSub = null, engGain = null, engFilter = null, roadGain = null, noiseBuf = null;
-  let engineOn = false;
 
   const telolet = createTeloletSynthesizer({
     ensureContext: () => (ensure() ? ac : null),
@@ -553,7 +754,6 @@ function createAudioEngine(onHorn) {
   function setEngine(active, ratio = 0, turbo = false) {
     if (active && !engOsc) startEngine();
     if (!ac || !engGain) return;
-    engineOn = active;
     const t = ac.currentTime;
     const r = Math.max(0, Math.min(1.4, ratio));
     const f = 58 + r * 128 + (turbo ? 46 : 0);
@@ -683,11 +883,17 @@ function TEMPLATE() {
       <div class="jg-panel jg-menu-card">
         <div class="jg-flame-marquee">
           <span class="jg-flame-badge">🔥 KING OF THE ROAD SALATIGA</span>
-          <span class="jg-flame-sub">STUNT ARENA • 1:64 DIE-CAST EDITION</span>
+          <span class="jg-flame-sub">MISI FINIS 1.500M • 1:64 DIE-CAST EDITION</span>
         </div>
         <div class="jg-name-row">
           <label for="jg-name-input">Nama Juragan</label>
           <input id="jg-name-input" class="jg-input" type="text" maxlength="18" placeholder="Tulis namamu di trek…" autocomplete="off" />
+        </div>
+        <div class="jg-menu-section">
+          <div class="jg-menu-head">
+            <h2>Pilih Arena</h2><span id="jg-arena-badge" class="jg-chip">🏙️ Kota Salatiga</span>
+          </div>
+          <div id="jg-arenas" class="jg-arenas"></div>
         </div>
         <div class="jg-menu-section">
           <div class="jg-menu-head">
@@ -712,61 +918,78 @@ function TEMPLATE() {
           <span><kbd>←</kbd><kbd>→</kbd> / <kbd>A</kbd><kbd>D</kbd> belok</span>
           <span><kbd>←</kbd><kbd>→</kbd> di udara = <b>Barrel Roll</b> → Turbo</span>
           <span><kbd>H</kbd> klakson telolet • <kbd>P</kbd> jeda • <kbd>R</kbd> ulang • <kbd>M</kbd> suara</span>
-          <span>📱 Sentuh pads kiri/kanan di layar</span>
         </div>
-        <div class="jg-objective">🎯 Kumpulkan koin &amp; buah segar, salip ketat, hajar ramp, dan raih rantai stunt. Checkpoint tiap 500 m memberi bonus!</div>
+        <div class="jg-objective">🎯 Capai Garis Finis 1.500 m lebih dulu sambil kumpulkan koin emas &amp; buah segar 3D untuk naik Podium Juara!</div>
       </div>
     </div>
   </div>
 
   <div id="jg-hud" class="jg-hud">
     <canvas id="jg-speedlines" class="jg-speedlines" aria-hidden="true"></canvas>
-    <div class="jg-hud-left jg-panel">
-      <div class="jg-score-lbl">SKOR</div>
-      <div id="jg-score" class="jg-score">0</div>
-      <div class="jg-row">
-        <span id="jg-rank" class="jg-chip rank rank-1">🥇 1ST / 4</span>
-        <span id="jg-dist" class="jg-chip">0 m</span>
-        <span id="jg-coins-wrap" class="jg-chip coin">🪙 <b id="jg-coins">0</b></span>
-        <span id="jg-fleet-tag" class="jg-chip">🚐 Angkot</span>
+
+    <!-- Kiri-Atas: Lap/Timer + Badge Koin + Klasemen Ikonik 1st–4th -->
+    <div class="jg-hud-tl">
+      <div class="jg-tl-badges">
+        <div id="jg-coins-wrap" class="jg-coin-pill">
+          <span class="jg-coin-ico">🪙</span>
+          <b id="jg-coins">0</b>
+        </div>
+        <div id="jg-lap-timer" class="jg-lap-pill">LAP 1 · 0/1500m · 00:00.0</div>
       </div>
-      <div id="jg-hearts" class="jg-hearts">❤️❤️❤️</div>
-      <div class="jg-cp"><div class="jg-cp-track"><div id="jg-cp-fill" class="jg-cp-fill"></div></div><span id="jg-cp-label">Checkpoint 500 m</span></div>
+      <div id="jg-lb" class="jg-lb" aria-label="Klasemen 1 sampai 4"></div>
     </div>
-    <div class="jg-hud-right">
-      <div class="jg-tools">
-        <span id="jg-net" class="jg-net solo">● SOLO • AI MODE</span>
-        <button id="jg-quality" class="jg-icon txt" aria-pressed="true">HD</button>
-        <button id="jg-audio" class="jg-icon" aria-pressed="true">🔊</button>
-        <button id="jg-pause-btn" class="jg-icon" title="Jeda (P)">⏸</button>
-      </div>
-      <div class="jg-panel jg-speedo">
-        <div><span id="jg-speed" class="jg-speed">0</span><span class="jg-unit">km/j</span></div>
-        <div class="jg-speed-track"><div id="jg-speed-bar" class="jg-speed-bar"></div></div>
-        <div id="jg-turbo" class="jg-turbo"><span>🔥 TURBO</span><div class="jg-turbo-track"><div id="jg-turbo-fill" class="jg-turbo-fill"></div></div></div>
-      </div>
-      <div id="jg-combo" class="jg-combo">×2 RANTAI</div>
+
+    <!-- Kanan-Atas: Tombol Audio & Jeda Minimal -->
+    <div class="jg-hud-tr">
+      <button id="jg-audio" class="jg-min-btn" aria-pressed="true" title="Suara (M)">🔊</button>
+      <button id="jg-pause-btn" class="jg-min-btn" title="Jeda (P)">⏸</button>
     </div>
+
+    <!-- Tepi Kanan: Rel Progress Vertikal START ke FINISH 1500m -->
     <div id="jg-progress-rail" class="jg-progress-rail" aria-hidden="true">
       <div class="jg-prog-flag">🏁</div>
+      <span class="jg-prog-lbl">FINISH</span>
       <div class="jg-prog-track"><div id="jg-progress-dots" class="jg-prog-dots"></div></div>
+      <span class="jg-prog-lbl">START</span>
     </div>
-    <div id="jg-warnings" class="jg-warnings" aria-hidden="true">
-      <div id="jg-warn-l" class="jg-warn-badge">!<span>BAHAYA</span></div>
-      <div id="jg-warn-c" class="jg-warn-badge">!<span>BAHAYA</span></div>
-      <div id="jg-warn-r" class="jg-warn-badge">!<span>BAHAYA</span></div>
+
+    <!-- Kiri-Bawah: Minimap Bundar Transparan -->
+    <div class="jg-hud-bl" aria-hidden="true">
+      <canvas id="jg-minimap" class="jg-minimap" width="120" height="120"></canvas>
     </div>
-    <div id="jg-banner" class="jg-banner"><div id="jg-banner-title" class="jg-banner-title">BARREL ROLL!</div><div id="jg-banner-pts" class="jg-banner-pts">+250</div></div>
-    <div id="jg-airhint" class="jg-airhint">⬅️ TAHAN KIRI / KANAN ➡️ UNTUK BARREL ROLL!</div>
-    <div id="jg-toasts" class="jg-toasts"></div>
+
+    <!-- Kanan-Bawah: Speedometer Digital Melengkung + Bar Boost -->
+    <div class="jg-hud-br" aria-hidden="true">
+      <div class="jg-speedo">
+        <svg viewBox="0 0 110 72" class="jg-speedo-svg">
+          <path d="M 15 62 A 44 44 0 1 1 95 62" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="8" stroke-linecap="round" />
+          <path id="jg-speed-arc" d="M 15 62 A 44 44 0 1 1 95 62" fill="none" stroke="#ffbe0b" stroke-width="8" stroke-linecap="round" stroke-dasharray="118" stroke-dashoffset="118" />
+        </svg>
+        <div class="jg-speedo-txt"><b id="jg-speed-val">0</b><span>KM/H</span></div>
+      </div>
+      <div id="jg-boost-wrap" class="jg-boost-bar">
+        <span>BOOST</span>
+        <div class="jg-boost-track"><div id="jg-boost-fill" class="jg-boost-fill"></div></div>
+      </div>
+    </div>
+
+    <!-- Penghitung Koin & Mahkota Melayang di atas kendaraan player -->
+    <div id="jg-overhead" class="jg-overhead" aria-hidden="true">
+      <span id="jg-overhead-crown" class="jg-ov-crown" style="display:none">👑</span>
+      <span class="jg-ov-ico">🪙</span>
+      <b id="jg-overhead-coins">0</b>
+    </div>
+
     <div id="jg-pad-l" class="jg-pad left" aria-label="Belok kiri">◀</div>
     <button id="jg-telolet" class="jg-telolet" type="button" aria-label="Klakson Telolet Basuri (H)" title="Klakson Telolet Basuri (H)">
       <span class="jg-telolet-em">🎺</span>
-      <span class="jg-telolet-lbl">Telolet <kbd>H</kbd></span>
+      <kbd>H</kbd>
     </button>
     <div id="jg-pad-r" class="jg-pad right" aria-label="Belok kanan">▶</div>
     <div id="jg-crash" class="jg-crash"></div>
   </div>
+
+  <div id="jg-toasts" class="jg-toasts"></div>
 
   <div id="jg-pause" class="jg-overlay jg-modal"><div class="jg-panel jg-modal-card">
     <div class="jg-big-em">⏸</div><h2>JEDA DULU</h2>
@@ -777,6 +1000,9 @@ function TEMPLATE() {
       <button id="jg-pause-menu" class="jg-btn">🚐 Armada</button>
       <button id="jg-audio-pause" class="jg-btn icon" aria-pressed="true">🔊</button>
     </div>
+    <div class="jg-btn-row">
+      <button id="jg-quality" class="jg-btn" aria-pressed="true">Grafik: HD</button>
+    </div>
   </div></div>
 
   <div id="jg-over" class="jg-overlay jg-modal"><div class="jg-panel jg-modal-card jg-over-card">
@@ -786,11 +1012,11 @@ function TEMPLATE() {
     <div class="jg-stats">
       <div><b id="jg-over-score">0</b><span>SKOR</span></div>
       <div><b id="jg-over-dist">0 m</b><span>JARAK</span></div>
-      <div><b id="jg-over-coins">0</b><span>KOIN</span></div>
+      <div><b id="jg-over-coins">0</b><span>KOIN &amp; BUAH</span></div>
       <div><b id="jg-over-rolls">0</b><span>BARREL ROLL</span></div>
       <div class="jg-stat-wide"><b id="jg-over-best">0</b><span>REKOR TERBAIK</span></div>
     </div>
-    <button id="jg-over-continue" class="jg-btn primary big" style="display:none">LANJUT BABAK ▶</button>
+    <button id="jg-over-continue" class="jg-btn primary big" style="display:none">Balapan Berikutnya 🏁</button>
     <button id="jg-over-restart" class="jg-btn primary big">GAS LAGI 🔁</button>
     <button id="jg-over-menu" class="jg-btn">🚐 Ganti Armada</button>
   </div></div>`;
@@ -804,10 +1030,10 @@ function renderPodium(container, standings) {
   const confettiWrap = document.createElement('div');
   confettiWrap.className = 'jg-confetti-wrap';
   const confColors = ['#ff2a4b', '#ffd100', '#39ff14', '#9d4edd', '#38bdf8'];
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < 18; i++) {
     const bit = document.createElement('span');
     bit.className = 'jg-confetti-bit';
-    bit.style.left = `${(i * 6.2 + 3) % 96}%`;
+    bit.style.left = `${(i * 5.8 + 2) % 96}%`;
     bit.style.background = confColors[i % confColors.length];
     bit.style.animationDelay = `${(i % 5) * 0.12}s`;
     confettiWrap.appendChild(bit);
@@ -831,12 +1057,12 @@ function renderPodium(container, standings) {
     if (idx === 0) {
       const flames = document.createElement('div');
       flames.className = 'jg-pod-flames';
-      flames.textContent = '🔥 👑 🔥';
+      flames.textContent = '👑';
       racer.appendChild(flames);
     }
     const em = document.createElement('div');
-    em.className = 'jg-pod-em';
-    em.textContent = EMOJI[r.type] || '🚐';
+    em.className = 'jg-pod-ico';
+    em.innerHTML = vehicleSvg(r.type, r.slotColor || '#ff6b00');
     const nm = document.createElement('div');
     nm.className = 'jg-pod-name';
     nm.textContent = r.isPlayer ? `${r.name} (KAMU)` : r.name;
@@ -895,9 +1121,6 @@ function injectStyles() {
   .jg-panel{background:var(--jg-surface);border:2px solid var(--jg-line);border-radius:18px;box-shadow:var(--jg-shadow);backdrop-filter:blur(12px)}
   .jg-chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:800;background:var(--jg-paper);border:1.5px solid var(--jg-line);border-radius:99px;padding:5px 12px;color:var(--jg-soft);font-variant-numeric:tabular-nums}
   .jg-chip.gold{background:linear-gradient(135deg,var(--jg-amber),var(--jg-orange));color:#fff;border-color:var(--jg-orange)}
-  .jg-chip.coin{background:linear-gradient(135deg,#fff3bf,#ffd166);color:#6e3f00;border-color:#f4a261}
-  .jg-chip.coin b{font-family:var(--jg-disp);font-weight:700}
-  .jg-chip.coin.pop{animation:jgCoinPop .28s cubic-bezier(.2,.9,.3,1.4)}
   .jg-btn{pointer-events:auto;border:2px solid var(--jg-line);background:var(--jg-paper);color:var(--jg-ink);font-weight:800;font-size:14px;border-radius:14px;padding:12px 18px;transition:transform .14s,background .2s,border-color .2s;box-shadow:0 6px 16px rgba(122,72,20,.14)}
   .jg-btn:hover{transform:translateY(-2px);border-color:var(--jg-amber)}
   .jg-btn:active{transform:scale(.96)}
@@ -908,7 +1131,6 @@ function injectStyles() {
   .jg-btn-row .jg-btn{flex:1}
   #jg-root button:focus-visible,.jg-card:focus-visible,.jg-diff:focus-visible{outline:3px solid var(--jg-blue);outline-offset:2px}
   .jg-icon{pointer-events:auto;width:42px;height:42px;border-radius:13px;border:2px solid var(--jg-line);background:var(--jg-surface);backdrop-filter:blur(8px);font-size:17px;display:grid;place-items:center;box-shadow:0 6px 16px rgba(122,72,20,.16);transition:transform .14s,border-color .2s}
-  .jg-icon.txt{font-size:11px;font-weight:800;letter-spacing:.5px}
   .jg-icon:hover{transform:translateY(-2px);border-color:var(--jg-amber)}
   .jg-icon:active{transform:scale(.93)}
   .jg-icon[aria-pressed="false"]{opacity:.6}
@@ -925,7 +1147,7 @@ function injectStyles() {
   .jg-load-fill{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--jg-amber),var(--jg-orange),var(--jg-red));transition:width .35s cubic-bezier(.2,.8,.2,1)}
   .jg-load-status{margin-top:12px;font-size:12.5px;font-weight:700;color:var(--jg-soft)}
 
-  /* Overlay umum */
+  /* Start Menu */
   .jg-overlay{position:fixed;inset:0;pointer-events:none;opacity:0;visibility:hidden;transition:opacity .35s,visibility .35s}
   .jg-overlay.show{opacity:1;visibility:visible;pointer-events:auto}
   .jg-menu{display:flex;flex-direction:column;align-items:center;padding:18px 20px;gap:14px;background:radial-gradient(120% 90% at 50% 0%,rgba(255,229,204,.55),rgba(255,243,224,.82));overflow-y:auto}
@@ -940,7 +1162,9 @@ function injectStyles() {
   .jg-brand h1{font-family:var(--jg-disp);font-weight:700;font-size:clamp(1.45rem,3.2vw,2.1rem);line-height:1.05}
   .jg-brand h1 em{font-style:normal;color:var(--jg-red)}
   .jg-brand-sub{display:block;margin-top:3px;font-size:10.5px;font-weight:800;letter-spacing:1.8px;color:var(--jg-soft)}
-  .jg-menu-tools{display:flex;gap:8px}
+  .jg-menu-tools{display:flex;align-items:center;gap:8px}
+  .jg-net{font-size:9.5px;font-weight:800;letter-spacing:.7px;border-radius:99px;padding:6px 11px;background:var(--jg-surface);border:1.5px solid var(--jg-line);backdrop-filter:blur(8px);white-space:nowrap}
+  .jg-net.solo{color:#2b7a38}.jg-net.live{color:#0f766e;border-color:rgba(16,185,129,.45);background:rgba(236,253,245,.95)}.jg-net.warn{color:var(--jg-orange)}
   .jg-menu-card{display:flex;flex-direction:column;gap:16px;max-width:780px;width:92%;margin:auto;padding:24px 28px;max-height:calc(100vh - 96px);overflow-y:auto;border-color:rgba(255,107,0,.45)}
   .jg-flame-marquee{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:11px 16px;border-radius:14px;background:linear-gradient(90deg,#d00000 0%,#ff5400 52%,#ffbe0b 100%);color:#fff;box-shadow:0 8px 20px rgba(255,84,0,.28);border:2px solid #fff3bf}
   .jg-flame-badge{font-family:var(--jg-disp);font-weight:700;font-size:1.08rem;letter-spacing:.7px;text-shadow:0 2px 0 rgba(120,20,0,.6)}
@@ -948,6 +1172,18 @@ function injectStyles() {
   .jg-menu-section{display:flex;flex-direction:column;gap:10px}
   .jg-menu-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
   .jg-menu-head h2{font-family:var(--jg-disp);font-weight:600;font-size:1.1rem}
+  .jg-arenas{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+  .jg-arena-card{position:relative;pointer-events:auto;display:flex;align-items:center;gap:12px;text-align:left;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:16px;padding:12px 14px;transition:transform .16s,border-color .2s,box-shadow .2s}
+  .jg-arena-card:hover{transform:translateY(-2px);border-color:var(--jg-blue)}
+  .jg-arena-card.on{border-color:var(--jg-blue);background:linear-gradient(155deg,#f0f9ff,#e0f2fe);box-shadow:0 0 0 3px rgba(58,134,255,.22),0 10px 22px rgba(2,132,199,.16)}
+  .jg-arena-em{font-size:32px;line-height:1;flex:none}
+  .jg-arena-meta{display:flex;flex-direction:column;gap:3px;min-width:0}
+  .jg-arena-top{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .jg-arena-top strong{font-family:var(--jg-disp);font-weight:700;font-size:.98rem;color:var(--jg-ink)}
+  .jg-arena-badge{font-style:normal;font-size:9px;font-weight:800;letter-spacing:.7px;padding:2px 7px;border-radius:99px;background:rgba(59,47,47,.1);color:var(--jg-soft)}
+  .jg-arena-badge.new{background:linear-gradient(135deg,#0ea5e9,#2563eb);color:#fff}
+  .jg-arena-desc{font-size:11px;font-weight:600;line-height:1.35;color:var(--jg-soft)}
+  .jg-arena-card.on .jg-card-check{display:grid;background:var(--jg-blue)}
   .jg-fleet{display:grid;grid-template-columns:repeat(4,1fr);gap:11px}
   .jg-card{position:relative;pointer-events:auto;display:flex;flex-direction:column;align-items:flex-start;gap:5px;text-align:left;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:16px;padding:13px 14px;transition:transform .16s,border-color .2s,box-shadow .2s}
   .jg-card:hover{transform:translateY(-3px);border-color:var(--jg-amber)}
@@ -984,66 +1220,92 @@ function injectStyles() {
   .jg-legend b{color:var(--jg-red)}
   .jg-objective{font-size:12.5px;font-weight:700;line-height:1.55;color:var(--jg-soft);background:rgba(63,163,77,.1);border:1.5px solid rgba(63,163,77,.3);border-radius:13px;padding:11px 14px}
 
-  /* HUD */
+  /* ==================== HUD DASHBOARD MINIMALIS SUDUT ==================== */
   .jg-hud{position:fixed;inset:0;opacity:0;visibility:hidden;transition:opacity .3s,visibility .3s}
   .jg-hud.show{opacity:1;visibility:visible}
   .jg-speedlines{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:4}
-  .jg-hud-left{position:absolute;top:14px;left:14px;padding:12px 14px;min-width:172px;z-index:10}
-  .jg-score-lbl{font-size:9.5px;font-weight:800;letter-spacing:2px;color:var(--jg-soft)}
-  .jg-score{font-family:var(--jg-disp);font-weight:700;font-size:34px;line-height:1;color:var(--jg-ink)}
-  .jg-row{display:flex;gap:5px;margin-top:7px;flex-wrap:wrap}
-  .jg-hearts{margin-top:7px;font-size:14px;letter-spacing:1px}
-  .jg-hud.invuln .jg-hearts{animation:jgBlink .28s steps(2) infinite}
-  .jg-cp{margin-top:8px}
-  .jg-cp-track{height:6px;border-radius:99px;background:rgba(59,47,47,.1);overflow:hidden}
-  .jg-cp-fill{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--jg-green),var(--jg-amber));transition:width .2s}
-  .jg-cp span{display:block;margin-top:3px;font-size:9px;font-weight:800;letter-spacing:.6px;color:var(--jg-soft)}
-  .jg-hud-right{position:absolute;top:14px;right:14px;display:flex;flex-direction:column;align-items:flex-end;gap:8px}
-  .jg-tools{display:flex;align-items:center;gap:7px}
-  .jg-menu-tools{display:flex;align-items:center;gap:8px}
-  .jg-net{font-size:9.5px;font-weight:800;letter-spacing:.7px;border-radius:99px;padding:6px 11px;background:var(--jg-surface);border:1.5px solid var(--jg-line);backdrop-filter:blur(8px);white-space:nowrap}
-  .jg-net.solo{color:#2b7a38}.jg-net.live{color:#0f766e;border-color:rgba(16,185,129,.45);background:rgba(236,253,245,.95)}.jg-net.warn{color:var(--jg-orange)}
-  .jg-speedo{padding:10px 14px;min-width:150px;text-align:right}
-  .jg-speed{font-family:var(--jg-disp);font-weight:700;font-size:31px;line-height:1}
-  .jg-unit{font-size:10px;font-weight:800;color:var(--jg-soft);margin-left:4px}
-  .jg-speed-track{height:6px;margin-top:6px;border-radius:99px;background:rgba(59,47,47,.1);overflow:hidden}
-  .jg-speed-bar{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--jg-green),var(--jg-amber),var(--jg-red));transition:width .12s}
-  .jg-turbo{display:none;margin-top:7px}
-  .jg-turbo.show{display:block;animation:jgPop .3s}
-  .jg-turbo span{font-size:9.5px;font-weight:800;color:var(--jg-orange);letter-spacing:1px}
-  .jg-turbo-track{height:7px;margin-top:3px;border-radius:99px;background:rgba(59,47,47,.1);overflow:hidden}
-  .jg-turbo-fill{height:100%;width:100%;border-radius:99px;background:linear-gradient(90deg,var(--jg-red),var(--jg-amber));box-shadow:0 0 10px rgba(255,197,61,.8)}
-  .jg-combo{display:none;font-family:var(--jg-disp);font-weight:700;font-size:16px;color:#fff;background:linear-gradient(135deg,var(--jg-purple),var(--jg-red));border-radius:99px;padding:6px 14px;box-shadow:var(--jg-shadow)}
-  .jg-combo.show{display:block;animation:jgPop .3s}
-  .jg-banner{position:absolute;top:20%;left:50%;transform:translate(-50%,-14px) scale(.85);opacity:0;text-align:center;transition:opacity .2s,transform .3s cubic-bezier(.2,.9,.3,1.5)}
-  .jg-banner.show{opacity:1;transform:translate(-50%,0) scale(1)}
-  .jg-banner-title{font-family:var(--jg-disp);font-weight:700;font-size:clamp(28px,6vw,50px);color:#fff;letter-spacing:1px;text-shadow:0 3px 0 var(--jg-red),0 6px 22px rgba(122,72,20,.55)}
-  .jg-banner-pts{font-family:var(--jg-disp);font-weight:700;font-size:clamp(18px,3.4vw,28px);color:var(--jg-amber);text-shadow:0 2px 8px rgba(122,72,20,.6)}
-  .jg-airhint{position:absolute;top:32%;left:50%;transform:translateX(-50%);opacity:0;transition:opacity .25s;font-size:12.5px;font-weight:800;color:var(--jg-ink);background:var(--jg-surface);border:2px solid var(--jg-amber);border-radius:99px;padding:8px 16px;box-shadow:var(--jg-shadow);white-space:nowrap}
-  .jg-airhint.show{opacity:1;animation:jgFloat 1.1s ease-in-out infinite}
-  .jg-toasts{position:fixed;left:24px;bottom:135px;transform:none;display:flex;flex-direction:column;align-items:flex-start;gap:6px;max-width:min(320px,calc(100vw - 48px));pointer-events:none;z-index:20}
-  .jg-toast{font-size:11.5px;font-weight:800;line-height:1.3;text-align:left;background:var(--jg-surface);border:2px solid var(--jg-line);border-radius:14px;padding:7px 13px;box-shadow:0 10px 24px rgba(122,72,20,.18);backdrop-filter:blur(8px);animation:jgToastIn .28s cubic-bezier(.2,.9,.3,1.3);transition:opacity .32s ease,transform .32s ease}
-  .jg-toast.good{border-color:var(--jg-green);color:#2b7a38}
-  .jg-toast.warn{border-color:var(--jg-orange);color:#b45309}
-  .jg-toast.bad{border-color:var(--jg-red);color:#b3261e}
-  .jg-toast.out{opacity:0;transform:translateY(-14px)}
-  .jg-pad{position:absolute;bottom:22px;width:104px;height:104px;border-radius:32px;display:none;place-items:center;font-size:34px;color:var(--jg-ink);background:var(--jg-surface);border:2px solid var(--jg-line);box-shadow:var(--jg-shadow);backdrop-filter:blur(10px);pointer-events:auto;user-select:none;-webkit-user-select:none;touch-action:none;transition:transform .1s,background .12s}
-  .jg-pad.left{left:22px}.jg-pad.right{right:22px}
+
+  /* Top-Left: Compact Coin + Lap/Timer + Sleek 1st-4th Vehicle Leaderboard */
+  .jg-hud-tl{position:absolute;top:14px;left:14px;display:flex;flex-direction:column;align-items:flex-start;gap:7px;z-index:12;pointer-events:none}
+  .jg-tl-badges{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .jg-coin-pill{display:inline-flex;align-items:center;gap:5px;padding:4px 11px 4px 8px;border-radius:99px;background:rgba(15,23,42,.82);border:2px solid #ffbe0b;color:#ffe600;box-shadow:0 4px 12px rgba(0,0,0,.26)}
+  .jg-coin-ico{font-size:15px;line-height:1}
+  .jg-coin-pill b{font-family:var(--jg-disp);font-weight:700;font-size:18px;line-height:1;font-variant-numeric:tabular-nums}
+  .jg-coin-pill.pop{animation:jgCoinPop .26s cubic-bezier(.2,.9,.3,1.4)}
+  .jg-lap-pill{padding:5px 11px;border-radius:99px;background:rgba(15,23,42,.76);border:1.5px solid rgba(255,255,255,.26);color:#f8fafc;font-family:var(--jg-disp);font-weight:600;font-size:12px;letter-spacing:.3px;font-variant-numeric:tabular-nums;box-shadow:0 4px 12px rgba(0,0,0,.22)}
+  .jg-lb{display:flex;flex-direction:column;gap:4px}
+  .jg-lb-row{display:flex;align-items:center;gap:6px;padding:3px 9px 3px 6px;border-radius:10px;background:rgba(15,23,42,.72);border:1.5px solid rgba(255,255,255,.22);color:#f8fafc;box-shadow:0 3px 10px rgba(0,0,0,.22);transition:transform .16s}
+  .jg-lb-row.me{background:rgba(255,107,0,.92);border-color:#fff3bf;color:#fff;transform:translateX(3px)}
+  .jg-lb-row.pos-1:not(.me){border-color:#ffbe0b}
+  .jg-lb-pos{width:18px;text-align:center;font-family:var(--jg-disp);font-weight:700;font-size:13px;line-height:1}
+  .jg-lb-ico{display:flex;align-items:center}
+  .jg-vsvg{width:34px;height:18px;display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,.45))}
+  .jg-lb-name{font-size:11px;font-weight:800;letter-spacing:.25px;max-width:74px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* Bottom-Left: Circular Transparent Minimap */
+  .jg-hud-bl{position:absolute;bottom:14px;left:14px;z-index:11;pointer-events:none}
+  .jg-minimap{width:120px;height:120px;display:block;filter:drop-shadow(0 6px 14px rgba(0,0,0,.35))}
+
+  /* Bottom-Right: Curved Digital Speedometer + Boost Bar */
+  .jg-hud-br{position:absolute;bottom:14px;right:14px;display:flex;flex-direction:column;align-items:center;gap:5px;padding:8px 12px 9px;border-radius:18px;background:rgba(15,23,42,.76);border:1.5px solid rgba(255,255,255,.24);box-shadow:0 6px 18px rgba(0,0,0,.28);z-index:11;pointer-events:none}
+  .jg-speedo{position:relative;width:104px;height:66px}
+  .jg-speedo-svg{width:100%;height:100%;display:block}
+  #jg-speed-arc{transition:stroke-dashoffset .08s linear}
+  .jg-speedo-txt{position:absolute;inset:16px 0 0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .jg-speedo-txt b{font-family:var(--jg-disp);font-weight:700;font-size:24px;line-height:1;color:#fff8eb;font-variant-numeric:tabular-nums}
+  .jg-speedo-txt span{font-size:9px;font-weight:800;letter-spacing:1.1px;color:#94a3b8}
+  .jg-boost-bar{display:flex;align-items:center;gap:6px;width:104px}
+  .jg-boost-bar span{font-size:9px;font-weight:800;letter-spacing:.7px;color:#bae6fd}
+  .jg-boost-track{flex:1;height:6px;border-radius:99px;background:rgba(255,255,255,.16);overflow:hidden}
+  .jg-boost-fill{height:100%;width:0%;border-radius:99px;background:linear-gradient(90deg,#38bdf8,#22c55e);transition:width .08s linear}
+  .jg-boost-bar.turbo .jg-boost-fill{background:linear-gradient(90deg,#ffbe0b,#ff5400)}
+
+  /* Top-Right: Minimal Audio & Pause Icon Buttons */
+  .jg-hud-tr{position:absolute;top:14px;right:14px;display:flex;align-items:center;gap:8px;z-index:12}
+  .jg-min-btn{pointer-events:auto;width:38px;height:38px;border-radius:50%;border:2px solid rgba(255,255,255,.65);background:rgba(15,23,42,.74);color:#fff;font-size:16px;display:grid;place-items:center;box-shadow:0 4px 12px rgba(0,0,0,.28);transition:transform .14s,border-color .2s}
+  .jg-min-btn:hover{transform:scale(1.06);border-color:#ffbe0b}
+  .jg-min-btn:active{transform:scale(.92)}
+  .jg-min-btn[aria-pressed="false"]{opacity:.65}
+
+  /* Right-Edge Slim Vertical START -> FINISH Progress Rail */
+  .jg-progress-rail{position:fixed;right:14px;top:44%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:center;gap:4px;pointer-events:none;z-index:11}
+  .jg-prog-flag{font-size:20px;line-height:1;filter:drop-shadow(0 2px 5px rgba(0,0,0,.35))}
+  .jg-prog-lbl{font-family:var(--jg-disp);font-weight:700;font-size:9px;letter-spacing:1.1px;color:#fff8eb;text-shadow:0 1px 4px rgba(0,0,0,.85)}
+  .jg-prog-track{position:relative;width:10px;height:164px;border-radius:99px;background:rgba(15,23,42,.62);border:2px solid rgba(255,248,235,.82);box-shadow:0 6px 16px rgba(0,0,0,.26)}
+  .jg-prog-dots{position:absolute;inset:6px 0}
+  .jg-prog-dot{position:absolute;left:50%;transform:translate(-50%,50%);width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 2px 5px rgba(0,0,0,.45);transition:bottom .1s linear}
+  .jg-prog-dot.me{width:17px;height:17px;border:2.5px solid #fff;box-shadow:0 0 0 3px rgba(255,190,11,.9),0 3px 8px rgba(0,0,0,.5)}
+
+  /* Overhead Floating Player Coin Counter */
+  .jg-overhead{position:fixed;top:0;left:0;display:none;align-items:center;gap:4px;padding:3px 9px;border-radius:99px;background:rgba(15,23,42,.84);border:2px solid #ffbe0b;color:#fff8eb;font-family:var(--jg-disp);font-weight:700;font-size:15px;line-height:1;box-shadow:0 4px 12px rgba(0,0,0,.35);pointer-events:none;z-index:13;will-change:transform}
+  .jg-overhead.show{display:inline-flex}
+  .jg-overhead.first{border-color:#ffe600;box-shadow:0 0 12px rgba(255,190,11,.55)}
+  .jg-ov-crown{font-size:14px;line-height:1}
+  .jg-ov-ico{font-size:13px;line-height:1}
+  .jg-overhead b{color:#ffe600;font-variant-numeric:tabular-nums}
+  .jg-hud.invuln .jg-overhead{animation:jgBlink .28s steps(2) infinite}
+
+  /* Toasts: Bottom-Left unobtrusive popups (above minimap during race) */
+  .jg-toasts{position:fixed;left:24px;bottom:28px;display:flex;flex-direction:column;align-items:flex-start;gap:5px;max-width:min(280px,calc(100vw - 48px));pointer-events:none;z-index:25}
+  .jg-toasts.in-race{left:14px;bottom:142px}
+  .jg-toast{font-size:11.5px;font-weight:800;line-height:1.25;text-align:left;background:var(--jg-surface);border:2px solid var(--jg-line);border-radius:12px;padding:6px 12px;box-shadow:0 8px 20px rgba(15,23,42,.24);animation:jgToastIn .24s cubic-bezier(.2,.9,.3,1.3);transition:opacity .28s ease,transform .28s ease}
+  .jg-toast.good{border-color:var(--jg-green);color:#166534;background:rgba(240,253,244,.94)}
+  .jg-toast.warn{border-color:var(--jg-orange);color:#9a3412}
+  .jg-toast.bad{border-color:var(--jg-red);color:#991b1b}
+  .jg-toast.out{opacity:0;transform:translateY(-10px)}
+
+  /* Bottom Controls */
+  .jg-pad{position:absolute;bottom:146px;width:82px;height:82px;border-radius:26px;display:none;place-items:center;font-size:28px;color:#fff8eb;background:rgba(15,23,42,.52);border:2px solid rgba(255,248,235,.55);box-shadow:0 8px 20px rgba(0,0,0,.28);pointer-events:auto;user-select:none;-webkit-user-select:none;touch-action:none;transition:transform .1s,background .12s}
+  .jg-pad.left{left:14px}.jg-pad.right{right:14px}
   .jg-pad.on{background:linear-gradient(135deg,var(--jg-amber),var(--jg-orange));color:#fff;transform:scale(.94)}
-  .jg-telolet{position:absolute;bottom:22px;left:50%;transform:translateX(-50%);display:inline-flex;align-items:center;gap:7px;padding:10px 16px;border-radius:99px;border:2px solid var(--jg-orange);background:linear-gradient(135deg,#fff3bf,#ffd166);color:#6e3f00;font-family:var(--jg-disp);font-weight:700;font-size:14px;box-shadow:var(--jg-shadow);pointer-events:auto;user-select:none;-webkit-user-select:none;touch-action:none;transition:transform .12s,box-shadow .15s}
+  .jg-telolet{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:99px;border:2px solid #ffbe0b;background:rgba(15,23,42,.82);color:#ffe600;font-family:var(--jg-disp);font-weight:700;font-size:13px;box-shadow:0 6px 16px rgba(0,0,0,.3);pointer-events:auto;user-select:none;-webkit-user-select:none;touch-action:none;transition:transform .12s}
+  .jg-telolet kbd{background:rgba(255,255,255,.16);color:#fff8eb;border-color:rgba(255,255,255,.35)}
   .jg-telolet:hover{transform:translateX(-50%) translateY(-2px)}
   .jg-telolet:active{transform:translateX(-50%) scale(.93)}
   .jg-telolet.honk{animation:jgHornPop .34s cubic-bezier(.2,.9,.3,1.5)}
-  .jg-telolet-em{font-size:20px;line-height:1}
-  .jg-telolet-lbl{display:inline-flex;align-items:center;gap:5px}
+  .jg-telolet-em{font-size:18px;line-height:1}
   .jg-crash{position:absolute;inset:0;opacity:0;background:radial-gradient(120% 90% at 50% 50%,transparent 40%,rgba(229,72,77,.55));pointer-events:none}
   .jg-crash.on{animation:jgCrash .45s ease-out}
-
-  .jg-chip.rank{font-family:var(--jg-disp);font-weight:700;letter-spacing:.3px}
-  .jg-chip.rank-1{background:linear-gradient(135deg,#ffe066,#ffbe0b);color:#5c3400;border-color:#fb8500}
-  .jg-chip.rank-2{background:linear-gradient(135deg,#f1f5f9,#cbd5e1);color:#1e293b;border-color:#94a3b8}
-  .jg-chip.rank-3{background:linear-gradient(135deg,#fed7aa,#fb923c);color:#5a2200;border-color:#ea580c}
-  .jg-chip.rank-4{background:var(--jg-paper);color:var(--jg-soft)}
 
   /* Modal & Rising Podium */
   .jg-modal{display:grid;place-items:center;background:rgba(59,47,47,.42);backdrop-filter:blur(4px);padding:18px}
@@ -1060,12 +1322,12 @@ function injectStyles() {
   .jg-confetti-bit{position:absolute;top:-10px;width:7px;height:11px;border-radius:2px;opacity:.9;animation:jgConfetti 2.1s linear infinite}
   .jg-podium-stage{position:relative;z-index:1;display:flex;align-items:flex-end;justify-content:center;gap:8px;min-height:152px;padding-top:10px}
   .jg-pod-col{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:6px}
-  .jg-pod-racer{display:flex;flex-direction:column;align-items:center;gap:2px;animation:jgPop .45s backwards}
-  .jg-pod-flames{font-size:13px;line-height:1;animation:jgFlamePulse .7s ease-in-out infinite alternate}
+  .jg-pod-racer{display:flex;flex-direction:column;align-items:center;gap:4px;animation:jgPop .45s backwards}
+  .jg-pod-flames{font-size:16px;line-height:1;animation:jgFlamePulse .7s ease-in-out infinite alternate}
   .jg-pod-col.pos-1 .jg-pod-racer{animation-delay:.18s}
   .jg-pod-col.pos-2 .jg-pod-racer{animation-delay:.08s}
   .jg-pod-col.pos-3 .jg-pod-racer{animation-delay:.28s}
-  .jg-pod-em{font-size:24px;line-height:1;filter:drop-shadow(0 3px 5px rgba(0,0,0,.18))}
+  .jg-pod-ico .jg-vsvg{width:48px;height:26px}
   .jg-pod-name{font-size:10.5px;font-weight:800;color:var(--jg-ink);line-height:1.2;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .jg-pod-col.me .jg-pod-name{color:var(--jg-orange)}
   .jg-pod-block{width:100%;border-radius:12px 12px 8px 8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;border:2px solid var(--slot-col,var(--jg-amber));transform-origin:bottom;animation:jgPodiumRise .6s cubic-bezier(.2,.9,.3,1.2) backwards;box-shadow:0 6px 14px rgba(122,72,20,.16);padding:4px}
@@ -1077,18 +1339,6 @@ function injectStyles() {
   .jg-pod-coins{font-size:10.5px;font-weight:800;color:#5c3400;background:rgba(255,255,255,.6);border-radius:99px;padding:1px 7px}
   .jg-pod-fourth{position:relative;z-index:1;margin-top:8px;padding:5px 10px;border-radius:99px;background:var(--jg-paper);border:1px solid var(--jg-line);font-size:11px;font-weight:700;color:var(--jg-soft)}
   .jg-pod-fourth.me{border-color:var(--jg-orange);color:var(--jg-orange)}
-
-  /* Right-Edge Vertical Race Progress Bar & Pulsing Hazard Warning Badges */
-  .jg-progress-rail{position:fixed;right:16px;top:54%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:center;gap:6px;pointer-events:none;z-index:11}
-  .jg-prog-flag{font-size:20px;line-height:1;filter:drop-shadow(0 3px 5px rgba(0,0,0,.3))}
-  .jg-prog-track{position:relative;width:12px;height:185px;border-radius:99px;background:rgba(24,24,27,.45);border:2px solid rgba(255,248,235,.75);box-shadow:0 6px 16px rgba(0,0,0,.22)}
-  .jg-prog-dots{position:absolute;inset:6px 0}
-  .jg-prog-dot{position:absolute;left:50%;transform:translate(-50%,50%);width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.4);transition:bottom .12s linear}
-  .jg-prog-dot.me{width:18px;height:18px;border:2.5px solid #fff;box-shadow:0 0 0 3px rgba(255,190,11,.8),0 3px 8px rgba(0,0,0,.45)}
-  .jg-warnings{position:fixed;top:92px;left:50%;transform:translateX(-50%);display:grid;grid-template-columns:repeat(3,86px);gap:14px;pointer-events:none;z-index:14}
-  .jg-warn-badge{opacity:0;transform:scale(.7);transition:opacity .16s,transform .16s;display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(135deg,#ff0033,#d00000);color:#fff;border:2.5px solid #ffbe0b;border-radius:14px;padding:4px 8px;font-family:var(--jg-disp);font-weight:700;font-size:22px;line-height:1;box-shadow:0 8px 20px rgba(208,0,0,.5)}
-  .jg-warn-badge span{font-size:9px;letter-spacing:1.2px;margin-top:2px;color:#fff3b0}
-  .jg-warn-badge.show{opacity:1;transform:scale(1);animation:jgWarnPulse .42s ease-in-out infinite alternate}
   #jg-over-continue{margin-bottom:8px}
   .jg-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:15px}
   .jg-stats div{background:var(--jg-paper);border:1.5px solid var(--jg-line);border-radius:13px;padding:10px}
@@ -1107,19 +1357,17 @@ function injectStyles() {
   @keyframes jgHornPop{0%{transform:translateX(-50%) scale(1)}35%{transform:translateX(-50%) scale(1.18) rotate(-4deg)}70%{transform:translateX(-50%) scale(1.08) rotate(3deg)}100%{transform:translateX(-50%) scale(1)}}
   @keyframes jgToastIn{from{transform:translateY(10px);opacity:0}to{transform:translateY(0);opacity:1}}
   @keyframes jgBlink{50%{opacity:.35}}
-  @keyframes jgFloat{50%{transform:translateX(-50%) translateY(-5px)}}
   @keyframes jgCrash{0%{opacity:1}100%{opacity:0}}
-  @keyframes jgWarnPulse{from{transform:scale(.95)}to{transform:scale(1.08)}}
   @keyframes jgFlamePulse{from{transform:translateY(0) scale(1)}to{transform:translateY(-3px) scale(1.12)}}
   @keyframes jgConfetti{0%{transform:translateY(-10px) rotate(0deg);opacity:.95}100%{transform:translateY(190px) rotate(320deg);opacity:0}}
 
   @media (pointer:coarse),(max-width:860px){
     .jg-pad{display:grid}
-    .jg-telolet{bottom:26px;padding:10px 14px;font-size:13px}
+    .jg-telolet{bottom:24px;padding:8px 13px}
     .jg-telolet kbd{display:none}
-    .jg-toasts{left:20px;bottom:140px}
   }
   @media (max-width:720px){
+    .jg-arenas{grid-template-columns:1fr}
     .jg-fleet{grid-template-columns:1fr 1fr}
     .jg-rooms{grid-template-columns:1fr}
     .jg-name-row{flex-direction:column;align-items:stretch;gap:8px}
@@ -1128,17 +1376,21 @@ function injectStyles() {
     .jg-menu-card{width:100%;padding:18px 16px;gap:14px;max-height:none}
     .jg-menu{padding:12px;gap:10px}
     .jg-brand-sub{display:none}
-    .jg-hud-left{min-width:140px;padding:10px;top:10px;left:10px}
-    .jg-score{font-size:26px}
-    .jg-hud-right{top:10px;right:10px}
-    .jg-speedo{min-width:118px;padding:8px 11px}
-    .jg-speed{font-size:24px}
-    .jg-net{font-size:8.5px;padding:5px 8px}
-    .jg-pad{width:88px;height:88px;bottom:16px}
-    .jg-pad.left{left:14px}.jg-pad.right{right:14px}
-    .jg-toasts{left:14px;bottom:118px;max-width:calc(100vw - 28px)}
+    .jg-hud-tl{top:10px;left:10px;gap:5px}
+    .jg-hud-tr{top:10px;right:10px}
+    .jg-hud-bl{bottom:10px;left:10px}
+    .jg-minimap{width:96px;height:96px}
+    .jg-toasts.in-race{left:10px;bottom:114px}
+    .jg-hud-br{bottom:10px;right:10px;padding:6px 9px}
+    .jg-speedo{width:86px;height:54px}
+    .jg-speedo-txt b{font-size:19px}
+    .jg-boost-bar{width:86px}
+    .jg-progress-rail{right:10px}
+    .jg-prog-track{height:132px}
+    .jg-lb-name{display:none}
+    .jg-pad{width:76px;height:76px;bottom:126px}
+    .jg-pad.left{left:10px}.jg-pad.right{right:10px}
     .jg-legend{font-size:11px}
-    .jg-airhint{font-size:10.5px;padding:7px 12px;max-width:92vw;white-space:normal;text-align:center}
   }
   @media (prefers-reduced-motion:reduce){#jg-root *{animation-duration:.01ms!important;transition-duration:.01ms!important}}
   `;
