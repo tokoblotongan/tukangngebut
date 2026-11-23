@@ -11,6 +11,7 @@ import { createPlayerController } from './entities/playerController.js';
 import { createTrafficManager } from './entities/trafficManager.js';
 import { createTrackGenerator } from './world/trackGenerator.js';
 import { createFantasyTrack } from './world/fantasyTrack.js';
+import { createMandalikaTrack } from './world/mandalikaFantasyTrack.js';
 import { setActiveArena } from './world/activeTrack.js';
 import { createLandmarkManager } from './world/salatigaLandmark.js';
 import { createHUD } from './ui/hudManager.js';
@@ -20,11 +21,11 @@ import { GAME, VEHICLES, ARENAS, SLOT_COLORS } from './config/gameConfig.js';
 const LOAD_LINES = [
   'Merakit angkot…', 'Memanaskan bemo…', 'Mengisi bak L300…', 'Memarkir ojol…',
   'Mengecat Koperasi Merah Putih…', 'Menata Pasar Raya II…',
-  'Membangun Nusantara Skyway…', 'Mengilapkan Garuda Emas…',
+  'Membangun Nusantara Skyway…', 'Membentuk Mandalika Sky Circuit…',
 ];
 
-let hud = null, ctx = null, track = null, skywayTrack = null, landmarks = null;
-let salatigaRoot = null, skywayRoot = null;
+let hud = null, ctx = null, track = null, skywayTrack = null, mandalikaTrack = null, landmarks = null;
+let salatigaRoot = null, skywayRoot = null, mandalikaRoot = null;
 let player = null, traffic = null, network = null, loop = null;
 let vehicleSwapToken = 0;
 
@@ -80,19 +81,23 @@ async function init() {
     hud.setLoading(0.06 + (i / total) * 0.65, LOAD_LINES[i - 1] || `Merakit ${label}…`);
   });
 
-  /* ---------- 4. Dua Arena Dunia (Salatiga Klasik + Nusantara Skyway) ---------- */
+  /* ---------- 4. Tiga Arena Dunia (Salatiga Klasik + Nusantara Skyway + Mandalika Sky) ---------- */
   setActiveArena(hud.arena);
   salatigaRoot = new THREE.Group();
   skywayRoot = new THREE.Group();
-  ctx.scene.add(salatigaRoot, skywayRoot);
+  mandalikaRoot = new THREE.Group();
+  ctx.scene.add(salatigaRoot, skywayRoot, mandalikaRoot);
 
-  hud.setLoading(0.75, 'Menggelar Sirkuit Kota Salatiga…');
+  hud.setLoading(0.73, 'Menggelar Sirkuit Kota Salatiga…');
   track = createTrackGenerator(salatigaRoot, { maxAnisotropy: ctx.maxAnisotropy });
-  hud.setLoading(0.81, 'Menanam landmark Salatiga…');
+  hud.setLoading(0.79, 'Menanam landmark Salatiga…');
   landmarks = await createLandmarkManager(salatigaRoot);
 
-  hud.setLoading(0.87, 'Merakit Nusantara Skyway & Garuda Emas…');
+  hud.setLoading(0.84, 'Merakit Nusantara Skyway & Garuda Emas…');
   skywayTrack = createFantasyTrack(skywayRoot, { maxAnisotropy: ctx.maxAnisotropy });
+
+  hud.setLoading(0.89, 'Membentuk 17 Tikungan Mandalika Sky Circuit…');
+  mandalikaTrack = createMandalikaTrack(mandalikaRoot, { maxAnisotropy: ctx.maxAnisotropy });
 
   /* ---------- 5. Player ---------- */
   hud.setLoading(0.92, 'Menyiapkan armada juragan…');
@@ -141,8 +146,10 @@ async function init() {
     track,
     salatigaTrack: track,
     skywayTrack,
+    mandalikaTrack,
     salatigaRoot,
     skywayRoot,
+    mandalikaRoot,
     landmarks,
     player,
     traffic,
@@ -177,7 +184,7 @@ async function init() {
   window.addEventListener('pagehide', () => {
     try {
       loop?.dispose(); network?.dispose(); traffic?.dispose();
-      landmarks?.dispose(); track?.dispose(); skywayTrack?.dispose();
+      landmarks?.dispose(); track?.dispose(); skywayTrack?.dispose(); mandalikaTrack?.dispose();
       player?.dispose(); ctx?.dispose(); hud?.dispose();
     } catch {}
   }, { once: true });
@@ -192,6 +199,6 @@ async function init() {
       hud.setNetworkStatus(network.status, network.room, network.onlineCount);
       return s;
     },
-    modules: { ctx, track, skywayTrack, landmarks, player, traffic, network, loop, hud },
+    modules: { ctx, track, skywayTrack, mandalikaTrack, landmarks, player, traffic, network, loop, hud },
   };
 }

@@ -204,7 +204,7 @@ export const LANDMARKS = Object.freeze({
   },
 });
 
-/* ---------- ARENA: 2 Sirkuit Nusantara ---------- */
+/* ---------- ARENA: 3 Sirkuit Nusantara ---------- */
 export const ARENAS = Object.freeze({
   salatiga: {
     id: 'salatiga',
@@ -218,9 +218,17 @@ export const ARENAS = Object.freeze({
     id: 'skyway',
     label: 'Nusantara Skyway',
     shortLabel: 'Nusantara Skyway',
-    badge: 'DUNIA BARU',
+    badge: 'FANTASI',
     emoji: '🐉',
     desc: 'Skyway bertingkat di atas samudra biru, tikungan kuning miring, jembatan ganda & terowongan Garuda Emas.',
+  },
+  mandalika: {
+    id: 'mandalika',
+    label: 'Mandalika Sky Circuit',
+    shortLabel: 'Mandalika Sky',
+    badge: 'BARU • 17 TIKUNGAN',
+    emoji: '🏝️',
+    desc: 'Sirkuit 17 tikungan Mandalika di atas samudra tropis: S-Curve kuning miring, jembatan buah, loop 360° & terowongan Garuda!',
   },
 });
 

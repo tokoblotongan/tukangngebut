@@ -29,8 +29,8 @@ const FRUIT_LABELS = {
 };
 
 export function createGameLoop({
-  ctx, track, salatigaTrack = null, skywayTrack = null,
-  salatigaRoot = null, skywayRoot = null,
+  ctx, track, salatigaTrack = null, skywayTrack = null, mandalikaTrack = null,
+  salatigaRoot = null, skywayRoot = null, mandalikaRoot = null,
   landmarks, player, traffic, hud, network,
   difficulty = 'normal', arena = 'salatiga',
 }) {
@@ -39,7 +39,9 @@ export function createGameLoop({
   let state = STATES.MENU;
   let diff = DIFF[difficulty] ? difficulty : 'normal';
   let currentArenaId = setActiveArena(arena);
-  let activeTrack = (currentArenaId === 'skyway' && skywayTrack) ? skywayTrack : (salatigaTrack || track);
+  let activeTrack = currentArenaId === 'mandalika' && mandalikaTrack
+    ? mandalikaTrack
+    : (currentArenaId === 'skyway' && skywayTrack) ? skywayTrack : (salatigaTrack || track);
   let hearts = DIFF[diff].hearts;
   let score = 0, distance = 0, best = loadBest();
   let coins = 0, coinStreak = 0, coinStreakTimer = 0;
@@ -56,6 +58,8 @@ export function createGameLoop({
   let smoothSpeedRatio = 0;
   const camTarget = new THREE.Vector3();
   const _tailOff = new THREE.Vector3();
+  const _lookPos = new THREE.Vector3();
+  const _menuPos = new THREE.Vector3();
   const _overheadProj = { x: 0, y: 0, visible: false };
   const _minimapPts = [];
   const _minimapRacers = [];
@@ -68,15 +72,28 @@ export function createGameLoop({
 
   function applyArenaVisibility(id) {
     currentArenaId = setActiveArena(id);
-    activeTrack = (currentArenaId === 'skyway' && skywayTrack) ? skywayTrack : (salatigaTrack || track);
+    activeTrack = currentArenaId === 'mandalika' && mandalikaTrack
+      ? mandalikaTrack
+      : (currentArenaId === 'skyway' && skywayTrack) ? skywayTrack : (salatigaTrack || track);
     if (salatigaRoot) salatigaRoot.visible = (currentArenaId === 'salatiga');
     if (skywayRoot) skywayRoot.visible = (currentArenaId === 'skyway');
+    if (mandalikaRoot) mandalikaRoot.visible = (currentArenaId === 'mandalika');
     ctx.setAtmosphere?.(currentArenaId);
   }
   applyArenaVisibility(currentArenaId);
 
   function setArena(id) {
     applyArenaVisibility(id);
+    if (activeTrack?.isSplineCircuit) {
+      const previewS = state === STATES.MENU ? 14 : (player.getState().s ?? 0);
+      activeTrack.updateTrack(previewS, elapsed);
+      if (state === STATES.MENU) {
+        activeTrack.evalCircuitPose(previewS, 0, _menuPos);
+        if (player.group) player.group.position.set(_menuPos.x, _menuPos.y + 0.06, _menuPos.z);
+        ctx.setAnchor(_menuPos.x, _menuPos.y, _menuPos.z);
+      }
+      return;
+    }
     const previewZ = state === STATES.MENU ? (currentArenaId === 'skyway' ? -18 : MENU_Z) : player.getState().pos.z;
     activeTrack.updateTrack(previewZ, elapsed);
     if (currentArenaId === 'salatiga') landmarks.update(previewZ);
@@ -97,6 +114,7 @@ export function createGameLoop({
       type: ps.type,
       x: ps.pos.x,
       z: ps.pos.z,
+      s: ps.s ?? (-ps.pos.z),
       coins: Math.round(coins),
       score: Math.round(score),
       finishTime: playerFinishTime || 0,
@@ -111,6 +129,7 @@ export function createGameLoop({
           type: p.vehicleType || 'angkot',
           x: p.x || 0,
           z: p.z || 0,
+          s: p.s ?? (-p.z || 0),
           coins: Math.round(p.coins || 0),
           score: Math.round(p.score || 0),
           finishTime: p.finishTime || 0,
@@ -131,10 +150,10 @@ export function createGameLoop({
           const dtFin = a.finishTime - b.finishTime;
           if (Math.abs(dtFin) > 0.01) return dtFin;
         }
-        return ((b.coins || 0) - (a.coins || 0)) || (b.score - a.score) || (a.z - b.z);
+        return ((b.coins || 0) - (a.coins || 0)) || (b.score - a.score) || ((b.s ?? -b.z) - (a.s ?? -a.z));
       });
     } else {
-      list.sort((a, b) => (a.z - b.z) || ((b.coins || 0) - (a.coins || 0)) || (b.score - a.score));
+      list.sort((a, b) => ((b.s ?? -b.z) - (a.s ?? -a.z)) || ((b.coins || 0) - (a.coins || 0)) || (b.score - a.score));
     }
     return list.slice(0, 4);
   }
@@ -189,22 +208,22 @@ export function createGameLoop({
     score = 0; distance = 0; coins = 0; coinStreak = 0; coinStreakTimer = 0;
     combo = 1; comboTimer = 0; rollsTotal = 0;
     nextCheckpoint = 500; invuln = 0; raceTimer = 0;
-    introSweepTimer = currentArenaId === 'skyway' ? 0.001 : INTRO_SWEEP_DUR;
+    introSweepTimer = (currentArenaId === 'skyway' || currentArenaId === 'mandalika') ? 0.001 : INTRO_SWEEP_DUR;
     lapGoal = LAP_DIST; lapNumber = 1; lapPaused = false;
     finishing = false; finishTimer = 0; fireworkCooldown = 0; playerFinishTime = 0;
     smoothAimOffsetX = 0; smoothSpeedRatio = PHYSICS.baseSpeed / PHYSICS.maxSpeed;
     applyArenaVisibility(currentArenaId);
     player.reset();
-    const pType = player.getState().type;
-    traffic.reset(pType);
+    const ps0 = player.getState();
+    traffic.reset(ps0.type);
     activeTrack.resetCollectibles?.();
-    const pos = player.getState().pos;
+    const pos = ps0.pos;
     playerRibbon.setBoostMode(false);
     playerRibbon.reset(pos.x, pos.y + 0.34, pos.z + 1.4);
     playerRibbon.setVisible(true);
-    activeTrack.updateTrack(pos.z, elapsed);
+    activeTrack.updateTrack(activeTrack.isSplineCircuit ? (ps0.s ?? 0) : pos.z, elapsed);
     if (currentArenaId === 'salatiga') landmarks.update(pos.z);
-    ctx.snapCamera(pos);
+    ctx.snapCamera(pos, ps0.forwardVec);
     ctx.setAnchor(pos.x, pos.y, pos.z);
     hud.hideMenu(); hud.hideGameOver(); hud.setPaused(false);
     hud.setWarnings?.([]); hud.setAirHint?.(false); hud.showHUD();
@@ -236,6 +255,7 @@ export function createGameLoop({
     playerFinishTime = 0;
     lapGoal += LAP_DIST;
     lapNumber += 1;
+    if (activeTrack?.isSplineCircuit) activeTrack.resetCollectibles?.();
     hud.hideGameOver();
     hud.showHUD();
     state = STATES.PLAYING;
@@ -256,9 +276,13 @@ export function createGameLoop({
     hud.hideGameOver(); hud.setPaused(false); hud.hideHUD();
     hud.showMenu(best);
     hud.sfx.setEngine(false);
-    const previewZ = currentArenaId === 'skyway' ? -18 : MENU_Z;
-    activeTrack.updateTrack(previewZ, elapsed);
-    if (currentArenaId === 'salatiga') landmarks.update(previewZ);
+    if (activeTrack?.isSplineCircuit) {
+      activeTrack.updateTrack(14, elapsed);
+    } else {
+      const previewZ = currentArenaId === 'skyway' ? -18 : MENU_Z;
+      activeTrack.updateTrack(previewZ, elapsed);
+      if (currentArenaId === 'salatiga') landmarks.update(previewZ);
+    }
   }
   function finishLap() {
     lapPaused = true;
@@ -331,17 +355,20 @@ export function createGameLoop({
     }
     const introProgress = introSweepTimer / INTRO_SWEEP_DUR;
 
+    const isSpline = !!activeTrack.isSplineCircuit;
     const input = readInput();
     const res = player.updatePlayer(dt, input, activeTrack);
     const pos = res.pos;
 
-    activeTrack.updateTrack(pos.z, elapsed);
+    activeTrack.updateTrack(isSpline ? (res.s ?? 0) : pos.z, elapsed);
     if (currentArenaId === 'salatiga') landmarks.update(pos.z);
 
     const pressure = d.pressure * (1 + Math.min(0.55, distance / 3500));
     traffic.update(dt * pressure, pos.z, elapsed, pos.x, {
       rawDt: dt,
       playerType: player.getState().type,
+      playerS: res.s ?? (-pos.z),
+      playerLatX: res.latX ?? 0,
       remotePlayers: network.getRemotePlayers(),
       track: activeTrack,
       raceActive: true,
@@ -349,7 +376,7 @@ export function createGameLoop({
     });
 
     /* Jarak & skor dasar */
-    const newDist = Math.max(distance, -pos.z);
+    const newDist = Math.max(distance, isSpline ? (res.s ?? 0) : (-pos.z));
     const gained = newDist - distance;
     distance = newDist;
     score += gained * SCORE.distancePerUnit * d.mult;
@@ -491,11 +518,22 @@ export function createGameLoop({
     }
 
     /* Kamera chase ramah mata dengan damping eksponensial halus */
-    const surf = getTrackSurfaceAt(pos.x, pos.z);
+    const surf = isSpline
+      ? activeTrack.getTrackSurfaceAt(res.s ?? 0, res.latX ?? 0)
+      : getTrackSurfaceAt(pos.x, pos.z);
     const camPosFocus = res.camAnchor || pos;
-    const rawAimOffsetX = (!res.inLoop && !res.falling)
-      ? (getTrackCenterX(camPosFocus.z - 12) - camPosFocus.x) * 0.52
-      : 0;
+    let rawAimOffsetX = 0;
+    if (!res.inLoop && !res.falling) {
+      if (isSpline && res.rightVec) {
+        activeTrack.evalCircuitPose((res.s ?? 0) + 14, 0, _lookPos);
+        rawAimOffsetX = (
+          (_lookPos.x - camPosFocus.x) * res.rightVec.x +
+          (_lookPos.z - camPosFocus.z) * res.rightVec.z
+        ) * 0.45;
+      } else {
+        rawAimOffsetX = (getTrackCenterX(camPosFocus.z - 12) - camPosFocus.x) * 0.52;
+      }
+    }
     const rawSpeedRatio = res.speed / PHYSICS.maxSpeed;
     smoothAimOffsetX += (rawAimOffsetX - smoothAimOffsetX) * (1 - Math.exp(-7.2 * dt));
     smoothSpeedRatio += (rawSpeedRatio - smoothSpeedRatio) * (1 - Math.exp(-5.8 * dt));
@@ -507,6 +545,7 @@ export function createGameLoop({
       loopCenterZ: res.loopCenterZ,
       falling: res.falling,
       aimOffsetX: smoothAimOffsetX,
+      forwardVec: isSpline ? res.forwardVec : null,
       arenaId: currentArenaId,
       introProgress,
     });
@@ -524,7 +563,7 @@ export function createGameLoop({
       id: r.id,
       color: r.slotColor || SLOT_COLORS[0],
       isPlayer: !!r.isPlayer,
-      frac: THREE.MathUtils.clamp(((-r.z) - lapStart) / LAP_DIST, 0, 1),
+      frac: THREE.MathUtils.clamp(((r.s ?? (-r.z)) - lapStart) / LAP_DIST, 0, 1),
     }));
 
     getTrackPreviewPoints(pos.z + 24, pos.z - 150, 26, _minimapPts);
@@ -554,6 +593,7 @@ export function createGameLoop({
       turbo: player.getState().turboTimer / PHYSICS.turbo.duration,
       nextCheckpoint, invuln, rank, totalRacers: standings.length,
       standings, racerMarkers,
+      minimapMode: isSpline ? 'circuit' : 'radar',
       minimapPts: _minimapPts,
       minimapRacers: _minimapRacers,
       playerPos: pos,
@@ -569,10 +609,8 @@ export function createGameLoop({
   }
 
   /* ---------------- Kamera sinematik non-playing ---------------- */
-  function stepIdle(dt, spotZ, radius, elev, spin) {
+  function stepIdleWorld(dt, cx, y, spotZ, radius, elev, spin) {
     menuAngle += dt * spin;
-    const y = getTrackHeight(spotZ);
-    const cx = getTrackCenterX(spotZ);
     camTarget.set(cx, y + 1.9, spotZ);
     ctx.camera.position.set(
       cx + Math.sin(menuAngle) * radius,
@@ -585,6 +623,10 @@ export function createGameLoop({
     return y;
   }
 
+  function stepIdle(dt, spotZ, radius, elev, spin) {
+    return stepIdleWorld(dt, getTrackCenterX(spotZ), getTrackHeight(spotZ), spotZ, radius, elev, spin);
+  }
+
   /* ---------------- Loop tunggal ---------------- */
   function frame() {
     const dt = Math.min(clock.getDelta(), 0.05);
@@ -593,17 +635,30 @@ export function createGameLoop({
     if (state === STATES.PLAYING) {
       stepPlaying(dt);
     } else if (state === STATES.MENU) {
-      const previewZ = currentArenaId === 'skyway' ? -18 : MENU_Z;
       const g = player.group;
-      const y = stepIdle(dt, previewZ, currentArenaId === 'skyway' ? 12.2 : 10.2, 0.40, 0.16);
-      if (g) {
-        g.position.set(0, y + 0.06 + Math.sin(elapsed * 1.6) * 0.05, previewZ);
-        g.rotation.set(0, elapsed * 0.32, 0);
-        for (const w of g.userData.wheels || []) w.rotation.x -= dt * 2.2;
+      if (activeTrack?.isSplineCircuit) {
+        const previewS = 14;
+        activeTrack.evalCircuitPose(previewS, 0, _menuPos);
+        stepIdleWorld(dt, _menuPos.x, _menuPos.y, _menuPos.z, 12.2, 0.40, 0.16);
+        if (g) {
+          g.position.set(_menuPos.x, _menuPos.y + 0.06 + Math.sin(elapsed * 1.6) * 0.05, _menuPos.z);
+          g.rotation.set(0, elapsed * 0.32, 0);
+          for (const w of g.userData.wheels || []) w.rotation.x -= dt * 2.2;
+        }
+        activeTrack.updateTrack(previewS, elapsed);
+        ctx.updateContactShadow(_menuPos.x, _menuPos.y, _menuPos.z, 0.1, 3.4);
+      } else {
+        const previewZ = currentArenaId === 'skyway' ? -18 : MENU_Z;
+        const y = stepIdle(dt, previewZ, currentArenaId === 'skyway' ? 12.2 : 10.2, 0.40, 0.16);
+        if (g) {
+          g.position.set(0, y + 0.06 + Math.sin(elapsed * 1.6) * 0.05, previewZ);
+          g.rotation.set(0, elapsed * 0.32, 0);
+          for (const w of g.userData.wheels || []) w.rotation.x -= dt * 2.2;
+        }
+        activeTrack.updateTrack(previewZ, elapsed);
+        if (currentArenaId === 'salatiga') landmarks.update(previewZ);
+        ctx.updateContactShadow(0, y, previewZ, 0.1, 3.4);
       }
-      activeTrack.updateTrack(previewZ, elapsed);
-      if (currentArenaId === 'salatiga') landmarks.update(previewZ);
-      ctx.updateContactShadow(0, y, previewZ, 0.1, 3.4);
       hud.sfx.setEngine(false);
     } else if (state === STATES.PAUSED) {
       const pos = player.getState().pos;
@@ -617,20 +672,30 @@ export function createGameLoop({
         }
       }
     } else if (state === STATES.GAMEOVER) {
-      const pos = player.getState().pos;
-      stepIdle(dt, pos.z, 13.5, 0.5, 0.1);
-      ctx.updateContactShadow(pos.x, getTrackHeight(pos.z), pos.z, 0, 3.4);
+      const psOver = player.getState();
+      const pos = psOver.pos;
+      if (activeTrack?.isSplineCircuit) {
+        const surf = activeTrack.getTrackSurfaceAt(psOver.s ?? 0, psOver.latX ?? 0);
+        stepIdleWorld(dt, pos.x, pos.y, pos.z, 13.5, 0.5, 0.1);
+        ctx.updateContactShadow(pos.x, surf.groundY, pos.z, 0, 3.4);
+      } else {
+        stepIdle(dt, pos.z, 13.5, 0.5, 0.1);
+        ctx.updateContactShadow(pos.x, getTrackHeight(pos.z), pos.z, 0, 3.4);
+      }
       hud.sfx.setEngine(false);
     }
 
     /* Jaringan (Supabase Realtime / Solo fallback) */
     const ps = player.getState();
+    const yaw = Math.atan2(-(ps.forwardVec?.x || 0), -(ps.forwardVec?.z ?? -1));
     network.syncLocalState({
       vehicleType: ps.type,
       vehicle: ps.type,
       x: ps.pos.x,
       y: ps.pos.y,
       z: ps.pos.z,
+      s: ps.s ?? (-ps.pos.z),
+      yaw,
       rollAngle: ps.rollAngle,
       speed: ps.speed,
       score,
@@ -651,9 +716,13 @@ export function createGameLoop({
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', onBlur);
     document.addEventListener('visibilitychange', onVisibility);
-    const previewZ = currentArenaId === 'skyway' ? -18 : MENU_Z;
-    activeTrack.updateTrack(previewZ, 0);
-    if (currentArenaId === 'salatiga') landmarks.update(previewZ);
+    if (activeTrack?.isSplineCircuit) {
+      activeTrack.updateTrack(14, 0);
+    } else {
+      const previewZ = currentArenaId === 'skyway' ? -18 : MENU_Z;
+      activeTrack.updateTrack(previewZ, 0);
+      if (currentArenaId === 'salatiga') landmarks.update(previewZ);
+    }
     hud.showMenu(best);
     hud.setNetworkStatus(network.status, network.room, network.onlineCount);
     clock.getDelta();

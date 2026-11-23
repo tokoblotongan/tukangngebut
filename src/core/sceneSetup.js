@@ -105,9 +105,9 @@ export function createSceneContext(canvas) {
 
   let currentAtmosphere = 'salatiga';
   function setAtmosphere(arenaId) {
-    const isSky = arenaId === 'skyway';
-    currentAtmosphere = isSky ? 'skyway' : 'salatiga';
-    skyMat.map = isSky ? skyTexSkyway : skyTexSalatiga;
+    const isFantasy = arenaId === 'skyway' || arenaId === 'mandalika';
+    currentAtmosphere = arenaId === 'mandalika' ? 'mandalika' : isFantasy ? 'skyway' : 'salatiga';
+    skyMat.map = isFantasy ? skyTexSkyway : skyTexSalatiga;
     skyMat.needsUpdate = true;
     scene.background.setHex(0xbfe9ff);
     scene.fog.color.setHex(0xbfe9ff);
@@ -116,10 +116,10 @@ export function createSceneContext(canvas) {
     hemi.color.setHex(0x8be0ff);
     hemi.groundColor.setHex(0xffe6c7);
     hemi.intensity = 0.95;
-    key.color.set(isSky ? '#fff6e0' : '#ffefd0');
-    key.intensity = isSky ? 1.78 : 1.72;
+    key.color.set(isFantasy ? '#fff6e0' : '#ffefd0');
+    key.intensity = isFantasy ? 1.78 : 1.72;
     rim.color.setHex(0xd8f3ff);
-    rim.intensity = isSky ? 0.76 : 0.70;
+    rim.intensity = isFantasy ? 0.76 : 0.70;
   }
 
   /* Matahari: inti + halo aditif, searah key light */
@@ -516,13 +516,44 @@ export function createSceneContext(canvas) {
   const aim = new THREE.Vector3();
   const desiredPos = new THREE.Vector3();
   const desiredAim = new THREE.Vector3();
+  const _lastHorizFwd = new THREE.Vector3(0, 0, -1);
+  const _horizRight = new THREE.Vector3(1, 0, 0);
   let camInit = false, currentFov = CAMERA.fov;
 
-  function snapCamera(pos) {
-    const h = currentAtmosphere === 'skyway' ? (CAMERA.skywayHeight ?? CAMERA.height) : CAMERA.height;
-    const d = currentAtmosphere === 'skyway' ? (CAMERA.skywayDistance ?? CAMERA.distance) : CAMERA.distance;
-    camPos.set(pos.x * 0.90, pos.y + h, pos.z + d);
-    aim.set(pos.x * 0.96, pos.y + CAMERA.lookHeight, pos.z - CAMERA.lookAhead);
+  function updateHorizBasis(forwardVec) {
+    if (forwardVec) {
+      const hLen = Math.hypot(forwardVec.x, forwardVec.z);
+      if (hLen > 0.25) {
+        _lastHorizFwd.set(forwardVec.x / hLen, 0, forwardVec.z / hLen);
+      }
+    } else {
+      _lastHorizFwd.set(0, 0, -1);
+    }
+    _horizRight.set(-_lastHorizFwd.z, 0, _lastHorizFwd.x);
+  }
+
+  function snapCamera(pos, forwardVec = null) {
+    const isFantasy = currentAtmosphere === 'skyway' || currentAtmosphere === 'mandalika';
+    const h = isFantasy ? (CAMERA.skywayHeight ?? CAMERA.height) : CAMERA.height;
+    const d = isFantasy ? (CAMERA.skywayDistance ?? CAMERA.distance) : CAMERA.distance;
+    if (forwardVec) {
+      updateHorizBasis(forwardVec);
+      camPos.set(
+        pos.x - _lastHorizFwd.x * d,
+        pos.y + h,
+        pos.z - _lastHorizFwd.z * d
+      );
+      aim.set(
+        pos.x + _lastHorizFwd.x * CAMERA.lookAhead,
+        pos.y + CAMERA.lookHeight,
+        pos.z + _lastHorizFwd.z * CAMERA.lookAhead
+      );
+    } else {
+      _lastHorizFwd.set(0, 0, -1);
+      _horizRight.set(1, 0, 0);
+      camPos.set(pos.x * 0.90, pos.y + h, pos.z + d);
+      aim.set(pos.x * 0.96, pos.y + CAMERA.lookHeight, pos.z - CAMERA.lookAhead);
+    }
     camInit = true;
   }
 
@@ -530,66 +561,122 @@ export function createSceneContext(canvas) {
   function followCamera(pos, dt, {
     speedRatio = 0, turbo = false, inLoop = false, loopCenterZ = 0,
     falling = false, aimOffsetX = 0, arenaId = currentAtmosphere, introProgress = 1,
+    forwardVec = null,
   } = {}) {
-    if (!camInit) snapCamera(pos);
+    if (!camInit) snapCamera(pos, forwardVec);
     const safeDt = Math.min(Math.max(dt || 0.016, 0), 0.05);
-    const isSky = arenaId === 'skyway';
+    const isFantasy = arenaId === 'skyway' || arenaId === 'mandalika';
     const sr = THREE.MathUtils.clamp(speedRatio, 0, 1.6);
-    const basePosLerp = isSky ? (CAMERA.skywayPosLerp ?? 5.2) : CAMERA.posLerp;
-    const baseAimLerp = isSky ? (CAMERA.skywayAimLerp ?? 7.2) : CAMERA.aimLerp;
+    const basePosLerp = isFantasy ? (CAMERA.skywayPosLerp ?? 5.2) : CAMERA.posLerp;
+    const baseAimLerp = isFantasy ? (CAMERA.skywayAimLerp ?? 7.2) : CAMERA.aimLerp;
     const kpX = 1 - Math.exp(-(inLoop ? 5.2 : basePosLerp) * safeDt);
     const kpY = 1 - Math.exp(-(inLoop ? 5.2 : basePosLerp * 0.86) * safeDt);
     const kpZ = 1 - Math.exp(-(inLoop ? 5.8 : basePosLerp * 2.2) * safeDt);
     const kaX = 1 - Math.exp(-(inLoop ? 6.8 : baseAimLerp) * safeDt);
     const kaY = 1 - Math.exp(-(inLoop ? 6.8 : baseAimLerp * 0.85) * safeDt);
     const kaZ = 1 - Math.exp(-(inLoop ? 7.4 : baseAimLerp * 1.9) * safeDt);
-    const camH = isSky ? (CAMERA.skywayHeight ?? 7.0) : CAMERA.height;
-    const camD = isSky ? (CAMERA.skywayDistance ?? 7.4) : CAMERA.distance;
+    const camH = isFantasy ? (CAMERA.skywayHeight ?? 7.0) : CAMERA.height;
+    const camD = isFantasy ? (CAMERA.skywayDistance ?? 7.4) : CAMERA.distance;
 
-    if (inLoop) {
-      desiredPos.set(pos.x + 11.5, Math.max(pos.y * 0.45 + 6.5, 8.2), loopCenterZ + 19.5);
-      desiredAim.set(pos.x, pos.y + 0.8, pos.z);
-    } else if (falling) {
-      desiredPos.set(pos.x * 0.94, Math.max(pos.y + 8.5, camPos.y - 3.5 * safeDt), pos.z + 10.5);
-      desiredAim.set(pos.x, pos.y - 0.6, pos.z);
-    } else if (introProgress < 0.999) {
-      const e = introProgress * introProgress * (3 - 2 * introProgress);
-      const chaseX = pos.x * 0.94;
-      const chaseY = pos.y + camH - sr * 0.3;
-      const chaseZ = pos.z + camD + sr * 0.4;
-      desiredPos.set(
-        THREE.MathUtils.lerp(pos.x + 9.0, chaseX, e),
-        THREE.MathUtils.lerp(pos.y + 15.5, chaseY, e),
-        THREE.MathUtils.lerp(pos.z + 20.0, chaseZ, e)
-      );
-      desiredAim.set(
-        pos.x + aimOffsetX * e,
-        THREE.MathUtils.lerp(pos.y + 2.8, pos.y + CAMERA.lookHeight, e),
-        THREE.MathUtils.lerp(pos.z - 28.0, pos.z - CAMERA.lookAhead, e)
-      );
+    if (forwardVec) {
+      updateHorizBasis(forwardVec);
+      if (inLoop) {
+        desiredPos.set(
+          pos.x + _horizRight.x * 12.0 - _lastHorizFwd.x * 15.5,
+          Math.max(pos.y * 0.45 + 6.5, 8.2),
+          pos.z + _horizRight.z * 12.0 - _lastHorizFwd.z * 15.5
+        );
+        desiredAim.set(pos.x, pos.y + 0.8, pos.z);
+      } else if (falling) {
+        desiredPos.set(
+          pos.x - _lastHorizFwd.x * 10.5,
+          Math.max(pos.y + 8.5, camPos.y - 3.5 * safeDt),
+          pos.z - _lastHorizFwd.z * 10.5
+        );
+        desiredAim.set(pos.x, pos.y - 0.6, pos.z);
+      } else if (introProgress < 0.999) {
+        const e = introProgress * introProgress * (3 - 2 * introProgress);
+        const distBack = THREE.MathUtils.lerp(18.0, camD + sr * 0.4, e);
+        const sideOut = THREE.MathUtils.lerp(8.0, 0, e);
+        const lookDist = THREE.MathUtils.lerp(24.0, CAMERA.lookAhead, e);
+        desiredPos.set(
+          pos.x - _lastHorizFwd.x * distBack + _horizRight.x * sideOut,
+          pos.y + THREE.MathUtils.lerp(14.5, camH - sr * 0.25, e),
+          pos.z - _lastHorizFwd.z * distBack + _horizRight.z * sideOut
+        );
+        desiredAim.set(
+          pos.x + _lastHorizFwd.x * lookDist + _horizRight.x * aimOffsetX * e,
+          pos.y + THREE.MathUtils.lerp(2.5, CAMERA.lookHeight, e),
+          pos.z + _lastHorizFwd.z * lookDist + _horizRight.z * aimOffsetX * e
+        );
+      } else {
+        const distBack = camD + sr * 0.45;
+        const lookDist = CAMERA.lookAhead + sr * 1.4;
+        desiredPos.set(
+          pos.x - _lastHorizFwd.x * distBack,
+          pos.y + camH - sr * 0.22,
+          pos.z - _lastHorizFwd.z * distBack
+        );
+        desiredAim.set(
+          pos.x + _lastHorizFwd.x * lookDist + _horizRight.x * aimOffsetX,
+          pos.y + CAMERA.lookHeight,
+          pos.z + _lastHorizFwd.z * lookDist + _horizRight.z * aimOffsetX
+        );
+      }
+      const kpH = 1 - Math.exp(-(inLoop ? 5.6 : basePosLerp * 1.55) * safeDt);
+      const kaH = 1 - Math.exp(-(inLoop ? 7.2 : baseAimLerp * 1.5) * safeDt);
+      camPos.x += (desiredPos.x - camPos.x) * kpH;
+      camPos.y += (desiredPos.y - camPos.y) * kpY;
+      camPos.z += (desiredPos.z - camPos.z) * kpH;
+      aim.x += (desiredAim.x - aim.x) * kaH;
+      aim.y += (desiredAim.y - aim.y) * kaY;
+      aim.z += (desiredAim.z - aim.z) * kaH;
     } else {
-      desiredPos.set(
-        pos.x * 0.94,
-        pos.y + camH - sr * (isSky ? 0.22 : 0.38),
-        pos.z + camD + sr * 0.45
-      );
-      desiredAim.set(pos.x + aimOffsetX, pos.y + CAMERA.lookHeight, pos.z - CAMERA.lookAhead - sr * 1.4);
+      if (inLoop) {
+        desiredPos.set(pos.x + 11.5, Math.max(pos.y * 0.45 + 6.5, 8.2), loopCenterZ + 19.5);
+        desiredAim.set(pos.x, pos.y + 0.8, pos.z);
+      } else if (falling) {
+        desiredPos.set(pos.x * 0.94, Math.max(pos.y + 8.5, camPos.y - 3.5 * safeDt), pos.z + 10.5);
+        desiredAim.set(pos.x, pos.y - 0.6, pos.z);
+      } else if (introProgress < 0.999) {
+        const e = introProgress * introProgress * (3 - 2 * introProgress);
+        const chaseX = pos.x * 0.94;
+        const chaseY = pos.y + camH - sr * 0.3;
+        const chaseZ = pos.z + camD + sr * 0.4;
+        desiredPos.set(
+          THREE.MathUtils.lerp(pos.x + 9.0, chaseX, e),
+          THREE.MathUtils.lerp(pos.y + 15.5, chaseY, e),
+          THREE.MathUtils.lerp(pos.z + 20.0, chaseZ, e)
+        );
+        desiredAim.set(
+          pos.x + aimOffsetX * e,
+          THREE.MathUtils.lerp(pos.y + 2.8, pos.y + CAMERA.lookHeight, e),
+          THREE.MathUtils.lerp(pos.z - 28.0, pos.z - CAMERA.lookAhead, e)
+        );
+      } else {
+        desiredPos.set(
+          pos.x * 0.94,
+          pos.y + camH - sr * (isFantasy ? 0.22 : 0.38),
+          pos.z + camD + sr * 0.45
+        );
+        desiredAim.set(pos.x + aimOffsetX, pos.y + CAMERA.lookHeight, pos.z - CAMERA.lookAhead - sr * 1.4);
+      }
+
+      camPos.x += (desiredPos.x - camPos.x) * kpX;
+      camPos.y += (desiredPos.y - camPos.y) * kpY;
+      camPos.z += (desiredPos.z - camPos.z) * kpZ;
+      aim.x += (desiredAim.x - aim.x) * kaX;
+      aim.y += (desiredAim.y - aim.y) * kaY;
+      aim.z += (desiredAim.z - aim.z) * kaZ;
     }
 
-    camPos.x += (desiredPos.x - camPos.x) * kpX;
-    camPos.y += (desiredPos.y - camPos.y) * kpY;
-    camPos.z += (desiredPos.z - camPos.z) * kpZ;
-    aim.x += (desiredAim.x - aim.x) * kaX;
-    aim.y += (desiredAim.y - aim.y) * kaY;
-    aim.z += (desiredAim.z - aim.z) * kaZ;
-
-    const shakeMul = isSky ? (CAMERA.skywayShakeMul ?? 0.35) : 1.0;
+    const shakeMul = isFantasy ? (CAMERA.skywayShakeMul ?? 0.35) : 1.0;
     camera.position.copy(camPos);
     camera.position.x += shakeOffset.x * shakeMul;
     camera.position.y += shakeOffset.y * shakeMul;
     camera.up.set(0, 1, 0);
     camera.lookAt(aim);
-    const maxFov = isSky ? 65 : (CAMERA.maxFov ?? 67);
+    const maxFov = isFantasy ? 65 : (CAMERA.maxFov ?? 67);
     const baseGain = Math.min(1, sr) * (CAMERA.fovSpeedGain ?? 6.0);
     const targetFov = (turbo || inLoop) ? maxFov : Math.min(maxFov, CAMERA.fov + baseGain);
     const fovLerp = 1 - Math.exp(-((turbo || inLoop) ? 7.2 : 4.2) * safeDt);

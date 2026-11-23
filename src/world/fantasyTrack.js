@@ -365,9 +365,9 @@ function makeYellowBankTex() {
   const g = c.getContext('2d');
   const grad = g.createLinearGradient(0, 0, size, 0);
   grad.addColorStop(0, '#eab308');
-  grad.addColorStop(0.08, '#ffd100');
-  grad.addColorStop(0.5, '#ffe047');
-  grad.addColorStop(0.92, '#ffd100');
+  grad.addColorStop(0.08, '#ffd60a');
+  grad.addColorStop(0.5, '#ffe44d');
+  grad.addColorStop(0.92, '#ffd60a');
   grad.addColorStop(1, '#eab308');
   g.fillStyle = grad; g.fillRect(0, 0, size, size);
 
@@ -375,7 +375,11 @@ function makeYellowBankTex() {
   g.fillStyle = '#ff6b00';
   g.fillRect(10, 0, 14, size);
   g.fillRect(size - 24, 0, 14, size);
-  g.fillStyle = 'rgba(255, 255, 255, 0.35)';
+  for (const gx of [0.22, 0.36, 0.64, 0.78]) {
+    g.fillStyle = 'rgba(180, 110, 0, 0.2)';
+    g.fillRect(size * gx, 0, 4, size);
+  }
+  g.fillStyle = 'rgba(255, 255, 255, 0.38)';
   g.fillRect(size * 0.49, 0, 6, size);
 
   const tex = new THREE.CanvasTexture(c);
@@ -393,9 +397,9 @@ function makeBlueBoostTrackTex() {
   const g = c.getContext('2d');
   const grad = g.createLinearGradient(0, 0, size, 0);
   grad.addColorStop(0, '#0055cc');
-  grad.addColorStop(0.15, '#0077ff');
+  grad.addColorStop(0.14, '#0077ff');
   grad.addColorStop(0.5, '#38bdf8');
-  grad.addColorStop(0.85, '#0077ff');
+  grad.addColorStop(0.86, '#0077ff');
   grad.addColorStop(1, '#0055cc');
   g.fillStyle = grad; g.fillRect(0, 0, size, size);
   g.fillStyle = 'rgba(34, 197, 94, 0.34)';
@@ -609,13 +613,13 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
   const texGlowRing = tuneTex(makeGlowRingTex());
   const texHazard = tuneTex(makeHazardStripeTex());
 
-  const matSkyOrange = new THREE.MeshStandardMaterial({ map: texOrange, roughness: 0.36, metalness: 0.08 });
-  const matBankYellow = new THREE.MeshStandardMaterial({ map: texYellow, roughness: 0.36, metalness: 0.08 });
-  const matBoostBlue = new THREE.MeshStandardMaterial({ map: texBlue, roughness: 0.36, metalness: 0.08 });
-  const matDeckSide = new THREE.MeshStandardMaterial({ color: '#c2410c', roughness: 0.38, metalness: 0.08 });
-  const matRailBlue = new THREE.MeshStandardMaterial({ color: '#0077ff', roughness: 0.36, metalness: 0.08 });
-  const matRailOrange = new THREE.MeshStandardMaterial({ color: '#ff6b00', roughness: 0.36, metalness: 0.08 });
-  const matConnectorBlue = new THREE.MeshStandardMaterial({ color: '#0077ff', roughness: 0.36, metalness: 0.08, emissive: '#0044aa', emissiveIntensity: 0.14 });
+  const matSkyOrange = new THREE.MeshStandardMaterial({ color: '#ffffff', map: texOrange, roughness: 0.34, metalness: 0.08, side: THREE.DoubleSide });
+  const matBankYellow = new THREE.MeshStandardMaterial({ color: '#ffffff', map: texYellow, roughness: 0.34, metalness: 0.08, side: THREE.DoubleSide });
+  const matBoostBlue = new THREE.MeshStandardMaterial({ color: '#ffffff', map: texBlue, roughness: 0.34, metalness: 0.08, side: THREE.DoubleSide });
+  const matDeckSide = new THREE.MeshStandardMaterial({ color: '#c2410c', roughness: 0.36, metalness: 0.08, side: THREE.DoubleSide });
+  const matRailBlue = new THREE.MeshStandardMaterial({ color: '#0077ff', roughness: 0.34, metalness: 0.08, side: THREE.DoubleSide });
+  const matRailOrange = new THREE.MeshStandardMaterial({ color: '#ff6b00', roughness: 0.34, metalness: 0.08, side: THREE.DoubleSide });
+  const matConnectorBlue = new THREE.MeshStandardMaterial({ color: '#0077ff', roughness: 0.34, metalness: 0.08, emissive: '#0044aa', emissiveIntensity: 0.14 });
   const matOcean = new THREE.MeshStandardMaterial({ map: texOcean, roughness: 0.26, metalness: 0.16 });
   const matGreenBoost = new THREE.MeshStandardMaterial({ color: '#22c55e', emissive: '#16a34a', emissiveIntensity: 0.9, roughness: 0.26 });
   const matBoosterWheel = new THREE.MeshStandardMaterial({ color: '#ffd100', emissive: '#ffaa00', emissiveIntensity: 0.26, roughness: 0.36, metalness: 0.08 });
@@ -733,7 +737,7 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
   const geoRibArch = new THREE.TorusGeometry(W * 0.5 + 1.6, 0.72, 8, 24, Math.PI);
 
   // Instanced Geometries
-  const geoInstTruss = new THREE.CylinderGeometry(0.85, 1.15, 1.0, 8);
+  const geoInstTruss = new THREE.CylinderGeometry(0.66, 0.90, 1.0, 8);
   const geoInstPost = new RoundedBoxGeometry(0.32, 0.95, 3.4, 2, 0.06);
   const geoInstChevron = new THREE.BoxGeometry(1.4, 1.4, 0.24);
   const geoInstIsland = new THREE.CylinderGeometry(5.5, 8.2, 2.6, 10);
@@ -786,38 +790,58 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     return mesh;
   }
 
-  function applyBeveledProfile(g, width) {
-    const pos = g.attributes.position;
-    const uv = g.attributes.uv;
+  const DECK_THICK = 0.65;
+  const WALL_W = 0.44;
+  const WALL_H = 0.36;
+
+  function makeUChannelGeo(width, len, segZ = 14, zCenter = 0) {
+    const g = new THREE.BufferGeometry();
+    const N = 8;
+    const rows = segZ + 1;
+    const pos = new Float32Array(rows * N * 3);
+    const uv = new Float32Array(rows * N * 2);
+    const idx = [];
     const hw = width * 0.5;
-    const bevelW = Math.min(0.4, hw * 0.14);
-    const xs = [-hw, -hw + bevelW, 0, hw - bevelW, hw];
-    const ys = [-0.14, 0, 0, 0, -0.14];
-    for (let v = 0; v < pos.count; v++) {
-      const col = v % 5;
-      pos.setX(v, xs[col]);
-      pos.setY(v, ys[col]);
-      if (uv) uv.setX(v, (xs[col] + hw) / width);
+    const xs = [-hw - WALL_W, -hw, -hw + 0.14, hw - 0.14, hw, hw + WALL_W, hw + WALL_W, -hw - WALL_W];
+    const ys = [WALL_H, WALL_H, 0, 0, WALL_H, WALL_H, -DECK_THICK, -DECK_THICK];
+    const us = [0.02, 0.06, 0.10, 0.90, 0.94, 0.98, 0.98, 0.02];
+
+    for (let r = 0; r <= segZ; r++) {
+      const t = r / segZ;
+      const lz = zCenter + len * (0.5 - t);
+      const v = 1 - t;
+      const b = r * N;
+      for (let k = 0; k < N; k++) {
+        const pOff = (b + k) * 3;
+        pos[pOff] = xs[k];
+        pos[pOff + 1] = ys[k];
+        pos[pOff + 2] = lz;
+        const uOff = (b + k) * 2;
+        uv[uOff] = us[k];
+        uv[uOff + 1] = v;
+      }
+      if (r < segZ) {
+        for (let k = 0; k < N; k++) {
+          const kNext = (k + 1) % N;
+          const a = b + k, c = b + kNext, d = b + N + k, e = b + N + kNext;
+          idx.push(a, c, d, c, e, d);
+        }
+      }
     }
-    pos.needsUpdate = true;
-    if (uv) uv.needsUpdate = true;
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setIndex(idx);
     g.computeVertexNormals();
+    return g;
   }
 
   function makeRoadGeo(width, segZ = 14) {
-    const g = new THREE.PlaneGeometry(width, L, 4, segZ);
-    g.rotateX(-Math.PI / 2);
-    applyBeveledProfile(g, width);
-    return g;
+    return makeUChannelGeo(width, L, segZ, 0);
   }
 
   function makeGapRoadGeo(zFrom, zTo, width, segZ) {
     const len = Math.abs(zFrom - zTo);
-    const g = new THREE.PlaneGeometry(width, len, 4, segZ);
-    g.rotateX(-Math.PI / 2);
-    applyBeveledProfile(g, width);
-    g.translate(0, 0, (zFrom + zTo) * 0.5);
-    return g;
+    return makeUChannelGeo(width, len, segZ, (zFrom + zTo) * 0.5);
   }
 
   function makeRibbonGeo(steps) {
@@ -831,7 +855,7 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
       uv[s * 4 + 2] = 1; uv[s * 4 + 3] = v;
       if (s < steps) {
         const a = s * 2, b = a + 1, c = a + 2, d = a + 3;
-        idx.push(a, c, b, b, c, d);
+        idx.push(a, b, c, b, d, c);
       }
     }
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
@@ -842,20 +866,23 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
 
   function makeBeveledRibbonGeo(steps) {
     const g = new THREE.BufferGeometry();
-    const pos = new Float32Array((steps + 1) * 4 * 3);
-    const uv = new Float32Array((steps + 1) * 4 * 2);
+    const N = 8;
+    const pos = new Float32Array((steps + 1) * N * 3);
+    const uv = new Float32Array((steps + 1) * N * 2);
     const idx = [];
+    const us = [0.02, 0.06, 0.10, 0.90, 0.94, 0.98, 0.98, 0.02];
     for (let s = 0; s <= steps; s++) {
       const v = (s / steps) * 2;
-      const baseUv = s * 8;
-      uv[baseUv] = 0; uv[baseUv + 1] = v;
-      uv[baseUv + 2] = 0.06; uv[baseUv + 3] = v;
-      uv[baseUv + 4] = 0.94; uv[baseUv + 5] = v;
-      uv[baseUv + 6] = 1; uv[baseUv + 7] = v;
+      const b = s * N;
+      for (let k = 0; k < N; k++) {
+        uv[(b + k) * 2] = us[k];
+        uv[(b + k) * 2 + 1] = v;
+      }
       if (s < steps) {
-        for (let k = 0; k < 3; k++) {
-          const a = s * 4 + k, b = a + 1, c = a + 4, d = a + 5;
-          idx.push(a, c, b, b, c, d);
+        for (let k = 0; k < N; k++) {
+          const kNext = (k + 1) % N;
+          const a = b + k, c = b + kNext, d = b + N + k, e = b + N + kNext;
+          idx.push(a, c, d, c, e, d);
         }
       }
     }
@@ -920,13 +947,15 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
       const pt = evalFn(t);
       const yL = pt.yL !== undefined ? pt.yL : pt.y;
       const yR = pt.yR !== undefined ? pt.yR : pt.y;
-      const span = Math.max(0.5, pt.rx - pt.lx);
-      const bevel = Math.min(0.36, span * 0.07);
-      const b = s * 4;
-      pos.setXYZ(b, pt.lx, yL - 0.13, pt.z);
-      pos.setXYZ(b + 1, pt.lx + bevel, yL, pt.z);
-      pos.setXYZ(b + 2, pt.rx - bevel, yR, pt.z);
-      pos.setXYZ(b + 3, pt.rx, yR - 0.13, pt.z);
+      const b = s * 8;
+      pos.setXYZ(b, pt.lx - WALL_W, yL + WALL_H, pt.z);
+      pos.setXYZ(b + 1, pt.lx, yL + WALL_H, pt.z);
+      pos.setXYZ(b + 2, pt.lx + 0.14, yL, pt.z);
+      pos.setXYZ(b + 3, pt.rx - 0.14, yR, pt.z);
+      pos.setXYZ(b + 4, pt.rx, yR + WALL_H, pt.z);
+      pos.setXYZ(b + 5, pt.rx + WALL_W, yR + WALL_H, pt.z);
+      pos.setXYZ(b + 6, pt.rx + WALL_W, yR - DECK_THICK, pt.z);
+      pos.setXYZ(b + 7, pt.lx - WALL_W, yL - DECK_THICK, pt.z);
     }
     pos.needsUpdate = true;
     mesh.geometry.computeVertexNormals();
@@ -1090,9 +1119,9 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     const opRailB = new THREE.Mesh(geoOverpassRail, matBankYellow);
     opRailB.position.set(0, 0.85, -3.6);
     const opPierL = new THREE.Mesh(geoOverpassPier, matRailBlue);
-    opPierL.position.set(-23, -14, 0);
+    opPierL.position.set(-23, -14.65, 0);
     const opPierR = new THREE.Mesh(geoOverpassPier, matRailBlue);
-    opPierR.position.set(23, -14, 0);
+    opPierR.position.set(23, -14.65, 0);
     overpassGroup.add(opDeck, opRailA, opRailB, opPierL, opPierR);
     overpassGroup.visible = false;
     group.add(overpassGroup);
@@ -1251,24 +1280,31 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
       const theta = u * Math.PI * 2;
       _lpUpTmp.set(0, Math.cos(theta), Math.sin(theta)).normalize();
 
-      evalLoopPose(zStart, zEnd, y0, y1, u, -LOOP_HALF_W, _tmpL, null, _lpRightTmp);
-      evalLoopPose(zStart, zEnd, y0, y1, u, -LOOP_HALF_W + 0.34, _tmpLIn, null, null);
-      evalLoopPose(zStart, zEnd, y0, y1, u, LOOP_HALF_W - 0.34, _tmpRIn, null, null);
-      evalLoopPose(zStart, zEnd, y0, y1, u, LOOP_HALF_W, _tmpR, null, null);
-      const b = s * 4;
-      pos.setXYZ(b, _tmpL.x - _lpUpTmp.x * 0.12, _tmpL.y - _lpUpTmp.y * 0.12, _tmpL.z - centerZ - _lpUpTmp.z * 0.12);
-      pos.setXYZ(b + 1, _tmpLIn.x, _tmpLIn.y, _tmpLIn.z - centerZ);
-      pos.setXYZ(b + 2, _tmpRIn.x, _tmpRIn.y, _tmpRIn.z - centerZ);
-      pos.setXYZ(b + 3, _tmpR.x - _lpUpTmp.x * 0.12, _tmpR.y - _lpUpTmp.y * 0.12, _tmpR.z - centerZ - _lpUpTmp.z * 0.12);
+      evalLoopPose(zStart, zEnd, y0, y1, u, 0, _tmpL, null, _lpRightTmp);
+      const cx = _tmpL.x, cy = _tmpL.y, cz = _tmpL.z - centerZ;
+      const rx = _lpRightTmp.x, ry = _lpRightTmp.y, rz = _lpRightTmp.z;
+      const ux = _lpUpTmp.x, uy = _lpUpTmp.y, uz = _lpUpTmp.z;
+      const setV = (idxV, lx, hIn) => {
+        pos.setXYZ(idxV, cx + rx * lx + ux * hIn, cy + ry * lx + uy * hIn, cz + rz * lx + uz * hIn);
+      };
+      const b = s * 8;
+      setV(b, -LOOP_HALF_W - WALL_W, WALL_H);
+      setV(b + 1, -LOOP_HALF_W, WALL_H);
+      setV(b + 2, -LOOP_HALF_W + 0.14, 0);
+      setV(b + 3, LOOP_HALF_W - 0.14, 0);
+      setV(b + 4, LOOP_HALF_W, WALL_H);
+      setV(b + 5, LOOP_HALF_W + WALL_W, WALL_H);
+      setV(b + 6, LOOP_HALF_W + WALL_W, -DECK_THICK);
+      setV(b + 7, -LOOP_HALF_W - WALL_W, -DECK_THICK);
 
       const i0 = s * 2, i1 = i0 + 1;
       evalLoopPose(zStart, zEnd, y0, y1, u, -LOOP_HALF_W - 0.15, _tmpL, null, null);
       posRL.setXYZ(i0, _tmpL.x, _tmpL.y, _tmpL.z - centerZ);
-      posRL.setXYZ(i1, _tmpL.x + _lpUpTmp.x * 0.68, _tmpL.y + _lpUpTmp.y * 0.68, _tmpL.z - centerZ + _lpUpTmp.z * 0.68);
+      posRL.setXYZ(i1, _tmpL.x + ux * 0.68, _tmpL.y + uy * 0.68, _tmpL.z - centerZ + uz * 0.68);
 
       evalLoopPose(zStart, zEnd, y0, y1, u, LOOP_HALF_W + 0.15, _tmpR, null, null);
       posRR.setXYZ(i0, _tmpR.x, _tmpR.y, _tmpR.z - centerZ);
-      posRR.setXYZ(i1, _tmpR.x + _lpUpTmp.x * 0.68, _tmpR.y + _lpUpTmp.y * 0.68, _tmpR.z - centerZ + _lpUpTmp.z * 0.68);
+      posRR.setXYZ(i1, _tmpR.x + ux * 0.68, _tmpR.y + uy * 0.68, _tmpR.z - centerZ + uz * 0.68);
     }
     pos.needsUpdate = true; seg.loopDeck.geometry.computeVertexNormals();
     posRL.needsUpdate = true; seg.loopRailL.geometry.computeVertexNormals();
@@ -1396,20 +1432,23 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
       const centerZ = -(i + 0.5) * L;
       const kind = seg.kind;
 
-      // 1) Steel Truss Support Pillars down to Ocean Floor
-      const [, , lvl] = getSegmentElevationSpan(i);
-      if (lvl !== 'lower' || kind === 'ascent' || kind === 'descent') {
-        for (const side of [-1, 1]) {
-          if (cTruss >= MAX_TRUSS) break;
-          const wz = centerZ;
-          const topY = getTrackHeight(wz) - 0.5;
-          const h = Math.max(2, topY - SKYWAY_FLOOR_Y);
-          const off = side * (getHalfWidthAt(i, 0.5) * 0.68);
-          _dummy.position.set(getTrackCenterX(wz) + off, SKYWAY_FLOOR_Y + h * 0.5, wz);
-          _dummy.rotation.set(0, 0, 0);
-          _dummy.scale.set(1, h, 1);
-          _dummy.updateMatrix();
-          instTrusses.setMatrixAt(cTruss++, _dummy.matrix);
+      // 1) Blue Truss Support Pillars strictly beneath U-channel underside (pillarTopY = trackBottomY - 0.1) at outer edges (±hw * 0.85)
+      if (kind !== 'fork' && kind !== 'loop') {
+        const [, , lvl] = getSegmentElevationSpan(i);
+        if (lvl !== 'lower' || kind === 'ascent' || kind === 'descent') {
+          for (const side of [-1, 1]) {
+            if (cTruss >= MAX_TRUSS) break;
+            const wz = centerZ;
+            const off = side * (getHalfWidthAt(i, 0.5) * 0.85);
+            const trackBottomY = getTrackHeight(wz) + off * getTrackBank(wz) - DECK_THICK;
+            const pillarTopY = trackBottomY - 0.1;
+            const h = Math.max(1.0, pillarTopY - SKYWAY_FLOOR_Y);
+            _dummy.position.set(getTrackCenterX(wz) + off, SKYWAY_FLOOR_Y + h * 0.5, wz);
+            _dummy.rotation.set(0, 0, 0);
+            _dummy.scale.set(1, h, 1);
+            _dummy.updateMatrix();
+            instTrusses.setMatrixAt(cTruss++, _dummy.matrix);
+          }
         }
       }
 
@@ -1652,12 +1691,14 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
       seg.finishArch.rotation.y = getTrackYaw(-1500);
     }
 
-    // Connector blue clip
+    // Connector blue clip cleanly wrapping U-channel underside & outer edges
     seg.connector.visible = isPlainDeck && i % 2 === 0;
     if (seg.connector.visible) {
       const wz = centerZ - L * 0.5;
-      seg.connector.position.set(getTrackCenterX(wz), getTrackHeight(wz) - 0.14, -L * 0.5);
+      const hwEnd = getHalfWidthAt(i, 1);
+      seg.connector.position.set(getTrackCenterX(wz), getTrackHeight(wz) - DECK_THICK + 0.06, -L * 0.5);
       seg.connector.rotation.y = getTrackYaw(wz);
+      seg.connector.scale.set((hwEnd * 2 + 1.5) / (W + 1.5), 1, 1);
     }
 
     // Center dashes

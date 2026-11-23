@@ -8,7 +8,7 @@
 import * as THREE from 'three';
 import { createClient } from '@supabase/supabase-js';
 import { loadVehicle, setVehicleUnderglow, createNeonRibbonTrail } from '../entities/assetFactory.js';
-import { getTrackYaw, getTrackBank } from '../world/activeTrack.js';
+import { getTrackYaw, getTrackBank, isSplineCircuit } from '../world/activeTrack.js';
 import { VEHICLES, SLOT_COLORS, getVehicleDef } from '../config/gameConfig.js';
 
 export const PUBLIC_ROOMS = Object.freeze([
@@ -202,6 +202,8 @@ export function createMultiplayerHook({
       x: +payload.x || 0,
       y: +payload.y || 0,
       z: +payload.z || 0,
+      s: +payload.s || 0,
+      yaw: Number.isFinite(+payload.yaw) ? +payload.yaw : null,
       rollAngle: +payload.rollAngle || 0,
       speed: +payload.speed || 0,
       score: +payload.score || 0,
@@ -313,7 +315,7 @@ export function createMultiplayerHook({
                 name: meta.name || 'Juragan',
                 vehicleType: vType,
                 vehicle: vType,
-                x: 0, y: 0, z: 0, rollAngle: 0, speed: 0, score: 0, coins: 0,
+                x: 0, y: 0, z: 0, s: 0, yaw: null, rollAngle: 0, speed: 0, score: 0, coins: 0,
                 state: 'MENU',
                 seen: performance.now() / 1000,
               });
@@ -421,6 +423,8 @@ export function createMultiplayerHook({
       x: round(playerState?.x),
       y: round(playerState?.y),
       z: round(playerState?.z),
+      s: round(playerState?.s),
+      yaw: (playerState?.yaw !== undefined && playerState?.yaw !== null) ? round(playerState.yaw) : null,
       rollAngle: round(playerState?.rollAngle),
       speed: round(playerState?.speed),
       score: Math.round(playerState?.score || 0),
@@ -566,12 +570,20 @@ export function createMultiplayerHook({
 
       entry.roll += ((p.rollAngle || 0) - entry.roll) * alpha;
 
-      const trackYaw = getTrackYaw(entry.root.position.z);
-      const trackBank = getTrackBank(entry.root.position.z);
+      const splineMode = isSplineCircuit();
+      const trackYaw = splineMode ? (p.yaw ?? 0) : getTrackYaw(entry.root.position.z);
+      const trackBank = splineMode ? 0 : getTrackBank(entry.root.position.z);
       if (entry.vehicleMesh) {
         entry.vehicleMesh.rotation.order = 'YXZ';
         entry.vehicleMesh.rotation.z = entry.roll + (Math.abs(entry.roll) < 0.1 ? trackBank : 0);
-        entry.vehicleMesh.rotation.y = trackYaw + THREE.MathUtils.clamp(-dx * 0.025, -0.22, 0.22);
+        if (splineMode && p.yaw !== null && p.yaw !== undefined) {
+          let diff = p.yaw - entry.vehicleMesh.rotation.y;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          entry.vehicleMesh.rotation.y += diff * alpha;
+        } else {
+          entry.vehicleMesh.rotation.y = trackYaw + THREE.MathUtils.clamp(-dx * 0.025, -0.22, 0.22);
+        }
         const wr = getVehicleDef(entry.type).wheelRadius || 0.34;
         const spin = ((p.speed || 16) / wr) * dt;
         for (const w of entry.vehicleMesh.userData.wheels || []) {
@@ -594,9 +606,9 @@ export function createMultiplayerHook({
       const ry = entry.vehicleMesh?.rotation?.y || trackYaw;
       entry.ribbon?.setBoostMode(!!p.turbo || Math.abs(p.rollAngle || 0) > 0.35);
       entry.ribbon?.update(
-        entry.root.position.x,
+        entry.root.position.x + Math.sin(ry) * 1.3,
         entry.root.position.y + 0.34,
-        entry.root.position.z + 1.3,
+        entry.root.position.z + Math.cos(ry) * 1.3,
         Math.cos(ry),
         Math.sin(entry.roll),
         -Math.sin(ry)

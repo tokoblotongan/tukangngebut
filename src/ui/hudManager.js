@@ -164,7 +164,7 @@ export function createHUD(opts = {}) {
   window.addEventListener('resize', resizeSpeedLines);
 
   const minimapCtx = el.minimap?.getContext('2d') || null;
-  function drawMinimap(pts, racers, playerPos) {
+  function drawMinimap(pts, racers, playerPos, mode = 'radar') {
     if (!minimapCtx || !el.minimap) return;
     const w = el.minimap.width, h = el.minimap.height;
     const cx = w * 0.5, cy = h * 0.5, rad = w * 0.46;
@@ -188,34 +188,92 @@ export function createHUD(opts = {}) {
     minimapCtx.moveTo(6, cy); minimapCtx.lineTo(w - 6, cy);
     minimapCtx.stroke();
 
-    const px = playerPos?.x ?? 0;
-    const pz = playerPos?.z ?? 0;
-    const scale = 0.58;
-    const mapX = (wx) => cx + (wx - px) * scale;
-    const mapY = (wz) => (h * 0.72) + (wz - pz) * scale;
+    let mapX, mapY;
+    if (mode === 'circuit' && Array.isArray(pts) && pts.length > 2) {
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (let i = 0; i < pts.length; i++) {
+        const pt = pts[i];
+        if (pt.x < minX) minX = pt.x;
+        if (pt.x > maxX) maxX = pt.x;
+        if (pt.z < minZ) minZ = pt.z;
+        if (pt.z > maxZ) maxZ = pt.z;
+      }
+      const spanX = Math.max(10, maxX - minX);
+      const spanZ = Math.max(10, maxZ - minZ);
+      const midX = (minX + maxX) * 0.5;
+      const midZ = (minZ + maxZ) * 0.5;
+      const s = (rad * 1.48) / Math.max(spanX, spanZ);
+      mapX = (wx) => cx + (wx - midX) * s;
+      mapY = (wz) => cy + (wz - midZ) * s;
 
-    if (Array.isArray(pts) && pts.length > 1) {
       minimapCtx.lineCap = 'round';
       minimapCtx.lineJoin = 'round';
-      for (let i = 1; i < pts.length; i++) {
-        const p0 = pts[i - 1], p1 = pts[i];
-        const isLower = (p1.y ?? 0) < 2.5;
-        minimapCtx.strokeStyle = isLower ? 'rgba(255, 190, 11, 0.85)' : 'rgba(56, 189, 248, 0.88)';
-        minimapCtx.lineWidth = 5.5;
+
+      // Dark backing outline
+      minimapCtx.beginPath();
+      minimapCtx.moveTo(mapX(pts[0].x), mapY(pts[0].z));
+      for (let i = 1; i < pts.length; i++) minimapCtx.lineTo(mapX(pts[i].x), mapY(pts[i].z));
+      minimapCtx.closePath();
+      minimapCtx.strokeStyle = 'rgba(255, 255, 255, 0.24)';
+      minimapCtx.lineWidth = 6.2;
+      minimapCtx.stroke();
+
+      // Colored sectors around the 17-turn loop
+      for (let i = 0; i < pts.length; i++) {
+        const p0 = pts[i];
+        const p1 = pts[(i + 1) % pts.length];
+        const zn = p0.zone || '';
+        minimapCtx.strokeStyle = zn === 'boost'
+          ? 'rgba(56, 189, 248, 0.95)'
+          : zn === 'banked'
+            ? 'rgba(253, 224, 71, 0.94)'
+            : zn === 'bridgeSplit'
+              ? 'rgba(251, 146, 60, 0.95)'
+              : 'rgba(255, 107, 0, 0.92)';
+        minimapCtx.lineWidth = 3.6;
         minimapCtx.beginPath();
         minimapCtx.moveTo(mapX(p0.x), mapY(p0.z));
         minimapCtx.lineTo(mapX(p1.x), mapY(p1.z));
         minimapCtx.stroke();
+      }
+
+      // Start/Finish marker
+      const sx = mapX(pts[0].x), sy = mapY(pts[0].z);
+      minimapCtx.fillStyle = '#ffffff';
+      minimapCtx.fillRect(sx - 3, sy - 3, 6, 6);
+      minimapCtx.fillStyle = '#111827';
+      minimapCtx.fillRect(sx - 2, sy - 2, 2, 2);
+      minimapCtx.fillRect(sx, sy, 2, 2);
+    } else {
+      const px = playerPos?.x ?? 0;
+      const pz = playerPos?.z ?? 0;
+      const scale = 0.58;
+      mapX = (wx) => cx + (wx - px) * scale;
+      mapY = (wz) => (h * 0.72) + (wz - pz) * scale;
+
+      if (Array.isArray(pts) && pts.length > 1) {
+        minimapCtx.lineCap = 'round';
+        minimapCtx.lineJoin = 'round';
+        for (let i = 1; i < pts.length; i++) {
+          const p0 = pts[i - 1], p1 = pts[i];
+          const isLower = (p1.y ?? 0) < 2.5;
+          minimapCtx.strokeStyle = isLower ? 'rgba(255, 190, 11, 0.85)' : 'rgba(56, 189, 248, 0.88)';
+          minimapCtx.lineWidth = 5.5;
+          minimapCtx.beginPath();
+          minimapCtx.moveTo(mapX(p0.x), mapY(p0.z));
+          minimapCtx.lineTo(mapX(p1.x), mapY(p1.z));
+          minimapCtx.stroke();
+        }
       }
     }
 
     if (Array.isArray(racers)) {
       for (let i = 0; i < racers.length; i++) {
         const r = racers[i];
-        const rx = Math.max(10, Math.min(w - 10, mapX(r.x ?? 0)));
-        const ry = Math.max(10, Math.min(h - 10, mapY(r.z ?? 0)));
+        const rx = Math.max(8, Math.min(w - 8, mapX(r.x ?? 0)));
+        const ry = Math.max(8, Math.min(h - 8, mapY(r.z ?? 0)));
         minimapCtx.beginPath();
-        minimapCtx.arc(rx, ry, r.isPlayer ? 5.2 : 3.8, 0, Math.PI * 2);
+        minimapCtx.arc(rx, ry, r.isPlayer ? 5.0 : 3.6, 0, Math.PI * 2);
         minimapCtx.fillStyle = r.color || '#ff2a4b';
         minimapCtx.fill();
         minimapCtx.lineWidth = r.isPlayer ? 2 : 1.2;
@@ -248,7 +306,7 @@ export function createHUD(opts = {}) {
     b.innerHTML = `
       <span class="jg-arena-em">${def.emoji}</span>
       <span class="jg-arena-meta">
-        <span class="jg-arena-top"><strong>${def.label}</strong><em class="jg-arena-badge ${key === 'skyway' ? 'new' : ''}">${def.badge}</em></span>
+        <span class="jg-arena-top"><strong>${def.label}</strong><em class="jg-arena-badge ${key === 'mandalika' ? 'new-hot' : key === 'skyway' ? 'new' : ''}">${def.badge}</em></span>
         <span class="jg-arena-desc">${def.desc}</span>
       </span>
       <span class="jg-card-check">✓</span>`;
@@ -566,7 +624,7 @@ export function createHUD(opts = {}) {
 
       /* 4. Minimap Bundar Transparan di Kiri-Bawah */
       if (s.minimapPts && s.minimapRacers) {
-        drawMinimap(s.minimapPts, s.minimapRacers, s.playerPos);
+        drawMinimap(s.minimapPts, s.minimapRacers, s.playerPos, s.minimapMode || 'radar');
       }
 
       /* 5. Penghitung koin/buah & mahkota melayang tepat di atas kendaraan player */
@@ -651,7 +709,9 @@ export function createHUD(opts = {}) {
         el.overTitle.textContent = r.newRecord
           ? 'REKOR BARU, JURAGAN!'
           : rank === 1
-            ? (r.arenaId === 'skyway' ? 'JUARA 1 DI NUSANTARA SKYWAY!' : 'JUARA 1 DI SALATIGA!')
+            ? (r.arenaId === 'mandalika'
+              ? 'JUARA 1 DI MANDALIKA SKY CIRCUIT!'
+              : r.arenaId === 'skyway' ? 'JUARA 1 DI NUSANTARA SKYWAY!' : 'JUARA 1 DI SALATIGA!')
             : `FINIS POSISI #${rank}!`;
         if (el.btnOverContinue) el.btnOverContinue.style.display = 'none';
         el.btnOverRestart?.classList.add('primary');
@@ -1165,24 +1225,25 @@ function injectStyles() {
   .jg-menu-tools{display:flex;align-items:center;gap:8px}
   .jg-net{font-size:9.5px;font-weight:800;letter-spacing:.7px;border-radius:99px;padding:6px 11px;background:var(--jg-surface);border:1.5px solid var(--jg-line);backdrop-filter:blur(8px);white-space:nowrap}
   .jg-net.solo{color:#2b7a38}.jg-net.live{color:#0f766e;border-color:rgba(16,185,129,.45);background:rgba(236,253,245,.95)}.jg-net.warn{color:var(--jg-orange)}
-  .jg-menu-card{display:flex;flex-direction:column;gap:16px;max-width:780px;width:92%;margin:auto;padding:24px 28px;max-height:calc(100vh - 96px);overflow-y:auto;border-color:rgba(255,107,0,.45)}
+  .jg-menu-card{display:flex;flex-direction:column;gap:16px;max-width:860px;width:92%;margin:auto;padding:24px 28px;max-height:calc(100vh - 96px);overflow-y:auto;border-color:rgba(255,107,0,.45)}
   .jg-flame-marquee{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:11px 16px;border-radius:14px;background:linear-gradient(90deg,#d00000 0%,#ff5400 52%,#ffbe0b 100%);color:#fff;box-shadow:0 8px 20px rgba(255,84,0,.28);border:2px solid #fff3bf}
   .jg-flame-badge{font-family:var(--jg-disp);font-weight:700;font-size:1.08rem;letter-spacing:.7px;text-shadow:0 2px 0 rgba(120,20,0,.6)}
   .jg-flame-sub{font-size:11px;font-weight:800;letter-spacing:1.4px;background:rgba(34,24,24,.32);padding:4px 10px;border-radius:99px;color:#fff8eb}
   .jg-menu-section{display:flex;flex-direction:column;gap:10px}
   .jg-menu-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
   .jg-menu-head h2{font-family:var(--jg-disp);font-weight:600;font-size:1.1rem}
-  .jg-arenas{display:grid;grid-template-columns:1fr 1fr;gap:11px}
-  .jg-arena-card{position:relative;pointer-events:auto;display:flex;align-items:center;gap:12px;text-align:left;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:16px;padding:12px 14px;transition:transform .16s,border-color .2s,box-shadow .2s}
+  .jg-arenas{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .jg-arena-card{position:relative;pointer-events:auto;display:flex;align-items:center;gap:10px;text-align:left;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:16px;padding:11px 12px;transition:transform .16s,border-color .2s,box-shadow .2s}
   .jg-arena-card:hover{transform:translateY(-2px);border-color:var(--jg-blue)}
   .jg-arena-card.on{border-color:var(--jg-blue);background:linear-gradient(155deg,#f0f9ff,#e0f2fe);box-shadow:0 0 0 3px rgba(58,134,255,.22),0 10px 22px rgba(2,132,199,.16)}
-  .jg-arena-em{font-size:32px;line-height:1;flex:none}
+  .jg-arena-em{font-size:28px;line-height:1;flex:none}
   .jg-arena-meta{display:flex;flex-direction:column;gap:3px;min-width:0}
   .jg-arena-top{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-  .jg-arena-top strong{font-family:var(--jg-disp);font-weight:700;font-size:.98rem;color:var(--jg-ink)}
-  .jg-arena-badge{font-style:normal;font-size:9px;font-weight:800;letter-spacing:.7px;padding:2px 7px;border-radius:99px;background:rgba(59,47,47,.1);color:var(--jg-soft)}
+  .jg-arena-top strong{font-family:var(--jg-disp);font-weight:700;font-size:.92rem;color:var(--jg-ink)}
+  .jg-arena-badge{font-style:normal;font-size:8.5px;font-weight:800;letter-spacing:.6px;padding:2px 6px;border-radius:99px;background:rgba(59,47,47,.1);color:var(--jg-soft)}
   .jg-arena-badge.new{background:linear-gradient(135deg,#0ea5e9,#2563eb);color:#fff}
-  .jg-arena-desc{font-size:11px;font-weight:600;line-height:1.35;color:var(--jg-soft)}
+  .jg-arena-badge.new-hot{background:linear-gradient(135deg,#ff6b00,#e63946);color:#fff}
+  .jg-arena-desc{font-size:10.5px;font-weight:600;line-height:1.35;color:var(--jg-soft)}
   .jg-arena-card.on .jg-card-check{display:grid;background:var(--jg-blue)}
   .jg-fleet{display:grid;grid-template-columns:repeat(4,1fr);gap:11px}
   .jg-card{position:relative;pointer-events:auto;display:flex;flex-direction:column;align-items:flex-start;gap:5px;text-align:left;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:16px;padding:13px 14px;transition:transform .16s,border-color .2s,box-shadow .2s}
