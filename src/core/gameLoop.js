@@ -51,6 +51,7 @@ export function createGameLoop({
   salatigaRoot = null, skywayRoot = null, mandalikaRoot = null,
   landmarks, player, traffic, hud, network,
   difficulty = 'santai', arena = 'salatiga', noGameOver = false,
+  onBeforeRaceStart = null,
 }) {
   const clock = new THREE.Clock();
   const keys = new Set();
@@ -387,6 +388,7 @@ export function createGameLoop({
 
   /* ---------------- Transisi state ---------------- */
   function start() {
+    onBeforeRaceStart?.();
     const d = DIFF[diff];
     hearts = d.hearts;
     score = 0; distance = 0; coins = 0; coinStreak = 0; coinStreakTimer = 0;
@@ -455,6 +457,7 @@ export function createGameLoop({
   }
   function continueLap() {
     if (state !== STATES.PAUSED || !lapPaused) return;
+    onBeforeRaceStart?.();
     lapPaused = false;
     finishing = false;
     finishTimer = 0;

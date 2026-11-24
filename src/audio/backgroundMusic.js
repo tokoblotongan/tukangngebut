@@ -21,15 +21,63 @@ const MELODY = [
   [14, null, 19, 16, 14, null, 12, null],
 ];
 
-export function createBackgroundMusic({ ensureContext, getMaster, isMuted }) {
-  const BASE_VOL = 0.11;
+export function createBackgroundMusic({ ensureContext, getMaster, isMuted, isMusicEnabled }) {
+  const BASE_VOL = 0.55;
   let ac = null, bus = null, timer = null;
   let nextTime = 0, step = 0, running = false, paused = false;
+  let wantMusic = false, activeArenaId = 'salatiga';
   let theme = THEMES.salatiga, boost = false, kids = false;
+  let gestureListenersArmed = false;
+
+  function readMusicButtonOn() {
+    if (typeof isMusicEnabled === 'function') return !!isMusicEnabled();
+    try {
+      const v = localStorage.getItem('tn_music');
+      return v === null ? true : v !== '0';
+    } catch {
+      return true;
+    }
+  }
 
   function vol() {
     if (isMuted?.()) return 0;
     return BASE_VOL * (kids ? 0.85 : 1) * (boost ? 1.15 : 1);
+  }
+
+  function removeGestureListeners() {
+    if (!gestureListenersArmed || typeof window === 'undefined') return;
+    gestureListenersArmed = false;
+    window.removeEventListener('pointerdown', onFirstGesture, true);
+    window.removeEventListener('keydown', onFirstGesture, true);
+  }
+
+  function onFirstGesture() {
+    removeGestureListeners();
+    if (!wantMusic || paused) return;
+    const ready = ensureBus();
+    const ctx = ac || ensureContext?.();
+    if (ctx && ctx.state === 'suspended') {
+      ctx.resume()
+        .then(() => {
+          if (wantMusic && !paused) start(activeArenaId);
+        })
+        .catch(() => {
+          if (wantMusic && !paused) armGestureRetry();
+        });
+      return;
+    }
+    if (!ready || !ctx) {
+      armGestureRetry();
+      return;
+    }
+    start(activeArenaId);
+  }
+
+  function armGestureRetry() {
+    if (gestureListenersArmed || typeof window === 'undefined') return;
+    gestureListenersArmed = true;
+    window.addEventListener('pointerdown', onFirstGesture, { once: true, capture: true });
+    window.addEventListener('keydown', onFirstGesture, { once: true, capture: true });
   }
 
   function ensureBus() {
@@ -81,7 +129,7 @@ export function createBackgroundMusic({ ensureContext, getMaster, isMuted }) {
     osc.frequency.exponentialRampToValueAtTime(44, time + 0.1);
 
     amp.gain.setValueAtTime(0.0001, time);
-    amp.gain.exponentialRampToValueAtTime(0.28, time + 0.008);
+    amp.gain.exponentialRampToValueAtTime(0.16, time + 0.008);
     amp.gain.exponentialRampToValueAtTime(0.0001, time + 0.12);
 
     osc.connect(amp);
@@ -140,16 +188,66 @@ export function createBackgroundMusic({ ensureContext, getMaster, isMuted }) {
   }
 
   function refreshMute() {
+    if (wantMusic && !paused && !isMuted?.()) {
+      const ready = ensureBus();
+      if (!ready) {
+        armGestureRetry();
+        return;
+      }
+      if (ac.state === 'suspended') {
+        ac.resume().catch(() => {});
+        armGestureRetry();
+      }
+      if (!running) {
+        start(activeArenaId);
+        return;
+      }
+      if (!timer) {
+        nextTime = ac.currentTime + 0.04;
+        timer = setInterval(schedule, 30);
+      }
+    }
     if (!bus || !ac) return;
     const t = ac.currentTime;
     bus.gain.cancelScheduledValues(t);
     bus.gain.setTargetAtTime(running && !paused ? vol() : 0, t, 0.05);
+    if (running && !paused && !isMuted?.()) {
+      schedule();
+    }
   }
 
-  function start(arenaId = 'salatiga') {
-    theme = THEMES[arenaId] || THEMES.salatiga;
-    if (!ensureBus()) return;
-    if (ac.state === 'suspended') ac.resume().catch(() => {});
+  function start(arenaId = activeArenaId || 'salatiga') {
+    activeArenaId = arenaId || activeArenaId || 'salatiga';
+    theme = THEMES[activeArenaId] || THEMES.salatiga;
+    wantMusic = true;
+    paused = false;
+
+    const ready = ensureBus();
+    const ctxState = ac ? ac.state : (ensureContext?.()?.state || 'null');
+    const mutedVal = Boolean(isMuted?.());
+    const tnMusic = readMusicButtonOn();
+    console.info(`[BGM] start(${activeArenaId}) AudioContext=${ctxState} isMuted=${mutedVal} tn_music=${tnMusic}`);
+
+    if (!ready) {
+      console.warn('[BGM] AudioContext atau Master Gain belum siap; menunggu sentuhan berikutnya.');
+      armGestureRetry();
+      return;
+    }
+
+    if (ac.state === 'suspended') {
+      armGestureRetry();
+      ac.resume()
+        .then(() => {
+          if (wantMusic && !paused && ac?.state === 'running') {
+            removeGestureListeners();
+            refreshMute();
+          }
+        })
+        .catch(() => {});
+    } else {
+      removeGestureListeners();
+    }
+
     running = true;
     paused = false;
     step = 0;
@@ -164,9 +262,11 @@ export function createBackgroundMusic({ ensureContext, getMaster, isMuted }) {
   }
 
   function stop() {
+    wantMusic = false;
     running = false;
     paused = false;
     boost = false;
+    removeGestureListeners();
     if (timer) {
       clearInterval(timer);
       timer = null;
@@ -193,9 +293,21 @@ export function createBackgroundMusic({ ensureContext, getMaster, isMuted }) {
   }
 
   function resume() {
-    if (!running || !paused) return;
-    if (!ensureBus()) return;
-    if (ac.state === 'suspended') ac.resume().catch(() => {});
+    if (!wantMusic) return;
+    if (!running) {
+      start(activeArenaId);
+      return;
+    }
+    if (!paused) return;
+    if (!ensureBus()) {
+      console.warn('[BGM] AudioContext belum siap saat resume; menunggu sentuhan berikutnya.');
+      armGestureRetry();
+      return;
+    }
+    if (ac.state === 'suspended') {
+      armGestureRetry();
+      ac.resume().catch(() => {});
+    }
     paused = false;
     nextTime = ac.currentTime + 0.04;
     if (!timer) timer = setInterval(schedule, 30);

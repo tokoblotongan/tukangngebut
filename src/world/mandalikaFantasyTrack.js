@@ -1517,7 +1517,6 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } =
   }
 
   function applyEcoToStaticInstances() {
-    const stepMul = isEco ? 2 : 1;
     const postScaleZ = isEco ? 2.0 : 1.0;
 
     const bSel = isEco ? bluePosts.filter((_, idx) => idx % 2 === 0) : bluePosts;
@@ -1532,7 +1531,7 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } =
 
     let islN = 0;
     for (let i = 0; i < islands.length; i++) {
-      if (isEco && i % stepMul !== 0) continue;
+      if (isEco && i !== 0) continue;
       const it = islands[i];
       _dummy.position.set(it.ix, MANDALIKA_OCEAN_Y + 0.9, it.iz);
       _dummy.rotation.set(0, it.ry, 0); _dummy.scale.set(it.sc, it.sc, it.sc);
@@ -1548,7 +1547,7 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } =
 
     let hillN = 0;
     for (let i = 0; i < hills.length; i++) {
-      if (isEco && i % 2 !== 0) continue;
+      if (isEco && i !== 0) continue;
       const h = hills[i];
       _dummy.position.set(h.ix, MANDALIKA_OCEAN_Y + 8.0 * h.sc, h.iz);
       _dummy.rotation.set(0, i * 0.9, 0);
@@ -1560,7 +1559,7 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } =
 
     let palmN = 0;
     for (let i = 0; i < palms.length; i++) {
-      if (isEco && i % 2 !== 0) continue;
+      if (isEco && i >= 2) continue;
       const p = palms[i];
       _dummy.position.set(p.px, p.py + 2.4 * p.pSc, p.pz);
       _dummy.rotation.set(p.rx, p.ry, p.rz);
@@ -1617,7 +1616,7 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } =
   disposablesGeo.push(geoCoinBody, geoCoinRim, geoGemStar, geoGemRing, geoGlowRing, geoStarRingTorus, geoStarPoint);
 
   const collectibles = [];
-  function addCollectible({ kind, fruitType = 'orange', s, latX, wx, wy, wz, groundY = null, quat = null }) {
+  function addCollectible({ kind, fruitType = 'orange', s, latX, wx, wy, wz, groundY = null, quat = null, ecoSkip = false }) {
     const obj = new THREE.Group();
     let coinMesh = null, gemMesh = null, fruitMesh = null, starRingMesh = null, groundRing = null;
     if (kind === 'coin') {
@@ -1660,7 +1659,7 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } =
 
     collectibles.push({
       obj, coinMesh, gemMesh, fruitMesh, starRingMesh, groundRing,
-      kind, fruitType, s, latX, wx, baseY: wy, wz,
+      kind, fruitType, s, latX, wx, baseY: wy, wz, ecoSkip: !!ecoSkip,
       collected: false, phase: collectibles.length * 0.65,
     });
   }
@@ -1674,6 +1673,7 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } =
     addCollectible({
       kind: 'fruit', fruitType: upperFruits[k], s, latX: SPLIT_UP_CX,
       wx: _p.x, wy: bridgeY + 1.15, wz: _p.z, groundY: bridgeY,
+      ecoSkip: (k % 3 === 2),
     });
   }
   for (const rs of [330, 382]) {
@@ -1705,14 +1705,19 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } =
       s: THREE.MathUtils.lerp(LOOP_S0, LOOP_S1, u),
       latX: LOOP_CENTER_X,
       wx: _p.x, wy: _p.y + 0.9, wz: _p.z,
+      ecoSkip: (k === 1 || k === 3),
     });
   }
 
   // D) Koin, Buah Segar 3D & Permata sepanjang 1500m
+  let streetColIdx = 0;
   for (let s = 48; s < TOTAL_LEN - 20; s += 26) {
     if (s >= SPLIT_S0 && s <= SPLIT_S1) {
       evalCircuitPose(s, SPLIT_LO_CX, _p);
-      addCollectible({ kind: 'coin', s, latX: SPLIT_LO_CX, wx: _p.x, wy: _p.y + 0.95, wz: _p.z });
+      addCollectible({
+        kind: 'coin', s, latX: SPLIT_LO_CX, wx: _p.x, wy: _p.y + 0.95, wz: _p.z,
+        ecoSkip: (streetColIdx++ % 3 === 2),
+      });
       continue;
     }
     if (s >= LOOP_S0 - 6 && s <= LOOP_S1 + 6) continue;
@@ -1731,6 +1736,7 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } =
       s, latX: lane,
       wx: _p.x, wy: surf.groundY + (isFruit ? 1.15 : 0.95), wz: _p.z,
       groundY: surf.groundY,
+      ecoSkip: (streetColIdx++ % 3 === 2),
     });
   }
 
@@ -1769,7 +1775,7 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } =
     }
     for (let i = 0; i < archGroups.length; i++) {
       const ag = archGroups[i];
-      ag.group.visible = Math.abs(wrapDistAhead(curS, ag.s)) <= propVisDist;
+      ag.group.visible = (!isEco || i === 0) && Math.abs(wrapDistAhead(curS, ag.s)) <= propVisDist;
     }
     const nearPortal = Math.abs(wrapDistAhead(curS, GARUDA_S)) <= propVisDist;
     portalGroup.visible = nearPortal;
@@ -1820,11 +1826,15 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } =
     let shownCols = 0;
     for (let i = 0; i < collectibles.length; i++) {
       const item = collectibles[i];
-      if (item.collected) continue;
+      if (item.collected || (isEco && item.ecoSkip)) {
+        item.obj.visible = false;
+        if (item.groundRing) item.groundRing.visible = false;
+        continue;
+      }
       const ds = wrapDistAhead(curS, item.s);
       const inWin = ds >= -22 && ds <= aheadColMax && shownCols < maxColVis;
       item.obj.visible = inWin;
-      if (item.groundRing) item.groundRing.visible = inWin;
+      if (item.groundRing) item.groundRing.visible = !isEco && inWin;
       if (!inWin) continue;
       shownCols++;
       item.obj.position.y = item.baseY + Math.sin(t * 3.6 + item.phase) * 0.16;
@@ -1844,7 +1854,7 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } =
     const py = pos.y + 0.9;
     for (let i = 0; i < collectibles.length; i++) {
       const item = collectibles[i];
-      if (item.collected) continue;
+      if (item.collected || (isEco && item.ecoSkip)) continue;
       const hitPad = item.kind === 'ring' ? 3.1 : item.kind === 'fruit' ? 2.5 : 2.3;
       const hitY = item.kind === 'ring' ? 3.2 : 2.6;
       if (
@@ -1922,7 +1932,7 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } =
     const base = wrapS(sFrom);
     for (let i = 0; i < collectibles.length; i++) {
       const item = collectibles[i];
-      if (item.collected) continue;
+      if (item.collected || (isEco && item.ecoSkip)) continue;
       let ds = item.s - base;
       if (ds < 0) ds += TOTAL_LEN;
       if (ds >= 0 && ds <= span) {
@@ -1936,8 +1946,9 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } =
     for (let i = 0; i < collectibles.length; i++) {
       const item = collectibles[i];
       item.collected = false;
-      item.obj.visible = true;
-      if (item.groundRing) item.groundRing.visible = true;
+      const show = !(isEco && item.ecoSkip);
+      item.obj.visible = show;
+      if (item.groundRing) item.groundRing.visible = !isEco && show;
     }
     for (let i = 0; i < smashProps.length; i++) {
       const p = smashProps[i];

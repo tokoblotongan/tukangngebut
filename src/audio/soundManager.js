@@ -5,7 +5,7 @@
    hangat (~1100 Hz, Q ~ 3) dengan 3 pola melodi ceria & flourish stunt.
    ===================================================================== */
 
-export const HORN_VOLUME = 0.16;
+export const HORN_VOLUME = 0.28;
 
 /** @typedef {{ freq: number, dur: number, gap?: number }} TeloletNote */
 

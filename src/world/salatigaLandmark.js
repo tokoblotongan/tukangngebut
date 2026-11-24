@@ -28,7 +28,8 @@ function makeSoftShadowTex() {
   return tex;
 }
 
-export async function createLandmarkManager(scene) {
+export async function createLandmarkManager(scene, { eco = false } = {}) {
+  let isEco = !!eco;
   const shadowTex = makeSoftShadowTex();
   const shadowGeo = new THREE.PlaneGeometry(1, 1);
   const shadowMat = new THREE.MeshBasicMaterial({
@@ -129,7 +130,7 @@ export async function createLandmarkManager(scene) {
     for (let i = Math.max(2, min); i <= max; i++) {
       if (i === MONAS_STRAIGHT_IDX) {
         needed.push(landmarkSpec(i, 1, 'monas'));
-      } else if (i % EVERY === 0) {
+      } else if (!isEco && i % EVERY === 0) {
         const n = Math.floor(i / EVERY);
         const side = (n % 2 === 0) ? -1 : 1;
         needed.push(landmarkSpec(i, side));
@@ -152,6 +153,15 @@ export async function createLandmarkManager(scene) {
     }
   }
 
+  function setQuality(high) {
+    const nextEco = !high;
+    if (nextEco === isEco) return;
+    isEco = nextEco;
+    lastCur = -999999;
+    for (const slot of slots) release(slot);
+    slots.length = 0;
+  }
+
   function dispose() {
     for (const g of allGroups) scene.remove(g);
     for (const type of LANDMARK_TYPES) freeByType[type].length = 0;
@@ -161,5 +171,5 @@ export async function createLandmarkManager(scene) {
     spurGeo.dispose(); spurMat.dispose();
   }
 
-  return { update, dispose, get activeCount() { return slots.length; } };
+  return { update, setQuality, dispose, get activeCount() { return slots.length; } };
 }

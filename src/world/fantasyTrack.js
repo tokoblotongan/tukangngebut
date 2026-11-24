@@ -1375,12 +1375,12 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8, eco = false } = {
       const zEnd = centerZ - L * 0.5;
       const y0 = getTrackHeight(zStart);
       const y1 = getTrackHeight(zEnd);
-      const nLoop = isEco ? 4 : 5;
+      const nLoop = isEco ? 3 : 5;
       for (let k = 0; k < nLoop && cursor < maxCol; k++) {
-        const u = 0.18 + k * 0.16;
+        const u = isEco ? (0.20 + k * 0.30) : (0.18 + k * 0.16);
         evalLoopPose(zStart, zEnd, y0, y1, u, 0, _tmpL, null, null);
         const item = seg.collectibles[cursor++];
-        const itemKind = k === 2 ? 'gem' : 'coin';
+        const itemKind = k === Math.floor(nLoop / 2) ? 'gem' : 'coin';
         ensureCollectibleMesh(item, itemKind, item.fruitType);
         item.active = true;
         item.kind = itemKind;
@@ -1411,14 +1411,14 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8, eco = false } = {
     }
 
     const lane = ((i % 3) - 1) * 4.4;
-    const count = isEco ? 3 : 4;
+    const count = isEco ? (i % 3 === 1 ? 2 : 3) : 4;
     for (let k = 0; k < count && cursor < maxCol; k++) {
       const lz = 7.5 - k * (isEco ? 6.5 : 4.6);
       const wz = centerZ + lz;
       const cx = getTrackCenterX(wz);
       const item = seg.collectibles[cursor++];
       item.active = true;
-      const isFruit = (k === 1 || k === 2) && (k === 2 || !isEco);
+      const isFruit = isEco ? (k === 1) : (k === 1 || k === 2);
       const isGem = !isFruit && (k === count - 1 && i % 3 === 0);
       item.kind = isGem ? 'gem' : isFruit ? 'fruit' : 'coin';
       const ft = FRUIT_TYPES[(i + k) % FRUIT_TYPES.length];
@@ -1502,15 +1502,15 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8, eco = false } = {
         }
       }
 
-      // 3) Tropical Islands & Palm Trees in the Turquoise Ocean (dibatasi di ECO mode)
-      if (!isEco || i % 2 === 0) {
-        for (const side of [-1, 1]) {
-          if (isEco && side === (i % 4 === 0 ? 1 : -1)) continue;
-          if (hash(i * 19 + side * 7) < 0.35) continue;
+      // 3) Tropical Islands & Palm Trees in the Turquoise Ocean (1 penanda besar di ECO mode)
+      if (!isEco || i === 4) {
+        const sides = isEco ? [1] : [-1, 1];
+        for (const side of sides) {
+          if (!isEco && hash(i * 19 + side * 7) < 0.35) continue;
           if (cIsl >= MAX_ISLANDS) break;
-          const ix = getTrackCenterX(centerZ) + side * (29 + hash(i * 23 + side) * 26);
-          const iz = centerZ + (hash(i * 31 + side) - 0.5) * 14;
-          const sc = 0.85 + hash(i * 41 + side) * 0.85;
+          const ix = getTrackCenterX(centerZ) + side * (isEco ? 36 : (29 + hash(i * 23 + side) * 26));
+          const iz = centerZ + (isEco ? 0 : (hash(i * 31 + side) - 0.5) * 14);
+          const sc = isEco ? 1.55 : (0.85 + hash(i * 41 + side) * 0.85);
           _dummy.position.set(ix, SKYWAY_FLOOR_Y + 0.9, iz);
           _dummy.rotation.set(0, hash(i * 13 + side) * Math.PI, 0);
           _dummy.scale.set(sc, sc, sc);
@@ -1521,7 +1521,7 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8, eco = false } = {
           instIslandTops.setMatrixAt(cIsl, _dummy.matrix);
           cIsl++;
 
-          const pCount = isEco ? 1 : (2 + (Math.abs(i) % 2));
+          const pCount = isEco ? 2 : (2 + (Math.abs(i) % 2));
           for (let p = 0; p < pCount && cPalm < MAX_PALMS; p++) {
             const px = ix + (hash(i * 53 + p * 7 + side) - 0.5) * 5.2 * sc;
             const pz = iz + (hash(i * 61 + p * 11 + side) - 0.5) * 5.2 * sc;

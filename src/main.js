@@ -30,6 +30,8 @@ let salatigaRoot = null, skywayRoot = null, mandalikaRoot = null;
 let player = null, traffic = null, network = null, loop = null, howto = null;
 let vehicleSwapToken = 0;
 let resumeAfterHowto = false;
+let desiredHighQuality = false;
+let appliedHighQuality = false;
 
 init().catch((err) => {
   console.error('[Juragan] Gagal memulai:', err);
@@ -62,11 +64,13 @@ async function init() {
       if (saved) hud.toast(`Nama Juragan: ${saved} ✨`, 'good');
     },
     onQuality: (high) => {
-      ctx?.setQuality(high);
-      track?.setQuality?.(high);
-      skywayTrack?.setQuality?.(high);
-      mandalikaTrack?.setQuality?.(high);
-      traffic?.setQuality?.(high);
+      desiredHighQuality = !!high;
+      hud?.toast(
+        desiredHighQuality
+          ? '✨ Mode Normal aktif pada balapan berikutnya'
+          : '🌿 Mode ECO (Ringan) aktif pada balapan berikutnya',
+        'good'
+      );
     },
     onKidModeChange: ({ noGameOver }) => loop?.setNoGameOver?.(noGameOver),
     onHelp: () => howto?.open(),
@@ -98,7 +102,10 @@ async function init() {
   if (!canvas) throw new Error('Canvas #scene-canvas tidak ditemukan');
   ctx = createSceneContext(canvas);
   ctx.contactShadow.visible = false;
+  desiredHighQuality = ctx.isHighQuality;
+  appliedHighQuality = ctx.isHighQuality;
   hud.setQualityUI?.(ctx.isHighQuality);
+  hud.setAppliedQuality?.(ctx.isHighQuality);
 
   canvas.addEventListener('webglcontextlost', (e) => {
     e.preventDefault();
@@ -123,7 +130,7 @@ async function init() {
   hud.setLoading(0.73, 'Menggelar Sirkuit Kota Salatiga…');
   track = createTrackGenerator(salatigaRoot, { maxAnisotropy: ctx.maxAnisotropy, eco: initEco });
   hud.setLoading(0.79, 'Menanam landmark Salatiga…');
-  landmarks = await createLandmarkManager(salatigaRoot);
+  landmarks = await createLandmarkManager(salatigaRoot, { eco: initEco });
 
   hud.setLoading(0.84, 'Merakit Nusantara Skyway & Garuda Emas…');
   skywayTrack = createFantasyTrack(skywayRoot, { maxAnisotropy: ctx.maxAnisotropy, eco: initEco });
@@ -191,6 +198,18 @@ async function init() {
     difficulty: hud.difficulty,
     arena: hud.arena,
     noGameOver: hud.noGameOver,
+    onBeforeRaceStart: () => {
+      if (desiredHighQuality === appliedHighQuality) return;
+      appliedHighQuality = desiredHighQuality;
+      ctx?.setQuality(appliedHighQuality);
+      track?.setQuality?.(appliedHighQuality);
+      skywayTrack?.setQuality?.(appliedHighQuality);
+      mandalikaTrack?.setQuality?.(appliedHighQuality);
+      landmarks?.setQuality?.(appliedHighQuality);
+      traffic?.setQuality?.(appliedHighQuality);
+      hud?.setAppliedQuality?.(appliedHighQuality);
+      hud?.setQualityUI?.(appliedHighQuality);
+    },
   });
   loop.init();
 

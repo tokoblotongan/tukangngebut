@@ -775,9 +775,13 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8, eco = false } =
   const matArchBanner = new THREE.MeshStandardMaterial({
     map: archBannerTex, roughness: 0.45, emissive: '#ffffff', emissiveMap: archBannerTex, emissiveIntensity: 0.22,
   });
+  const startBannerTex = tuneTex(makeArchBannerTex('START • SIRKUIT SALATIGA', '#0055cc', '#ff6b00', '#ffbe0b', true));
   const milestone500Tex = tuneTex(makeArchBannerTex('CHECKPOINT 500 METER', '#0077ff', '#ff6b00', '#ffbe0b', false));
   const milestone1000Tex = tuneTex(makeArchBannerTex('1000 METER • SISA 500M!', '#d90429', '#ff5400', '#ffe066', false));
   const finishBannerTex = tuneTex(makeArchBannerTex('GARIS FINISH • 1500M', '#18181b', '#d90429', '#ffbe0b', true));
+  const matMilestoneStart = new THREE.MeshStandardMaterial({
+    map: startBannerTex, roughness: 0.4, emissive: '#ffffff', emissiveMap: startBannerTex, emissiveIntensity: 0.28,
+  });
   const matMilestone500 = new THREE.MeshStandardMaterial({
     map: milestone500Tex, roughness: 0.4, emissive: '#ffffff', emissiveMap: milestone500Tex, emissiveIntensity: 0.28,
   });
@@ -1208,21 +1212,25 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8, eco = false } =
   const treeInst = new THREE.InstancedMesh(geoTreeMerged, matDecorVertex, POOL_SIZE);
   treeInst.frustumCulled = false;
   treeInst.count = 0;
+  treeInst.visible = !isEco;
   scene.add(treeInst);
 
   const bushInst = new THREE.InstancedMesh(geoBushMerged, matDecorVertex, POOL_SIZE);
   bushInst.frustumCulled = false;
   bushInst.count = 0;
+  bushInst.visible = !isEco;
   scene.add(bushInst);
 
   const lampInst = new THREE.InstancedMesh(geoLampPoleMerged, matDecorVertex, POOL_SIZE);
   lampInst.frustumCulled = false;
   lampInst.count = 0;
+  lampInst.visible = !isEco;
   scene.add(lampInst);
 
   const lampHeadInst = new THREE.InstancedMesh(geoLampHead, matLampHead, POOL_SIZE);
   lampHeadInst.frustumCulled = false;
   lampHeadInst.count = 0;
+  lampHeadInst.visible = !isEco;
   scene.add(lampHeadInst);
 
   const grassGlobalInst = new THREE.InstancedMesh(geoGrassTuft, matGrassTuft, POOL_SIZE * GRASS_PER_SEG);
@@ -2292,7 +2300,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8, eco = false } =
     const midBank = getTrackBank(centerZ);
 
     seg.blocks.forEach((m, b) => {
-      m.visible = !isEco || i % 2 === 0;
+      m.visible = !isEco;
       if (!m.visible) return;
       const side = (i + b) % 2 === 0 ? -1 : 1;
       const bx = side * (40 + hash(i * 31 + b) * 14);
@@ -2494,7 +2502,8 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8, eco = false } =
       seg.boost.rotation.set(Math.atan(-getTrackSlope(wz)), getTrackYaw(wz), getTrackBank(wz));
     }
 
-    /* Milestone 500m / 1000m & Checkered FINISH ARCH 1500m */
+    /* Rambu Start (i=0), Milestone 500m / 1000m (Normal) & Checkered FINISH ARCH 1500m */
+    const isStartHere = i === 0;
     let milestoneDist = 0;
     if (i >= 0) {
       const kMin = Math.floor((i * L) / 500);
@@ -2506,22 +2515,26 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8, eco = false } =
     }
     const lapDist = TRACK.lapDistance || 1500;
     const isFinishHere = milestoneDist > 0 && (milestoneDist % lapDist === 0);
-    seg.milestoneArch.visible = milestoneDist > 0;
-    if (seg.milestoneArch.visible) {
-      const wz = -milestoneDist;
+    const showMilestone = isStartHere || isFinishHere || (!isEco && milestoneDist > 0);
+    seg.milestoneArch.visible = showMilestone;
+    if (showMilestone) {
+      const wz = isStartHere ? -2.0 : -milestoneDist;
       const lz = wz - centerZ;
       seg.milestoneArch.position.set(getTrackCenterX(wz), getTrackHeight(wz), lz);
       seg.milestoneArch.rotation.order = 'YXZ';
       seg.milestoneArch.rotation.set(0, getTrackYaw(wz), getTrackBank(wz));
-      const mMat = isFinishHere ? matMilestoneFinish : (milestoneDist % 1000 === 0 ? matMilestone1000 : matMilestone500);
+      const mMat = isStartHere
+        ? matMilestoneStart
+        : isFinishHere ? matMilestoneFinish : (milestoneDist % 1000 === 0 ? matMilestone1000 : matMilestone500);
       seg.mSignFront.material = mMat;
       seg.mSignBack.material = mMat;
-      seg.finishStripe.visible = isFinishHere;
+      const showCheck = isStartHere || isFinishHere;
+      seg.finishStripe.visible = showCheck;
       seg.finishStripe.rotation.x = -Math.PI / 2 - Math.atan(-getTrackSlope(wz));
-      for (const fl of seg.finishFlags) fl.visible = isFinishHere;
+      for (const fl of seg.finishFlags) fl.visible = showCheck;
     }
 
-    seg.arch.visible = !seg.milestoneArch.visible && i >= 4 && i % (TRACK.archEvery || 8) === 0 && seg.type !== 'loop';
+    seg.arch.visible = !isEco && !seg.milestoneArch.visible && i >= 4 && i % (TRACK.archEvery || 8) === 0 && seg.type !== 'loop';
     if (seg.arch.visible) {
       seg.arch.position.set(midCx, roadMidY, 0);
       seg.arch.rotation.set(0, midYaw, midBank);
@@ -2591,7 +2604,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8, eco = false } =
       ws.mesh.rotation.y = getTrackYaw(wz);
     }
 
-    {
+    if (!isEco) {
       const side = i % 2 === 0 ? -1 : 1;
       const lz = side < 0 ? -L * 0.25 : L * 0.25;
       const wz = centerZ + lz;
@@ -2602,18 +2615,24 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8, eco = false } =
         lz,
         ry: getTrackYaw(wz) + (side < 0 ? 0 : Math.PI),
       };
+    } else {
+      dl.lamp = null;
     }
-    {
+    if (!isEco) {
       const side = hash(i * 17 + 1) > 0.5 ? 1 : -1;
       const lz = -L / 2 + 3 + hash(i * 23 + 1) * (L - 6);
       const off = side * (W / 2 + 19 + hash(i * 29 + 1) * 6);
       dl.bush = { x: midCx + off, y: FLOOR_Y, lz, ry: hash(i * 41) * Math.PI, sc: 0.95 + hash(i * 31 + 1) * 0.45 };
+    } else {
+      dl.bush = null;
     }
-    {
+    if (!isEco) {
       const side = hash(i * 7) > 0.5 ? 1 : -1;
       const lz = -L / 2 + 4 + hash(i * 13) * (L - 8);
       const off = side * (W / 2 + 21 + hash(i * 17) * 8);
       dl.tree = { x: midCx + off, y: FLOOR_Y, lz, ry: hash(i * 19) * Math.PI, sc: 1.05 + hash(i * 23) * 0.55 };
+    } else {
+      dl.tree = null;
     }
 
     assignFoliageInstances(seg, i, centerZ);
@@ -2657,6 +2676,10 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8, eco = false } =
     roadRows = isEco ? 6 : 14;
     guardPostInst.castShadow = !isEco;
     guardBeamInst.castShadow = !isEco;
+    treeInst.visible = !isEco;
+    bushInst.visible = !isEco;
+    lampInst.visible = !isEco;
+    lampHeadInst.visible = !isEco;
     grassGlobalInst.visible = !isEco;
     flowerGlobalInst.visible = !isEco;
     for (const seg of pool) {
@@ -2987,14 +3010,14 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8, eco = false } =
       matTrunk, matLeaf1, matLeaf2, matLeaf3, matBushEmerald, matBushPurple,
       matBerry, matGrassTuft, matFlower, matPlantShadow, matLampPole,
       matLampCollar, matLampHead, matFloor, ...blockMats, matArchBanner,
-      matMilestone500, matMilestone1000, matMilestoneFinish, matCheckeredStripe,
+      matMilestoneStart, matMilestone500, matMilestone1000, matMilestoneFinish, matCheckeredStripe,
       matArchBlue, matArchGold, matCoinGold,
       matCoinRim, matCoinMerged, matDecorVertex, matPropsVertex, matGemShared, matGemHalo, ...Object.values(ringMats),
     ].forEach((m) => m.dispose());
     [
       matAsphalt.map, plantShadowTex, glowRingTex, forkSignTex,
       loopArrowTex, loopSignTex, hazardStripeTex, warnBarrierTex, warnTriangleTex, rampChevronTex,
-      ...blockTextures, archBannerTex, milestone500Tex, milestone1000Tex, finishBannerTex, checkeredStripeTex,
+      ...blockTextures, startBannerTex, archBannerTex, milestone500Tex, milestone1000Tex, finishBannerTex, checkeredStripeTex,
     ].forEach((t) => t?.dispose());
     pool.length = 0;
   }

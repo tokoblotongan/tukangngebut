@@ -141,7 +141,7 @@ export function createHUD(opts = {}) {
     btnAudio: $('jg-audio'), btnAudioMenu: $('jg-audio-menu'), btnAudioPause: $('jg-audio-pause'),
     btnMusicMenu: $('jg-music-menu'), btnMusicPause: $('jg-music-pause'),
     btnHelpMenu: $('jg-help-menu'), btnHelpHud: $('jg-help-btn'),
-    btnQuality: $('jg-quality'), btnPause: $('jg-pause-btn'),
+    btnQuality: $('jg-quality'), qualityGroup: $('jg-quality-group'), qualityBadge: $('jg-quality-badge'), btnPause: $('jg-pause-btn'),
     padL: $('jg-pad-l'), padR: $('jg-pad-r'), telolet: $('jg-telolet'), crashFlash: $('jg-crash'),
     speedLines: /** @type {HTMLCanvasElement | null} */ ($('jg-speedlines')),
   };
@@ -186,7 +186,7 @@ export function createHUD(opts = {}) {
   }
   function drawSpeedLines(intensity, isTurbo) {
     if (!speedCtx || !el.speedLines) return;
-    if (motionQuery?.matches) { clearSpeedLines(); return; }
+    if (!appliedHd || motionQuery?.matches) { clearSpeedLines(); return; }
     const w = el.speedLines.width, h = el.speedLines.height;
     if (!w || !h || intensity <= 0.02) { clearSpeedLines(); return; }
     speedCtx.clearRect(0, 0, w, h);
@@ -363,7 +363,8 @@ export function createHUD(opts = {}) {
   const sfx = createAudioEngine(() => pulseTeloletBtn());
   let muted = safeGet('jg_muted') === '1';
   let musicEnabled = safeGet('tn_music', '1') !== '0';
-  let hd = true;
+  let hd = safeGet('tn_quality') === 'normal';
+  let appliedHd = hd;
   let inputLocked = false;
   let selectedArena = safeGet('jg_arena') || 'salatiga';
   if (!ARENAS[selectedArena]) selectedArena = 'salatiga';
@@ -590,8 +591,9 @@ export function createHUD(opts = {}) {
   function toggleAudio() {
     muted = !muted;
     safeSet('jg_muted', muted ? '1' : '0');
+    if (!muted) sfx.resume();
     sfx.setMuted(muted); paintAudio();
-    if (!muted) { sfx.resume(); sfx.ui(); }
+    if (!muted) sfx.ui();
     opts.onAudio?.(!muted);
   }
   for (const b of [el.btnAudio, el.btnAudioMenu, el.btnAudioPause]) b?.addEventListener('click', toggleAudio);
@@ -610,9 +612,9 @@ export function createHUD(opts = {}) {
   function toggleMusic() {
     musicEnabled = !musicEnabled;
     safeSet('tn_music', musicEnabled ? '1' : '0');
+    if (musicEnabled) sfx.resume();
     sfx.setMusicEnabled(musicEnabled);
     paintMusic();
-    if (musicEnabled) sfx.resume();
     sfx.ui();
   }
   for (const b of [el.btnMusicMenu, el.btnMusicPause]) b?.addEventListener('click', toggleMusic);
@@ -620,16 +622,36 @@ export function createHUD(opts = {}) {
   sfx.setMuted(muted); paintAudio();
   sfx.setMusicEnabled(musicEnabled); sfx.setMusicKidsMode(kidMode); paintMusic();
 
-  function paintQualityBtn() {
-    if (!el.btnQuality) return;
-    el.btnQuality.textContent = hd ? 'Grafik: HD' : 'Grafik: ECO';
-    el.btnQuality.setAttribute('aria-pressed', String(hd));
+  function paintQualityUI() {
+    if (el.btnQuality) {
+      el.btnQuality.textContent = hd ? '✨ Grafik: Normal' : '🌿 Grafik: ECO (Ringan)';
+      el.btnQuality.setAttribute('aria-pressed', String(!hd));
+    }
+    if (el.qualityBadge) {
+      el.qualityBadge.textContent = hd ? '✨ Normal' : '🌿 ECO (Ringan)';
+    }
+    el.qualityGroup?.querySelectorAll('.jg-quality-btn').forEach((btn) => {
+      const node = /** @type {HTMLElement} */ (btn);
+      const isActive = (node.dataset.quality === 'normal') === hd;
+      node.classList.toggle('on', isActive);
+      node.setAttribute('aria-pressed', String(isActive));
+    });
   }
-  el.btnQuality?.addEventListener('click', () => {
-    hd = !hd;
-    paintQualityBtn();
-    sfx.ui(); opts.onQuality?.(hd);
+  function selectQuality(isHigh) {
+    hd = !!isHigh;
+    safeSet('tn_quality', hd ? 'normal' : 'eco');
+    paintQualityUI();
+    sfx.ui();
+    opts.onQuality?.(hd);
+  }
+  el.btnQuality?.addEventListener('click', () => selectQuality(!hd));
+  el.qualityGroup?.querySelectorAll('.jg-quality-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const node = /** @type {HTMLElement} */ (btn);
+      selectQuality(node.dataset.quality === 'normal');
+    });
   });
+  paintQualityUI();
 
   /* ---------- Kontrol sentuh ---------- */
   function bindPad(node, side) {
@@ -718,7 +740,11 @@ export function createHUD(opts = {}) {
 
     setQualityUI(isHigh) {
       hd = !!isHigh;
-      paintQualityBtn();
+      paintQualityUI();
+    },
+    setAppliedQuality(isHigh) {
+      appliedHd = !!isHigh;
+      if (!appliedHd) clearSpeedLines();
     },
     setInputLocked(locked) {
       inputLocked = !!locked;
@@ -1031,6 +1057,7 @@ function createAudioEngine(onHorn) {
     ensureContext: () => (ensure() ? ac : null),
     getMaster: () => master,
     isMuted: () => muted || !musicEnabled,
+    isMusicEnabled: () => musicEnabled,
   });
 
   function ensure() {
@@ -1237,8 +1264,21 @@ function TEMPLATE() {
           <div id="jg-fleet" class="jg-fleet"></div>
         </div>
         <details id="jg-advanced" class="jg-adv">
-          <summary>⚙️ Pengaturan lanjutan <span class="jg-adv-hint">Kamar Server &amp; Tingkat Ngebut</span></summary>
+          <summary>⚙️ Pengaturan lanjutan <span class="jg-adv-hint">Kualitas Grafik, Kamar &amp; Tingkat Ngebut</span></summary>
           <div class="jg-adv-body">
+            <div class="jg-menu-section">
+              <div class="jg-menu-head"><h2>Kualitas Grafik</h2><span id="jg-quality-badge" class="jg-chip">🌿 ECO (Ringan)</span></div>
+              <div id="jg-quality-group" class="jg-qualities" role="group" aria-label="Pilihan kualitas grafik">
+                <button class="jg-quality-btn on" type="button" data-quality="eco" aria-pressed="true">
+                  <span class="jg-quality-ico" aria-hidden="true">🌿</span>
+                  <span class="jg-quality-txt"><strong>ECO (Ringan)</strong><small>Mulus &amp; hemat baterai</small></span>
+                </button>
+                <button class="jg-quality-btn" type="button" data-quality="normal" aria-pressed="false">
+                  <span class="jg-quality-ico" aria-hidden="true">✨</span>
+                  <span class="jg-quality-txt"><strong>Normal</strong><small>Detail lebih lengkap</small></span>
+                </button>
+              </div>
+            </div>
             <div class="jg-menu-section">
               <div class="jg-menu-head"><h2>Pilih Kamar Server</h2><span id="jg-room-active" class="jg-chip live-room">🌐 SALATIGA-1</span></div>
               <div id="jg-rooms" class="jg-rooms"></div>
@@ -1355,7 +1395,7 @@ function TEMPLATE() {
     </div>
     <div class="jg-btn-row">
       <button id="jg-music-pause" class="jg-btn jg-music-btn" type="button" aria-pressed="true">🎵 Musik: ON</button>
-      <button id="jg-quality" class="jg-btn" aria-pressed="true">Grafik: HD</button>
+      <button id="jg-quality" class="jg-btn" aria-pressed="true">🌿 Grafik: ECO (Ringan)</button>
     </div>
   </div></div>
 
@@ -1557,6 +1597,14 @@ function injectStyles() {
   .jg-diff{pointer-events:auto;min-height:44px;display:flex;align-items:center;justify-content:center;gap:7px;font-weight:800;font-size:.96rem;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:14px;padding:12px 14px;transition:transform .15s,border-color .2s}
   .jg-diff:hover{transform:translateY(-2px);border-color:var(--jg-amber)}
   .jg-diff.on{background:linear-gradient(135deg,var(--jg-amber),var(--jg-orange));color:#fff;border-color:var(--jg-orange)}
+  .jg-qualities{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+  .jg-quality-btn{pointer-events:auto;min-height:52px;display:flex;align-items:center;gap:10px;text-align:left;background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:14px;padding:10px 13px;transition:transform .15s,border-color .2s,box-shadow .2s}
+  .jg-quality-btn:hover{transform:translateY(-2px);border-color:var(--jg-green)}
+  .jg-quality-btn.on{background:linear-gradient(135deg,#ecfdf5,#d1fae5);border-color:var(--jg-green);box-shadow:0 0 0 3px rgba(63,163,77,.2)}
+  .jg-quality-ico{font-size:24px;line-height:1;flex:none}
+  .jg-quality-txt{display:flex;flex-direction:column;gap:2px}
+  .jg-quality-txt strong{font-family:var(--jg-disp);font-weight:700;font-size:.98rem;color:var(--jg-ink)}
+  .jg-quality-txt small{font-size:12px;font-weight:700;color:var(--jg-soft)}
   .jg-name-row{display:flex;align-items:center;gap:12px;padding-bottom:14px;border-bottom:1.5px dashed var(--jg-line)}
   .jg-name-row label{font-family:var(--jg-disp);font-weight:600;font-size:1.1rem;white-space:nowrap}
   .jg-input{pointer-events:auto;user-select:text;flex:1;min-width:0;min-height:44px;font-family:var(--jg-body);font-weight:700;font-size:14px;color:var(--jg-ink);background:var(--jg-paper);border:2px solid var(--jg-line);border-radius:12px;padding:10px 14px;outline:none;transition:border-color .2s,box-shadow .2s}

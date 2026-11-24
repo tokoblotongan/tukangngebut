@@ -30,27 +30,42 @@ function bakeColoredPart(srcGeo, hexColor, tx = 0, ty = 0, tz = 0, rx = 0, ry = 
   return g;
 }
 
+const ECO_MAX_PIXEL_RATIO = 1.25;
+const ECO_FOG_NEAR = 45;
+const ECO_FOG_FAR = 145;
+const ECO_CAM_FAR = 210;
+
+function readInitialHighQuality() {
+  try {
+    return localStorage.getItem('tn_quality') === 'normal';
+  } catch {
+    return false;
+  }
+}
+
 export function createSceneContext(canvas) {
   /* ---------------- Renderer (Strict Visual Lock + Software-GL guard) ---------------- */
+  const motionQuery = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
+  let highQuality = readInitialHighQuality();
+
   const renderer = new THREE.WebGLRenderer({
-    canvas, antialias: true, powerPreference: 'high-performance',
+    canvas, antialias: highQuality, powerPreference: 'high-performance',
   });
   const gl = renderer.getContext();
   const ext = gl?.getExtension('WEBGL_debug_renderer_info');
   const gpuStr = String(gl?.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER) || '');
   const isSoftwareGl = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpuStr);
+  highQuality = !isSoftwareGl && highQuality;
 
-  const isCoarsePointer = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
-  const lowCoreCount = typeof navigator !== 'undefined' && typeof navigator.hardwareConcurrency === 'number' && navigator.hardwareConcurrency > 0 && navigator.hardwareConcurrency <= 4;
-  const motionQuery = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
-  let highQuality = !isSoftwareGl && !(isCoarsePointer || lowCoreCount);
-  let basePixelRatio = highQuality ? Math.min(window.devicePixelRatio || 1, RENDERER.maxPixelRatio) : 1;
+  let basePixelRatio = highQuality
+    ? Math.min(window.devicePixelRatio || 1, RENDERER.maxPixelRatio)
+    : Math.min(window.devicePixelRatio || 1, ECO_MAX_PIXEL_RATIO);
   let activePixelRatio = basePixelRatio;
 
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = RENDERER.exposure;
-  renderer.shadowMap.enabled = !isSoftwareGl;
+  renderer.shadowMap.enabled = highQuality && !isSoftwareGl;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.setPixelRatio(isSoftwareGl ? 1 : activePixelRatio);
   const maxAnisotropy = Math.max(1, renderer.capabilities.getMaxAnisotropy());
@@ -106,8 +121,8 @@ export function createSceneContext(canvas) {
 
   const keyDir = new THREE.Vector3(LIGHTING.key.dir.x, LIGHTING.key.dir.y, LIGHTING.key.dir.z).normalize();
   const key = new THREE.DirectionalLight(LIGHTING.key.color, LIGHTING.key.intensity);
-  key.castShadow = !isSoftwareGl;
-  const initShadowSize = highQuality ? RENDERER.shadowMapSize : 1024;
+  key.castShadow = highQuality && !isSoftwareGl;
+  const initShadowSize = highQuality ? RENDERER.shadowMapSize : 512;
   key.shadow.mapSize.set(initShadowSize, initShadowSize);
   key.shadow.radius = 3.5;
   key.shadow.bias = RENDERER.shadowBias;
@@ -142,8 +157,8 @@ export function createSceneContext(canvas) {
     renderer.toneMappingExposure = RENDERER.exposure;
     scene.background.set(LIGHTING.fog.color);
     scene.fog.color.set(LIGHTING.fog.color);
-    scene.fog.near = LIGHTING.fog.near;
-    scene.fog.far = LIGHTING.fog.far;
+    scene.fog.near = highQuality ? LIGHTING.fog.near : ECO_FOG_NEAR;
+    scene.fog.far = highQuality ? LIGHTING.fog.far : ECO_FOG_FAR;
     hemi.color.set(LIGHTING.hemi.sky);
     hemi.groundColor.set(LIGHTING.hemi.ground);
     hemi.intensity = LIGHTING.hemi.intensity;
@@ -423,6 +438,7 @@ export function createSceneContext(canvas) {
   let spCursor = 0;
   const _tmpCol = new THREE.Color();
   function spawnSparkles(x, y, z, kind = 'coin') {
+    if (!highQuality) return;
     const isGem = kind === true || kind === 'gem';
     const fruitCols = typeof kind === 'string' ? FRUIT_BURST_PALETTES[kind] : null;
     const burst = isGem ? 28 : fruitCols ? 24 : 16;
@@ -484,6 +500,7 @@ export function createSceneContext(canvas) {
   const FIREWORK_PALETTES = ['#ffbe0b', '#ff2a4b', '#38bdf8', '#39ff14', '#c084fc', '#ff6b00'];
   let fwCursor = 0;
   function spawnFireworks(x, y, z) {
+    if (!highQuality) return;
     const burst = 44;
     const baseHue = Math.random();
     for (let k = 0; k < burst; k++) {
@@ -548,7 +565,8 @@ export function createSceneContext(canvas) {
     rim.position.set(x + rimDir.x * LIGHTING.rim.distance, y + rimDir.y * LIGHTING.rim.distance, z + rimDir.z * LIGHTING.rim.distance);
     rim.target.position.set(x, y, z);
     sky.position.set(x, 0, z);
-    sunCore.position.set(x + keyDir.x * LIGHTING.sunSprite.distance, keyDir.y * LIGHTING.sunSprite.distance, z + keyDir.z * LIGHTING.sunSprite.distance);
+    const sunDist = highQuality ? LIGHTING.sunSprite.distance : 165;
+    sunCore.position.set(x + keyDir.x * sunDist, keyDir.y * sunDist, z + keyDir.z * sunDist);
     sunHalo.position.copy(sunCore.position);
   }
   setAnchor(0, 0, 0);
@@ -762,7 +780,7 @@ export function createSceneContext(canvas) {
     const tr2 = trauma * trauma;
     shakeOffset.set(tr2 * CAMERA.shakeAmp * Math.sin(t * 47.3), tr2 * CAMERA.shakeAmp * 0.75 * Math.sin(t * 39.7 + 1.7), 0);
 
-    const activeClouds = highQuality ? clouds.length : Math.min(5, Math.ceil(clouds.length * 0.6));
+    const activeClouds = highQuality ? clouds.length : Math.min(4, clouds.length);
     for (let i = 0; i < activeClouds; i++) {
       const c = clouds[i];
       c.position.x += c.userData.drift * dt;
@@ -772,7 +790,7 @@ export function createSceneContext(canvas) {
       if (c.position.z - anchor.z < -wrapR) c.position.z += wrapR * 2;
     }
 
-    const activeBalloons = highQuality ? balloons.length : Math.min(4, Math.ceil(balloons.length * 0.5));
+    const activeBalloons = highQuality ? balloons.length : 0;
     for (let i = 0; i < activeBalloons; i++) {
       const b = balloons[i];
       const ud = b.userData;
@@ -785,7 +803,7 @@ export function createSceneContext(canvas) {
       if (b.position.z - anchor.z < -balloonWrapR) b.position.z += balloonWrapR * 2;
     }
 
-    const activeRainbows = highQuality ? rainbows.length : 1;
+    const activeRainbows = highQuality ? rainbows.length : 0;
     for (let i = 0; i < activeRainbows; i++) {
       const rg = rainbows[i];
       if (rg.position.z - anchor.z > 85) rg.position.z -= 260;
@@ -794,7 +812,7 @@ export function createSceneContext(canvas) {
       rg.position.y = rg.userData.baseY + Math.sin(t * 0.35 + rg.userData.baseX) * 0.8;
     }
 
-    const activeStars = highQuality ? stars.length : Math.min(6, Math.ceil(stars.length * 0.3));
+    const activeStars = highQuality ? stars.length : 0;
     for (let i = 0; i < activeStars; i++) {
       const st = stars[i];
       const ud = st.userData;
@@ -810,101 +828,131 @@ export function createSceneContext(canvas) {
       if (st.position.z - anchor.z < -starWrapR) st.position.z += starWrapR * 2;
     }
 
-    const arr = moteGeo.attributes.position.array;
-    for (let i = 0; i < moteCount; i++) {
-      arr[i * 3 + 1] = moteBaseY[i] + Math.sin(t * 0.5 + motePhase[i]) * 0.6;
-      arr[i * 3] += 0.15 * dt;
-      if (arr[i * 3] - anchor.x > moteBox.x / 2) arr[i * 3] -= moteBox.x;
-      if (arr[i * 3] - anchor.x < -moteBox.x / 2) arr[i * 3] += moteBox.x;
-      if (arr[i * 3 + 2] - anchor.z > moteBox.z / 2) arr[i * 3 + 2] -= moteBox.z;
-      if (arr[i * 3 + 2] - anchor.z < -moteBox.z / 2) arr[i * 3 + 2] += moteBox.z;
-    }
-    moteGeo.attributes.position.needsUpdate = true;
-
-    let spDirty = false;
-    for (let i = 0; i < SPARKLE_MAX; i++) {
-      if (spLife[i] <= 0) continue;
-      spDirty = true;
-      spLife[i] -= dt;
-      if (spLife[i] <= 0) {
-        spPos[i * 3 + 1] = -999;
-        spCol[i * 3] = 0; spCol[i * 3 + 1] = 0; spCol[i * 3 + 2] = 0;
-      } else {
-        spVel[i * 3 + 1] -= 13.5 * dt;
-        spPos[i * 3] += spVel[i * 3] * dt;
-        spPos[i * 3 + 1] += spVel[i * 3 + 1] * dt;
-        spPos[i * 3 + 2] += spVel[i * 3 + 2] * dt;
-        const fade = spLife[i] / spMaxLife[i];
-        spCol[i * 3] = spBaseCol[i * 3] * fade;
-        spCol[i * 3 + 1] = spBaseCol[i * 3 + 1] * fade;
-        spCol[i * 3 + 2] = spBaseCol[i * 3 + 2] * fade;
+    if (highQuality) {
+      const arr = moteGeo.attributes.position.array;
+      for (let i = 0; i < moteCount; i++) {
+        arr[i * 3 + 1] = moteBaseY[i] + Math.sin(t * 0.5 + motePhase[i]) * 0.6;
+        arr[i * 3] += 0.15 * dt;
+        if (arr[i * 3] - anchor.x > moteBox.x / 2) arr[i * 3] -= moteBox.x;
+        if (arr[i * 3] - anchor.x < -moteBox.x / 2) arr[i * 3] += moteBox.x;
+        if (arr[i * 3 + 2] - anchor.z > moteBox.z / 2) arr[i * 3 + 2] -= moteBox.z;
+        if (arr[i * 3 + 2] - anchor.z < -moteBox.z / 2) arr[i * 3 + 2] += moteBox.z;
       }
-    }
-    if (spDirty) {
-      sparkleGeo.attributes.position.needsUpdate = true;
-      sparkleGeo.attributes.color.needsUpdate = true;
-    }
+      moteGeo.attributes.position.needsUpdate = true;
 
-    let fwDirty = false;
-    const drag = Math.exp(-1.5 * dt);
-    for (let i = 0; i < FIREWORK_MAX; i++) {
-      if (fwLife[i] <= 0) continue;
-      fwDirty = true;
-      fwLife[i] -= dt;
-      if (fwLife[i] <= 0) {
-        fwPos[i * 3 + 1] = -999;
-        fwCol[i * 3] = 0; fwCol[i * 3 + 1] = 0; fwCol[i * 3 + 2] = 0;
-      } else {
-        fwVel[i * 3] *= drag;
-        fwVel[i * 3 + 1] = fwVel[i * 3 + 1] * drag - 8.8 * dt;
-        fwVel[i * 3 + 2] *= drag;
-        fwPos[i * 3] += fwVel[i * 3] * dt;
-        fwPos[i * 3 + 1] += fwVel[i * 3 + 1] * dt;
-        fwPos[i * 3 + 2] += fwVel[i * 3 + 2] * dt;
-        const fade = Math.pow(fwLife[i] / fwMaxLife[i], 0.75);
-        fwCol[i * 3] = fwBaseCol[i * 3] * fade;
-        fwCol[i * 3 + 1] = fwBaseCol[i * 3 + 1] * fade;
-        fwCol[i * 3 + 2] = fwBaseCol[i * 3 + 2] * fade;
+      let spDirty = false;
+      for (let i = 0; i < SPARKLE_MAX; i++) {
+        if (spLife[i] <= 0) continue;
+        spDirty = true;
+        spLife[i] -= dt;
+        if (spLife[i] <= 0) {
+          spPos[i * 3 + 1] = -999;
+          spCol[i * 3] = 0; spCol[i * 3 + 1] = 0; spCol[i * 3 + 2] = 0;
+        } else {
+          spVel[i * 3 + 1] -= 13.5 * dt;
+          spPos[i * 3] += spVel[i * 3] * dt;
+          spPos[i * 3 + 1] += spVel[i * 3 + 1] * dt;
+          spPos[i * 3 + 2] += spVel[i * 3 + 2] * dt;
+          const fade = spLife[i] / spMaxLife[i];
+          spCol[i * 3] = spBaseCol[i * 3] * fade;
+          spCol[i * 3 + 1] = spBaseCol[i * 3 + 1] * fade;
+          spCol[i * 3 + 2] = spBaseCol[i * 3 + 2] * fade;
+        }
       }
-    }
-    if (fwDirty) {
-      fwGeo.attributes.position.needsUpdate = true;
-      fwGeo.attributes.color.needsUpdate = true;
-    }
+      if (spDirty) {
+        sparkleGeo.attributes.position.needsUpdate = true;
+        sparkleGeo.attributes.color.needsUpdate = true;
+      }
 
-    sunHalo.material.opacity = 0.22 + Math.sin(t * 0.7) * 0.04;
+      let fwDirty = false;
+      const drag = Math.exp(-1.5 * dt);
+      for (let i = 0; i < FIREWORK_MAX; i++) {
+        if (fwLife[i] <= 0) continue;
+        fwDirty = true;
+        fwLife[i] -= dt;
+        if (fwLife[i] <= 0) {
+          fwPos[i * 3 + 1] = -999;
+          fwCol[i * 3] = 0; fwCol[i * 3 + 1] = 0; fwCol[i * 3 + 2] = 0;
+        } else {
+          fwVel[i * 3] *= drag;
+          fwVel[i * 3 + 1] = fwVel[i * 3 + 1] * drag - 8.8 * dt;
+          fwVel[i * 3 + 2] *= drag;
+          fwPos[i * 3] += fwVel[i * 3] * dt;
+          fwPos[i * 3 + 1] += fwVel[i * 3 + 1] * dt;
+          fwPos[i * 3 + 2] += fwVel[i * 3 + 2] * dt;
+          const fade = Math.pow(fwLife[i] / fwMaxLife[i], 0.75);
+          fwCol[i * 3] = fwBaseCol[i * 3] * fade;
+          fwCol[i * 3 + 1] = fwBaseCol[i * 3 + 1] * fade;
+          fwCol[i * 3 + 2] = fwBaseCol[i * 3 + 2] * fade;
+        }
+      }
+      if (fwDirty) {
+        fwGeo.attributes.position.needsUpdate = true;
+        fwGeo.attributes.color.needsUpdate = true;
+      }
+
+      sunHalo.material.opacity = 0.22 + Math.sin(t * 0.7) * 0.04;
+    }
   }
 
   function applyQualityState(high, doResize = true) {
     highQuality = !isSoftwareGl && !!high;
-    basePixelRatio = highQuality ? Math.min(window.devicePixelRatio || 1, RENDERER.maxPixelRatio) : 1;
+    basePixelRatio = highQuality
+      ? Math.min(window.devicePixelRatio || 1, RENDERER.maxPixelRatio)
+      : Math.min(window.devicePixelRatio || 1, ECO_MAX_PIXEL_RATIO);
     activePixelRatio = basePixelRatio;
     renderer.setPixelRatio(isSoftwareGl ? 1 : activePixelRatio);
 
-    const shadowSz = highQuality ? RENDERER.shadowMapSize : 1024;
-    if (key.shadow.mapSize.x !== shadowSz || key.shadow.mapSize.y !== shadowSz) {
-      key.shadow.mapSize.set(shadowSz, shadowSz);
+    const shadowsOn = highQuality && !isSoftwareGl;
+    renderer.shadowMap.enabled = shadowsOn;
+    renderer.shadowMap.autoUpdate = shadowsOn;
+    key.castShadow = shadowsOn;
+    if (!shadowsOn) {
       key.shadow.map?.dispose();
       key.shadow.map = null;
+    } else {
+      const shadowSz = RENDERER.shadowMapSize;
+      if (key.shadow.mapSize.x !== shadowSz || key.shadow.mapSize.y !== shadowSz) {
+        key.shadow.mapSize.set(shadowSz, shadowSz);
+        key.shadow.map?.dispose();
+        key.shadow.map = null;
+      }
     }
 
-    const activeClouds = highQuality ? clouds.length : Math.min(5, Math.ceil(clouds.length * 0.6));
+    scene.fog.near = highQuality ? LIGHTING.fog.near : ECO_FOG_NEAR;
+    scene.fog.far = highQuality ? LIGHTING.fog.far : ECO_FOG_FAR;
+    camera.far = highQuality ? CAMERA.far : ECO_CAM_FAR;
+    sky.scale.setScalar(highQuality ? 1 : 0.36);
+
+    sunHalo.visible = highQuality;
+    motes.visible = highQuality;
+    sparkles.visible = highQuality;
+    fireworks.visible = highQuality;
+    if (!highQuality) {
+      for (let i = 0; i < SPARKLE_MAX; i++) { spLife[i] = 0; spPos[i * 3 + 1] = -999; }
+      for (let i = 0; i < FIREWORK_MAX; i++) { fwLife[i] = 0; fwPos[i * 3 + 1] = -999; }
+      sparkleGeo.attributes.position.needsUpdate = true;
+      fwGeo.attributes.position.needsUpdate = true;
+    }
+
+    const activeClouds = highQuality ? clouds.length : Math.min(4, clouds.length);
     for (let i = 0; i < clouds.length; i++) clouds[i].visible = i < activeClouds;
-    const activeBalloons = highQuality ? balloons.length : Math.min(4, Math.ceil(balloons.length * 0.5));
+    const activeBalloons = highQuality ? balloons.length : 0;
     for (let i = 0; i < balloons.length; i++) balloons[i].visible = i < activeBalloons;
-    const activeRainbows = highQuality ? rainbows.length : 1;
+    const activeRainbows = highQuality ? rainbows.length : 0;
     const rMat = highQuality ? rainbowMatHD : rainbowMatEco;
     for (let i = 0; i < rainbows.length; i++) {
       rainbows[i].visible = i < activeRainbows;
       rainbows[i].material = rMat;
     }
-    const activeStars = highQuality ? stars.length : Math.min(6, Math.ceil(stars.length * 0.3));
+    const activeStars = highQuality ? stars.length : 0;
     for (let i = 0; i < stars.length; i++) stars[i].visible = i < activeStars;
 
     frameSampleCount = 0;
     frameWriteIdx = 0;
     frameSumMs = 0;
     if (doResize) resize();
+    else camera.updateProjectionMatrix();
   }
 
   /* Ring buffer 60 frame untuk penskalaan resolusi dinamis */
