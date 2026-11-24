@@ -67,6 +67,7 @@ export function createGameLoop({
   let combo = 1, comboTimer = 0, rollsTotal = 0;
   let nextCheckpoint = 500, invuln = 0, elapsed = 0, raceTimer = 0;
   let countdownTimer = 0, countdownStage = '';
+  let musicStarted = false;
   let standingsTimer = 0;
   let cachedRank = 1;
   let introSweepTimer = 0;
@@ -152,6 +153,9 @@ export function createGameLoop({
   applyArenaVisibility(currentArenaId);
 
   function setArena(id) {
+    hud.sfx.stopMusic?.();
+    hud.sfx.setMusicBoost?.(false);
+    musicStarted = false;
     applyArenaVisibility(id);
     if (activeTrack?.isSplineCircuit) {
       const previewS = state === STATES.MENU ? 14 : (player.getState().s ?? 0);
@@ -318,7 +322,14 @@ export function createGameLoop({
   };
   const onKeyUp = (e) => keys.delete(e.code);
   const onBlur = () => keys.clear();
-  const onVisibility = () => { if (document.hidden && state === STATES.PLAYING && !finishing) pause(); };
+  const onVisibility = () => {
+    if (document.hidden) {
+      hud.sfx.pauseMusic?.();
+      if (state === STATES.PLAYING && !finishing) pause();
+    } else if (state === STATES.PLAYING && countdownTimer <= 0 && !finishing) {
+      hud.sfx.resumeMusic?.();
+    }
+  };
 
   function readInput() {
     if (finishing || countdownTimer > 0) return { left: false, right: false };
@@ -382,6 +393,9 @@ export function createGameLoop({
     combo = 1; comboTimer = 0; rollsTotal = 0;
     nextCheckpoint = 500; invuln = 0; raceTimer = 0;
     countdownTimer = 3.0; countdownStage = '3';
+    musicStarted = false;
+    hud.sfx.stopMusic?.();
+    hud.sfx.setMusicBoost?.(false);
     standingsTimer = 0; cachedRank = 1;
     introSweepTimer = (currentArenaId === 'skyway' || currentArenaId === 'mandalika') ? 0.001 : INTRO_SWEEP_DUR;
     lapGoal = LAP_DIST; lapNumber = 1; lapPaused = false;
@@ -418,6 +432,8 @@ export function createGameLoop({
     hud.setInputLocked?.(false);
     hud.setPaused(true);
     hud.sfx.setEngine(false);
+    hud.sfx.pauseMusic?.();
+    hud.sfx.setMusicBoost?.(false);
   }
   function resume() {
     if (state !== STATES.PAUSED) return;
@@ -433,6 +449,7 @@ export function createGameLoop({
       if (countdownStage) hud.showCountdown?.(countdownStage);
     } else {
       hud.setInputLocked?.(false);
+      if (musicStarted) hud.sfx.resumeMusic?.();
     }
     clock.getDelta();
   }
@@ -454,6 +471,8 @@ export function createGameLoop({
     hud.showHUD();
     state = STATES.PLAYING;
     hud.sfx.resume();
+    musicStarted = true;
+    hud.sfx.startMusic?.(getActiveArenaId());
     clock.getDelta();
   }
   function toMenu() {
@@ -473,6 +492,9 @@ export function createGameLoop({
     hud.hideGameOver(); hud.setPaused(false); hud.hideHUD();
     hud.showMenu(best);
     hud.sfx.setEngine(false);
+    hud.sfx.stopMusic?.();
+    hud.sfx.setMusicBoost?.(false);
+    musicStarted = false;
     if (activeTrack?.isSplineCircuit) {
       activeTrack.updateTrack(14, elapsed);
     } else {
@@ -494,6 +516,9 @@ export function createGameLoop({
     const podiumStandings = buildStandings(player.getState(), true);
     const rank = Math.max(1, podiumStandings.findIndex((r) => r.isPlayer) + 1);
     hud.sfx.setEngine(false);
+    hud.sfx.stopMusic?.();
+    hud.sfx.setMusicBoost?.(false);
+    musicStarted = false;
     hud.setWarnings?.([]);
     hud.setAirHint?.(false);
     hud.showGameOver({
@@ -515,6 +540,9 @@ export function createGameLoop({
     const podiumStandings = buildStandings(player.getState(), true);
     const rank = Math.max(1, podiumStandings.findIndex((r) => r.isPlayer) + 1);
     hud.sfx.setEngine(false);
+    hud.sfx.stopMusic?.();
+    hud.sfx.setMusicBoost?.(false);
+    musicStarted = false;
     hud.sfx.gameover();
     hud.setWarnings?.([]);
     hud.setAirHint?.(false);
@@ -606,6 +634,10 @@ export function createGameLoop({
         return;
       }
       hud.setInputLocked?.(false);
+      if (!musicStarted) {
+        musicStarted = true;
+        hud.sfx.startMusic?.(getActiveArenaId());
+      }
     }
 
     raceTimer += dt;
@@ -842,6 +874,7 @@ export function createGameLoop({
       isSpline
     );
     hud.sfx.setEngine(true, res.speed / PHYSICS.maxSpeed, res.turbo);
+    hud.sfx.setMusicBoost?.(!!res.turbo);
   }
 
   /* ---------------- Kamera sinematik non-playing ---------------- */

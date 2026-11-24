@@ -8,6 +8,7 @@
 import { VEHICLES, ARENAS, GAME, PALETTE as P } from '../config/gameConfig.js';
 import { PUBLIC_ROOMS, normalizeRoomId } from '../network/multiplayerHook.js';
 import { createTeloletSynthesizer } from '../audio/soundManager.js';
+import { createBackgroundMusic } from '../audio/backgroundMusic.js';
 
 const EMOJI = { angkot: '🚐', bemo: '🛺', l300: '🛻', ojol: '🏍️' };
 const DIFFS = [
@@ -138,6 +139,7 @@ export function createHUD(opts = {}) {
     overCoins: $('jg-over-coins'), overBest: $('jg-over-best'), overRecord: $('jg-over-record'), overTitle: $('jg-over-title'),
     btnOverContinue: $('jg-over-continue'), btnOverRestart: $('jg-over-restart'),
     btnAudio: $('jg-audio'), btnAudioMenu: $('jg-audio-menu'), btnAudioPause: $('jg-audio-pause'),
+    btnMusicMenu: $('jg-music-menu'), btnMusicPause: $('jg-music-pause'),
     btnHelpMenu: $('jg-help-menu'), btnHelpHud: $('jg-help-btn'),
     btnQuality: $('jg-quality'), btnPause: $('jg-pause-btn'),
     padL: $('jg-pad-l'), padR: $('jg-pad-r'), telolet: $('jg-telolet'), crashFlash: $('jg-crash'),
@@ -360,6 +362,7 @@ export function createHUD(opts = {}) {
   const input = { left: false, right: false };
   const sfx = createAudioEngine(() => pulseTeloletBtn());
   let muted = safeGet('jg_muted') === '1';
+  let musicEnabled = safeGet('tn_music', '1') !== '0';
   let hd = true;
   let inputLocked = false;
   let selectedArena = safeGet('jg_arena') || 'salatiga';
@@ -476,6 +479,7 @@ export function createHUD(opts = {}) {
     }
     safeSet('jg_no_gameover', noGameOver ? '1' : '0');
     paintKidMode();
+    sfx.setMusicKidsMode(kidMode);
     sfx.ui();
     opts.onKidModeChange?.({ kidMode, noGameOver });
   });
@@ -483,6 +487,7 @@ export function createHUD(opts = {}) {
     noGameOver = !!el.noOverToggle?.checked;
     safeSet('jg_no_gameover', noGameOver ? '1' : '0');
     paintKidMode();
+    sfx.setMusicKidsMode(kidMode);
     sfx.ui();
     opts.onKidModeChange?.({ kidMode, noGameOver });
   });
@@ -590,8 +595,30 @@ export function createHUD(opts = {}) {
     opts.onAudio?.(!muted);
   }
   for (const b of [el.btnAudio, el.btnAudioMenu, el.btnAudioPause]) b?.addEventListener('click', toggleAudio);
+  function paintMusic() {
+    if (el.btnMusicMenu) {
+      el.btnMusicMenu.textContent = musicEnabled ? '🎵 Musik' : '🎵 Musik Off';
+      el.btnMusicMenu.setAttribute('aria-pressed', String(musicEnabled));
+      el.btnMusicMenu.title = musicEnabled ? 'Matikan musik latar' : 'Nyalakan musik latar';
+    }
+    if (el.btnMusicPause) {
+      el.btnMusicPause.textContent = musicEnabled ? '🎵 Musik: ON' : '🎵 Musik: OFF';
+      el.btnMusicPause.setAttribute('aria-pressed', String(musicEnabled));
+      el.btnMusicPause.title = musicEnabled ? 'Matikan musik latar' : 'Nyalakan musik latar';
+    }
+  }
+  function toggleMusic() {
+    musicEnabled = !musicEnabled;
+    safeSet('tn_music', musicEnabled ? '1' : '0');
+    sfx.setMusicEnabled(musicEnabled);
+    paintMusic();
+    if (musicEnabled) sfx.resume();
+    sfx.ui();
+  }
+  for (const b of [el.btnMusicMenu, el.btnMusicPause]) b?.addEventListener('click', toggleMusic);
   for (const b of [el.btnHelpMenu, el.btnHelpHud]) b?.addEventListener('click', () => { sfx.ui(); opts.onHelp?.(); });
   sfx.setMuted(muted); paintAudio();
+  sfx.setMusicEnabled(musicEnabled); sfx.setMusicKidsMode(kidMode); paintMusic();
 
   function paintQualityBtn() {
     if (!el.btnQuality) return;
@@ -972,6 +999,13 @@ export function createHUD(opts = {}) {
 
     setMuted(m) { muted = m; sfx.setMuted(m); paintAudio(); },
     toggleAudio,
+    setMusicEnabled(on) {
+      musicEnabled = !!on;
+      safeSet('tn_music', musicEnabled ? '1' : '0');
+      sfx.setMusicEnabled(musicEnabled);
+      paintMusic();
+    },
+    toggleMusic,
 
     dispose() {
       if (countdownTimeout) clearTimeout(countdownTimeout);
@@ -985,13 +1019,18 @@ export function createHUD(opts = {}) {
 
 /* ==================== Audio sintetis (WebAudio, tanpa file) ==================== */
 function createAudioEngine(onHorn) {
-  let ac = null, master = null, muted = false;
+  let ac = null, master = null, muted = false, musicEnabled = true;
   let engOsc = null, engSub = null, engGain = null, engFilter = null, roadGain = null, noiseBuf = null;
 
   const telolet = createTeloletSynthesizer({
     ensureContext: () => (ensure() ? ac : null),
     getMaster: () => master,
     isMuted: () => muted,
+  });
+  const bgm = createBackgroundMusic({
+    ensureContext: () => (ensure() ? ac : null),
+    getMaster: () => master,
+    isMuted: () => muted || !musicEnabled,
   });
 
   function ensure() {
@@ -1096,12 +1135,12 @@ function createAudioEngine(onHorn) {
     },
     playTeloletHorn(patternIndex) {
       const ok = telolet.playTeloletHorn(patternIndex);
-      if (ok) onHorn?.();
+      if (ok) { bgm.duck(); onHorn?.(); }
       return ok;
     },
     playTeloletFlourish() {
       const ok = telolet.playTeloletFlourish();
-      if (ok) onHorn?.();
+      if (ok) { bgm.duck(); onHorn?.(); }
       return ok;
     },
     playAbyssWhistle() {
@@ -1131,8 +1170,18 @@ function createAudioEngine(onHorn) {
     setMuted(m) {
       muted = m;
       if (master && ac) master.gain.setTargetAtTime(m ? 0 : 0.55, ac.currentTime, 0.05);
+      bgm.refreshMute();
     },
-    dispose() { telolet.dispose(); try { engOsc?.stop(); engSub?.stop(); ac?.close(); } catch {} ac = null; engOsc = null; },
+    startMusic(arenaId) { bgm.start(arenaId); },
+    stopMusic() { bgm.stop(); },
+    pauseMusic() { bgm.pause(); },
+    resumeMusic() { bgm.resume(); },
+    duckMusic(ms) { bgm.duck(ms); },
+    setMusicBoost(on) { bgm.setBoost(on); },
+    setMusicKidsMode(on) { bgm.setKidsMode(on); },
+    setMusicEnabled(on) { musicEnabled = !!on; bgm.refreshMute(); },
+    refreshMusicMute() { bgm.refreshMute(); },
+    dispose() { bgm.dispose(); telolet.dispose(); try { engOsc?.stop(); engSub?.stop(); ac?.close(); } catch {} ac = null; engOsc = null; },
   };
 }
 
@@ -1160,6 +1209,7 @@ function TEMPLATE() {
       </div>
       <div class="jg-menu-tools">
         <span id="jg-net-menu" class="jg-net solo">● SOLO • AI MODE</span>
+        <button id="jg-music-menu" class="jg-btn small jg-music-btn" type="button" aria-pressed="true" title="Matikan musik latar">🎵 Musik</button>
         <button id="jg-help-menu" class="jg-icon" type="button" title="Cara bermain (?)" aria-label="Cara bermain">?</button>
         <button id="jg-audio-menu" class="jg-icon" aria-pressed="true">🔊</button>
       </div>
@@ -1304,6 +1354,7 @@ function TEMPLATE() {
       <button id="jg-audio-pause" class="jg-btn icon" aria-pressed="true">🔊</button>
     </div>
     <div class="jg-btn-row">
+      <button id="jg-music-pause" class="jg-btn jg-music-btn" type="button" aria-pressed="true">🎵 Musik: ON</button>
       <button id="jg-quality" class="jg-btn" aria-pressed="true">Grafik: HD</button>
     </div>
   </div></div>
@@ -1436,7 +1487,7 @@ function injectStyles() {
   .jg-icon{pointer-events:auto;min-width:44px;min-height:44px;width:44px;height:44px;border-radius:13px;border:2px solid var(--jg-line);background:var(--jg-surface);backdrop-filter:blur(8px);font-size:18px;display:grid;place-items:center;box-shadow:0 6px 16px rgba(122,72,20,.16);transition:transform .14s,border-color .2s}
   .jg-icon:hover{transform:translateY(-2px);border-color:var(--jg-amber)}
   .jg-icon:active{transform:scale(.93)}
-  .jg-icon[aria-pressed="false"]{opacity:.6}
+  .jg-icon[aria-pressed="false"],.jg-music-btn[aria-pressed="false"]{opacity:.6}
 
   /* Loader */
   .jg-loader{position:fixed;inset:0;z-index:90;pointer-events:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(160deg,#ffd9a8,#ffe5cc 34%,#fff3e0 68%,#ffe9d2);transition:opacity .7s,visibility .7s}
