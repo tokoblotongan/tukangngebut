@@ -1106,25 +1106,31 @@ export async function createTrafficManager(scene) {
     return null;
   }
 
-  function getAIRacersSnapshot() {
-    const out = [];
-    for (const ai of aiSlots) {
+  const _aiSnapCache = [];
+  function getAIRacersSnapshot(out = null) {
+    const dst = out || [];
+    let count = 0;
+    for (let i = 0; i < aiSlots.length; i++) {
+      const ai = aiSlots[i];
       if (!ai.active) continue;
-      out.push({
-        id: ai.id,
-        name: ai.name,
-        type: ai.type,
-        x: ai.x,
-        z: ai.z,
-        s: ai.s,
-        coins: Math.round(ai.coins),
-        score: Math.round(ai.score),
-        finishTime: ai.finishTime || 0,
-        slotColor: ai.slotColor,
-        isAI: true,
-      });
+      let rec = out ? (_aiSnapCache[count] || (_aiSnapCache[count] = {
+        id: '', name: '', type: 'bemo', x: 0, z: 0, s: 0, coins: 0, score: 0, finishTime: 0, slotColor: '', isAI: true,
+      })) : {};
+      rec.id = ai.id;
+      rec.name = ai.name;
+      rec.type = ai.type;
+      rec.x = ai.x;
+      rec.z = ai.z;
+      rec.s = ai.s;
+      rec.coins = Math.round(ai.coins);
+      rec.score = Math.round(ai.score);
+      rec.finishTime = ai.finishTime || 0;
+      rec.slotColor = ai.slotColor;
+      rec.isAI = true;
+      dst[count++] = rec;
     }
-    return out;
+    dst.length = count;
+    return dst;
   }
 
   function consumeNearMisses() { const n = nearMisses; nearMisses = 0; return n; }

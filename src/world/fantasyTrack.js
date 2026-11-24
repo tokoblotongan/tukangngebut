@@ -11,8 +11,10 @@
    ===================================================================== */
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { TRACK, PHYSICS, PALETTE as P } from '../config/gameConfig.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { TRACK, TRACK_PROFILE, PHYSICS, PALETTE as P } from '../config/gameConfig.js';
 import { FRUIT_TYPES, buildToyFruit } from '../entities/assetFactory.js';
+import { createCleanOrangeTrackMaterial, whenFontsReady } from './trackMaterial.js';
 
 const L = TRACK.segmentLength; // 24
 const W = 17.0;
@@ -43,8 +45,11 @@ export const LOOP_ARC_LEN = Math.PI * 2 * LOOP_RADIUS + 14;
 const LOOP_STEPS = 44;
 const FORK_HALF_L = 3.6;
 const FORK_HALF_R = 4.4;
-const RIBBON_STEPS = 16;
-const MAX_COLLECTIBLES = 14;
+const RIBBON_STEPS_HD = 16;
+const RIBBON_STEPS_ECO = 6;
+const MAX_COLLECTIBLES_HD = 10;
+const MAX_COLLECTIBLES_ECO = 6;
+const WAVE_AMP = TRACK_PROFILE.skywayWaveAmp ?? 0.2;
 
 function hash(n) {
   const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
@@ -54,30 +59,43 @@ function smoothstep(a, b, x) {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 }
+function smootherstep(a, b, x) {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * t * (t * (t * 6 - 15) + 10);
+}
 
-/* ---------- Pola Segmen Nusantara Skyway ---------- */
+/* ---------- Pola Segmen Nusantara Skyway (elevasi multi-segmen mulus <= 12%) ---------- */
+const SKYWAY_LAYOUT = {
+  0: 'start', 1: 'start',
+  2: 'climbStart', 3: 'plain', 4: 'banked', 5: 'plain', 6: 'plain',
+  7: 'ramp', 8: 'boost', 9: 'skullTunnel', 10: 'loop', 11: 'fork', 12: 'plain',
+  13: 'descent', 14: 'plain', 15: 'banked', 16: 'plain', 17: 'descent', 18: 'plain', 19: 'banked', 20: 'plain', 21: 'plain',
+  22: 'underpass', 23: 'boost', 24: 'underpass', 25: 'banked',
+  26: 'ascent', 27: 'plain', 28: 'banked', 29: 'plain', 30: 'ascent', 31: 'plain', 32: 'banked', 33: 'plain', 34: 'plain',
+  35: 'ramp', 36: 'boost', 37: 'skullTunnel', 38: 'loop', 39: 'fork', 40: 'banked',
+  41: 'descent', 42: 'plain', 43: 'banked', 44: 'plain', 45: 'descent', 46: 'plain', 47: 'banked', 48: 'plain', 49: 'plain',
+  50: 'underpass', 51: 'boost',
+  52: 'ascent', 53: 'plain', 54: 'banked', 55: 'plain', 56: 'ascent', 57: 'plain', 58: 'banked', 59: 'plain', 60: 'plain',
+  61: 'plain', 62: 'finish', 63: 'finish',
+};
+
+const ELEVATION_SPANS = [
+  { start: 0, end: 1, y0: START_Y, y1: START_Y, level: 'start' },
+  { start: 2, end: 6, y0: START_Y, y1: UPPER_Y, level: 'trans' },   // 5 segs = 120m (peak ~9.8%)
+  { start: 7, end: 12, y0: UPPER_Y, y1: UPPER_Y, level: 'upper' },
+  { start: 13, end: 21, y0: UPPER_Y, y1: LOWER_Y, level: 'trans' }, // 9 segs = 216m (peak ~11.1%)
+  { start: 22, end: 25, y0: LOWER_Y, y1: LOWER_Y, level: 'lower' },
+  { start: 26, end: 34, y0: LOWER_Y, y1: UPPER_Y, level: 'trans' }, // 9 segs = 216m (peak ~11.1%)
+  { start: 35, end: 40, y0: UPPER_Y, y1: UPPER_Y, level: 'upper' },
+  { start: 41, end: 49, y0: UPPER_Y, y1: LOWER_Y, level: 'trans' }, // 9 segs = 216m (peak ~11.1%)
+  { start: 50, end: 51, y0: LOWER_Y, y1: LOWER_Y, level: 'lower' },
+  { start: 52, end: 60, y0: LOWER_Y, y1: UPPER_Y, level: 'trans' }, // 9 segs = 216m (peak ~11.1%)
+];
+
 export function getSegmentKind(i) {
   if (i <= 1) return 'start';
-  if (i === 2) return 'climbStart';
-  if (i === 61) return 'plain';
-  if (i === 62 || i === 63) return 'finish';
-  const m = (((i - 3) % 14) + 14) % 14;
-  switch (m) {
-    case 0: return 'ramp';
-    case 1: return 'banked';
-    case 2: return 'boost';
-    case 3: return 'skullTunnel';
-    case 4: return 'loop';
-    case 5: return 'descent';
-    case 6: return 'underpass';
-    case 7: return 'boost';
-    case 8: return 'underpass';
-    case 9: return 'banked';
-    case 10: return 'ascent';
-    case 11: return 'fork';
-    case 12: return 'ramp';
-    default: return 'plain';
-  }
+  if (i in SKYWAY_LAYOUT) return SKYWAY_LAYOUT[i];
+  return 'plain';
 }
 
 export function getSegmentType(i) {
@@ -90,14 +108,17 @@ export function getRampSide(i) {
   return (Math.abs(i) % 2 === 0) ? -1 : 1;
 }
 
+function getElevationSpanAtDist(dist) {
+  for (const sp of ELEVATION_SPANS) {
+    if (dist <= (sp.end + 1) * L) return sp;
+  }
+  return { start: 61, end: 63, y0: UPPER_Y, y1: UPPER_Y, level: 'upper' };
+}
+
 function getSegmentElevationSpan(i) {
-  if (i <= 1) return [START_Y, START_Y, 'start'];
-  if (i === 2) return [START_Y, UPPER_Y, 'trans'];
-  if (i >= 61 && i <= 63) return [UPPER_Y, UPPER_Y, 'upper'];
-  const m = (((i - 3) % 14) + 14) % 14;
-  if (m === 5) return [UPPER_Y, LOWER_Y, 'trans'];
-  if (m >= 6 && m <= 9) return [LOWER_Y, LOWER_Y, 'lower'];
-  if (m === 10) return [LOWER_Y, UPPER_Y, 'trans'];
+  for (const sp of ELEVATION_SPANS) {
+    if (i >= sp.start && i <= sp.end) return [sp.y0, sp.y1, sp.level];
+  }
   return [UPPER_Y, UPPER_Y, 'upper'];
 }
 
@@ -137,11 +158,11 @@ export function getTrackBank(z) {
 
 export function getTrackHeight(z) {
   const dist = Math.max(0, -z);
-  const i = Math.floor(dist / L);
-  const t = Math.min(1, Math.max(0, (dist - i * L) / L));
-  const [y0, y1] = getSegmentElevationSpan(i);
-  const base = y0 + (y1 - y0) * smoothstep(0, 1, t);
-  const wave = 0.42 * Math.sin(dist * 0.022) * smoothstep(48, 96, dist);
+  const sp = getElevationSpanAtDist(dist);
+  const a = sp.start * L;
+  const b = (sp.end + 1) * L;
+  const base = sp.y0 === sp.y1 ? sp.y0 : sp.y0 + (sp.y1 - sp.y0) * smootherstep(a, b, dist);
+  const wave = WAVE_AMP * Math.sin(dist * 0.022) * smootherstep(48, 96, dist);
   return base + wave;
 }
 
@@ -332,33 +353,6 @@ export function checkBoostCollision(x, z) {
 }
 
 /* ==================== Texture Helpers ==================== */
-function makeOrangeTrackTex() {
-  const size = 512;
-  const c = document.createElement('canvas'); c.width = c.height = size;
-  const g = c.getContext('2d');
-  const grad = g.createLinearGradient(0, 0, size, 0);
-  grad.addColorStop(0, '#d95300');
-  grad.addColorStop(0.06, '#ff6b00');
-  grad.addColorStop(0.5, '#ff8024');
-  grad.addColorStop(0.94, '#ff6b00');
-  grad.addColorStop(1, '#d95300');
-  g.fillStyle = grad; g.fillRect(0, 0, size, size);
-
-  g.fillStyle = 'rgba(255,245,220,0.16)';
-  g.fillRect(size * 0.48, 0, size * 0.04, size);
-  for (const gx of [0.22, 0.44, 0.56, 0.78]) {
-    g.fillStyle = 'rgba(155, 48, 0, 0.22)';
-    g.fillRect(size * gx, 0, 4, size);
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.wrapS = THREE.ClampToEdgeWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(1, 2);
-  tex.anisotropy = 4;
-  return tex;
-}
-
 function makeYellowBankTex() {
   const size = 512;
   const c = document.createElement('canvas'); c.width = c.height = size;
@@ -446,33 +440,38 @@ function makeOceanTex() {
 function makeBannerTex(text, c0, c1, border = '#ffd100', checkered = false) {
   const c = document.createElement('canvas'); c.width = 1024; c.height = 192;
   const g = c.getContext('2d');
-  const grad = g.createLinearGradient(0, 0, 1024, 0);
-  grad.addColorStop(0, c0);
-  grad.addColorStop(0.5, c1);
-  grad.addColorStop(1, c0);
-  g.fillStyle = grad;
-  g.beginPath(); g.roundRect(6, 6, 1012, 180, 26); g.fill();
-  if (checkered) {
-    const sq = 22;
-    for (let x = 22; x < 120; x += sq) {
-      for (let y = 22; y < 170; y += sq) {
-        g.fillStyle = ((Math.floor(x / sq) + Math.floor(y / sq)) % 2 === 0) ? '#ffffff' : '#18181b';
-        g.fillRect(x, y, sq, sq);
-        g.fillRect(1024 - x - sq, y, sq, sq);
+  const draw = () => {
+    g.clearRect(0, 0, 1024, 192);
+    const grad = g.createLinearGradient(0, 0, 1024, 0);
+    grad.addColorStop(0, c0);
+    grad.addColorStop(0.5, c1);
+    grad.addColorStop(1, c0);
+    g.fillStyle = grad;
+    g.beginPath(); g.roundRect(6, 6, 1012, 180, 26); g.fill();
+    if (checkered) {
+      const sq = 22;
+      for (let x = 22; x < 120; x += sq) {
+        for (let y = 22; y < 170; y += sq) {
+          g.fillStyle = ((Math.floor(x / sq) + Math.floor(y / sq)) % 2 === 0) ? '#ffffff' : '#18181b';
+          g.fillRect(x, y, sq, sq);
+          g.fillRect(1024 - x - sq, y, sq, sq);
+        }
       }
     }
-  }
-  g.strokeStyle = border;
-  g.lineWidth = 12;
-  g.beginPath(); g.roundRect(14, 14, 996, 164, 20); g.stroke();
-  g.fillStyle = '#fff8eb';
-  g.font = '700 50px Fredoka, "Plus Jakarta Sans", sans-serif';
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
-  g.fillText(text, 512, 98);
+    g.strokeStyle = border;
+    g.lineWidth = 12;
+    g.beginPath(); g.roundRect(14, 14, 996, 164, 20); g.stroke();
+    g.fillStyle = '#fff8eb';
+    g.font = '700 50px Fredoka, "Plus Jakarta Sans", sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(text, 512, 98);
+  };
+  draw();
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
+  whenFontsReady(() => { draw(); tex.needsUpdate = true; });
   return tex;
 }
 
@@ -589,7 +588,11 @@ function makeHazardStripeTex() {
 /* =====================================================================
    createFantasyTrack(scene)
    ===================================================================== */
-export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
+export function createFantasyTrack(scene, { maxAnisotropy = 8, eco = false } = {}) {
+  let isEco = !!eco;
+  let ribbonSteps = isEco ? RIBBON_STEPS_ECO : RIBBON_STEPS_HD;
+  let roadRows = isEco ? 6 : 14;
+
   const tuneTex = (tex) => {
     if (!tex) return tex;
     tex.anisotropy = maxAnisotropy;
@@ -600,12 +603,11 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     return tex;
   };
 
-  const texOrange = tuneTex(makeOrangeTrackTex());
   const texYellow = tuneTex(makeYellowBankTex());
   const texBlue = tuneTex(makeBlueBoostTrackTex());
   const texOcean = tuneTex(makeOceanTex());
-  const texStartBanner = tuneTex(makeBannerTex('🔥 NUSANTARA SKYWAY • GRAND PRIX 🔥', '#0055cc', '#ff6b00', '#ffd100', true));
-  const texFinishBanner = tuneTex(makeBannerTex('🏁 FINISH LINE • 1500M SKYWAY 🏁', '#18181b', '#d90429', '#ffbe0b', true));
+  const texStartBanner = tuneTex(makeBannerTex('NUSANTARA SKYWAY • GRAND PRIX', '#0055cc', '#ff6b00', '#ffd100', true));
+  const texFinishBanner = tuneTex(makeBannerTex('FINISH LINE • 1500M SKYWAY', '#18181b', '#d90429', '#ffbe0b', true));
   const texChevronSign = tuneTex(makeChevronSignTex());
   const texWarn = tuneTex(makeWarnTriangleTex());
   const texCheckered = tuneTex(makeCheckeredStripeTex());
@@ -613,7 +615,7 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
   const texGlowRing = tuneTex(makeGlowRingTex());
   const texHazard = tuneTex(makeHazardStripeTex());
 
-  const matSkyOrange = new THREE.MeshStandardMaterial({ color: '#ffffff', map: texOrange, roughness: 0.34, metalness: 0.08, side: THREE.DoubleSide });
+  const matSkyOrange = createCleanOrangeTrackMaterial({ maxAnisotropy, side: THREE.DoubleSide, repeatX: 1, repeatY: 2 });
   const matBankYellow = new THREE.MeshStandardMaterial({ color: '#ffffff', map: texYellow, roughness: 0.34, metalness: 0.08, side: THREE.DoubleSide });
   const matBoostBlue = new THREE.MeshStandardMaterial({ color: '#ffffff', map: texBlue, roughness: 0.34, metalness: 0.08, side: THREE.DoubleSide });
   const matDeckSide = new THREE.MeshStandardMaterial({ color: '#c2410c', roughness: 0.36, metalness: 0.08, side: THREE.DoubleSide });
@@ -631,18 +633,7 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
   const matArchBlue = new THREE.MeshStandardMaterial({ color: '#0077ff', roughness: 0.36, metalness: 0.08 });
   const matArchRed = new THREE.MeshStandardMaterial({ color: '#e63946', roughness: 0.36, metalness: 0.08 });
   const matArchOrange = new THREE.MeshStandardMaterial({ color: '#ff6b00', roughness: 0.36, metalness: 0.08 });
-  const matFlameTorch = new THREE.MeshStandardMaterial({ color: '#ffbe0b', emissive: '#ff5400', emissiveIntensity: 1.4, roughness: 0.2 });
-
-  // Golden Mechanical Garuda / Dragon Skull Tunnel Materials
-  const matGarudaGold = new THREE.MeshStandardMaterial({
-    color: '#fbbf24', metalness: 0.72, roughness: 0.24, emissive: '#b45309', emissiveIntensity: 0.16,
-  });
-  const matGarudaBronze = new THREE.MeshStandardMaterial({
-    color: '#92400e', metalness: 0.65, roughness: 0.35,
-  });
-  const matGarudaEye = new THREE.MeshStandardMaterial({
-    color: '#ff2a4b', emissive: '#ff0033', emissiveIntensity: 1.8, roughness: 0.18,
-  });
+  const matTunnelWhite = new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.32, metalness: 0.08 });
   const matEnergyOrb = new THREE.MeshStandardMaterial({
     color: '#ff2a4b', emissive: '#ef4444', emissiveIntensity: 1.65, roughness: 0.15, metalness: 0.2,
   });
@@ -654,12 +645,12 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     emissive: '#ff2a4b', emissiveMap: texWarn, emissiveIntensity: 0.6, roughness: 0.28,
   });
 
-  // Collectibles & Fire Rings
+  // Collectibles & Star Rings
   const matCoinGold = new THREE.MeshPhysicalMaterial({ color: P.coinGold, metalness: 0.86, roughness: 0.16, clearcoat: 0.85, emissive: '#fb8500', emissiveIntensity: 0.24 });
   const matCoinRim = new THREE.MeshPhysicalMaterial({ color: P.coinGoldRim, metalness: 0.88, roughness: 0.2, clearcoat: 0.85, emissive: '#f77f00', emissiveIntensity: 0.18 });
+  const matGemShared = new THREE.MeshPhysicalMaterial({ color: '#ff2a4b', emissive: '#ffbe0b', emissiveIntensity: 0.45, roughness: 0.14, metalness: 0.25, clearcoat: 1.0 });
   const matGemHalo = new THREE.MeshStandardMaterial({ color: '#ffffff', metalness: 0.5, roughness: 0.2, emissive: '#ffbe0b', emissiveIntensity: 0.55 });
-  const matFireRing = new THREE.MeshPhysicalMaterial({ color: '#ffbe0b', roughness: 0.14, metalness: 0.65, clearcoat: 1.0, emissive: '#ff5400', emissiveIntensity: 0.88 });
-  const matFireFlame = new THREE.MeshStandardMaterial({ color: '#ff6b00', roughness: 0.3, emissive: '#ff9500', emissiveIntensity: 1.15 });
+  const matStarRing = new THREE.MeshPhysicalMaterial({ color: '#ffbe0b', roughness: 0.16, metalness: 0.65, clearcoat: 1.0, emissive: '#ff9f1c', emissiveIntensity: 0.72 });
   const ringMats = {
     strawberry: new THREE.MeshBasicMaterial({ map: texGlowRing, color: '#ff4d6d', transparent: true, opacity: 0.82, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
     melon: new THREE.MeshBasicMaterial({ map: texGlowRing, color: '#2ec4b6', transparent: true, opacity: 0.82, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
@@ -677,11 +668,24 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
   const matPalmCrown = new THREE.MeshStandardMaterial({ color: '#16a34a', roughness: 0.65 });
   const matPostBlue = new THREE.MeshStandardMaterial({ color: '#0077ff', roughness: 0.36, metalness: 0.08 });
   const matPostOrange = new THREE.MeshStandardMaterial({ color: '#ff6b00', roughness: 0.36, metalness: 0.08 });
-  const matPropBarrelRed = new THREE.MeshStandardMaterial({ color: '#e63946', roughness: 0.36, metalness: 0.08 });
-  const matPropBarrelYellow = new THREE.MeshStandardMaterial({ color: '#ffbe0b', roughness: 0.36, metalness: 0.08 });
+  const matPropBarrelMerged = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.36, metalness: 0.08 });
+  const matCoinMerged = new THREE.MeshPhysicalMaterial({
+    vertexColors: true, metalness: 0.87, roughness: 0.17, clearcoat: 0.85, emissive: '#fb8500', emissiveIntensity: 0.22,
+  });
+
+  function bakeColor(geo, hex) {
+    const g = geo.index ? geo.toNonIndexed() : geo.clone();
+    g.deleteAttribute('uv');
+    const n = g.attributes.position.count;
+    const c = new THREE.Color(hex);
+    const cols = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { cols[i * 3] = c.r; cols[i * 3 + 1] = c.g; cols[i * 3 + 2] = c.b; }
+    g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+    return g;
+  }
 
   /* ---------- Geometries ---------- */
-  const geoOcean = new THREE.PlaneGeometry(340, L); geoOcean.rotateX(-Math.PI / 2);
+  const geoOcean = new THREE.PlaneGeometry(460, 460); geoOcean.rotateX(-Math.PI / 2);
   const geoDash = new THREE.BoxGeometry(0.26, 0.03, 1.9);
   const geoConnectorBar = new RoundedBoxGeometry(W + 1.5, 0.38, 1.2, 2, 0.08);
   const geoRamp = (() => {
@@ -699,18 +703,33 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
   const geoGreenChev = new RoundedBoxGeometry(3.8, 0.09, 0.55, 2, 0.03);
   const geoBoosterHousing = new RoundedBoxGeometry(1.35, 1.32, BOOST_LEN + 1.6, 3, 0.2);
   const geoBoosterWheel = new THREE.CylinderGeometry(1.02, 1.02, 0.46, 14); geoBoosterWheel.rotateZ(Math.PI / 2);
-  const geoOrb = new THREE.SphereGeometry(1.02, 16, 12);
-  const geoOrbRing = new THREE.TorusGeometry(1.32, 0.11, 8, 24);
+  const geoOrb = new THREE.SphereGeometry(1.02, 14, 10);
+  const geoOrbRing = new THREE.TorusGeometry(1.32, 0.11, 8, 20);
   const geoWarnPost = new THREE.CylinderGeometry(0.08, 0.11, 2.2, 8);
   const geoWarnBoard = new THREE.PlaneGeometry(2.15, 2.15);
-  const geoBarrelBody = new THREE.CylinderGeometry(0.54, 0.54, 1.25, 12);
-  const geoBarrelBand = new THREE.CylinderGeometry(0.56, 0.56, 0.32, 12);
+  const geoBarrelBody = new THREE.CylinderGeometry(0.54, 0.54, 1.25, 10);
+  geoBarrelBody.translate(0, 0.62, 0);
+  const geoBarrelBand = new THREE.CylinderGeometry(0.56, 0.56, 0.32, 10);
+  geoBarrelBand.translate(0, 0.62, 0);
+  const geoBarrelRed = (() => {
+    const a = bakeColor(geoBarrelBody, '#e63946');
+    const b = bakeColor(geoBarrelBand, '#0077ff');
+    const m = mergeGeometries([a, b], false);
+    a.dispose(); b.dispose();
+    return m;
+  })();
+  const geoBarrelYellow = (() => {
+    const a = bakeColor(geoBarrelBody, '#ffbe0b');
+    const b = bakeColor(geoBarrelBand, '#0077ff');
+    const m = mergeGeometries([a, b], false);
+    a.dispose(); b.dispose();
+    return m;
+  })();
 
   // Arch geometries
-  const geoArchPillar = new RoundedBoxGeometry(1.5, 14.5, 1.5, 3, 0.18);
-  const geoArchBeam = new RoundedBoxGeometry(W_START + 4.0, 1.9, 1.6, 3, 0.24);
+  const geoArchPillar = new RoundedBoxGeometry(1.5, 14.5, 1.5, 2, 0.18);
+  const geoArchBeam = new RoundedBoxGeometry(W_START + 4.0, 1.9, 1.6, 2, 0.24);
   const geoArchBanner = new THREE.PlaneGeometry(W_START + 1.6, 2.6);
-  const geoFlameJet = new THREE.ConeGeometry(0.62, 2.1, 8);
   const geoCheckStripe = new THREE.PlaneGeometry(W_START - 0.8, 3.2); geoCheckStripe.rotateX(-Math.PI / 2);
 
   // Overhead skyway bridge geometry (for underpass segments)
@@ -719,26 +738,28 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
   const geoOverpassPier = new THREE.BoxGeometry(1.6, 28, 1.6);
 
   // Collectibles geometries
-  const geoCoinBody = new THREE.CylinderGeometry(0.56, 0.56, 0.16, 18); geoCoinBody.rotateX(Math.PI / 2);
-  const geoCoinRim = new THREE.TorusGeometry(0.55, 0.09, 10, 22);
+  const geoCoinBody = new THREE.CylinderGeometry(0.56, 0.56, 0.16, 16); geoCoinBody.rotateX(Math.PI / 2);
+  const geoCoinRim = new THREE.TorusGeometry(0.55, 0.09, 6, 16);
+  const geoCoinMerged = (() => {
+    const a = bakeColor(geoCoinBody, P.coinGold);
+    const b = bakeColor(geoCoinRim, P.coinGoldRim);
+    const m = mergeGeometries([a, b], false);
+    a.dispose(); b.dispose();
+    return m;
+  })();
   const geoGemStar = new THREE.OctahedronGeometry(0.68, 0);
-  const geoGemRing = new THREE.TorusGeometry(0.92, 0.055, 8, 22);
+  const geoGemRing = new THREE.TorusGeometry(0.92, 0.055, 8, 20);
   const geoGlowRing = new THREE.PlaneGeometry(2.35, 2.35);
-  const geoFireRingTorus = new THREE.TorusGeometry(1.82, 0.19, 10, 24);
-  const geoFireFlame = new THREE.ConeGeometry(0.22, 0.68, 5);
+  const geoStarRingTorus = new THREE.TorusGeometry(1.82, 0.19, 8, 22);
+  const geoStarPoint = new THREE.OctahedronGeometry(0.24, 0);
 
-  // Garuda Tunnel Geometries (shared)
-  const geoSkullCrown = new THREE.ConeGeometry(3.8, 5.2, 5);
-  const geoSkullJaw = new RoundedBoxGeometry(W + 3.2, 3.4, 4.4, 2, 0.4);
-  const geoSkullBeak = new THREE.ConeGeometry(2.2, 5.4, 4);
-  const geoSkullHorn = new THREE.ConeGeometry(0.95, 5.2, 6);
-  const geoSkullEye = new THREE.SphereGeometry(0.95, 10, 8);
-  const geoSkullGear = new THREE.CylinderGeometry(1.85, 1.85, 0.6, 10); geoSkullGear.rotateZ(Math.PI / 2);
-  const geoRibArch = new THREE.TorusGeometry(W * 0.5 + 1.6, 0.72, 8, 24, Math.PI);
+  // Clean Blue-White Portal Tunnel Geometries (tanpa tengkorak)
+  const geoRibArch = new THREE.TorusGeometry(W * 0.5 + 1.6, 0.68, 8, 22, Math.PI);
+  const geoPortalPier = new RoundedBoxGeometry(1.2, 8.2, 1.2, 1, 0.14);
 
   // Instanced Geometries
   const geoInstTruss = new THREE.CylinderGeometry(0.66, 0.90, 1.0, 8);
-  const geoInstPost = new RoundedBoxGeometry(0.32, 0.95, 3.4, 2, 0.06);
+  const geoInstPost = new RoundedBoxGeometry(0.32, 0.95, 3.4, 1, 0.06);
   const geoInstChevron = new THREE.BoxGeometry(1.4, 1.4, 0.24);
   const geoInstIsland = new THREE.CylinderGeometry(5.5, 8.2, 2.6, 10);
   const geoInstIslandTop = new THREE.CylinderGeometry(5.2, 5.8, 0.7, 10);
@@ -755,8 +776,15 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
   const MAX_CHEVS = POOL_SIZE * 8;
   const MAX_ISLANDS = POOL_SIZE * 2;
   const MAX_PALMS = POOL_SIZE * 6;
+  const MAX_DASHES = POOL_SIZE * 5;
+
+  const oceanMesh = new THREE.Mesh(geoOcean, matOcean);
+  oceanMesh.position.set(0, SKYWAY_FLOOR_Y, -120);
+  oceanMesh.receiveShadow = true;
+  scene.add(oceanMesh);
 
   const instTrusses = new THREE.InstancedMesh(geoInstTruss, matTrussSteel, MAX_TRUSS);
+  instTrusses.visible = false;
   const instPostsBlue = new THREE.InstancedMesh(geoInstPost, matPostBlue, MAX_POSTS);
   const instPostsOrange = new THREE.InstancedMesh(geoInstPost, matPostOrange, MAX_POSTS);
   const instChevrons = new THREE.InstancedMesh(geoInstChevron, matChevronSign, MAX_CHEVS);
@@ -764,10 +792,11 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
   const instIslandTops = new THREE.InstancedMesh(geoInstIslandTop, matIslandLush, MAX_ISLANDS);
   const instPalmTrunks = new THREE.InstancedMesh(geoInstPalmTrunk, matPalmTrunk, MAX_PALMS);
   const instPalmCrowns = new THREE.InstancedMesh(geoInstPalmCrown, matPalmCrown, MAX_PALMS);
+  const instDashes = new THREE.InstancedMesh(geoDash, matBankYellow, MAX_DASHES);
 
   const allInstanced = [
     instTrusses, instPostsBlue, instPostsOrange, instChevrons,
-    instIslandBases, instIslandTops, instPalmTrunks, instPalmCrowns,
+    instIslandBases, instIslandTops, instPalmTrunks, instPalmCrowns, instDashes,
   ];
   for (const im of allInstanced) {
     im.frustumCulled = false;
@@ -961,44 +990,18 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     mesh.geometry.computeVertexNormals();
   }
 
-  function buildGarudaSkullPortal() {
+  function buildCleanTunnelPortal() {
     const g = new THREE.Group();
-    const pillarL = new THREE.Mesh(geoSkullJaw, matGarudaGold);
-    pillarL.scale.set(0.24, 2.4, 1.0);
-    pillarL.position.set(-(W * 0.5 + 1.8), 4.0, 0);
-    const pillarR = pillarL.clone();
-    pillarR.position.x = (W * 0.5 + 1.8);
-    g.add(pillarL, pillarR);
-
-    const brow = new THREE.Mesh(geoSkullJaw, matGarudaGold);
-    brow.position.set(0, 8.2, 0);
-    g.add(brow);
-
-    const crest = new THREE.Mesh(geoSkullCrown, matGarudaGold);
-    crest.position.set(0, 11.4, -0.2);
-    g.add(crest);
-
-    const beak = new THREE.Mesh(geoSkullBeak, matGarudaBronze);
-    beak.rotation.x = Math.PI * 0.85;
-    beak.position.set(0, 6.2, 2.2);
-    g.add(beak);
-
-    for (const s of [-1, 1]) {
-      const horn = new THREE.Mesh(geoSkullHorn, matGarudaGold);
-      horn.position.set(s * 6.4, 10.6, -0.5);
-      horn.rotation.z = -s * 0.52;
-      horn.rotation.x = -0.2;
-      const eye = new THREE.Mesh(geoSkullEye, matGarudaEye);
-      eye.position.set(s * 4.2, 7.8, 2.1);
-      const gear = new THREE.Mesh(geoSkullGear, matGarudaBronze);
-      gear.position.set(s * (W * 0.5 + 2.4), 5.6, 0);
-      g.add(horn, eye, gear);
-    }
-
     for (let r = 0; r < 3; r++) {
-      const rib = new THREE.Mesh(geoRibArch, r % 2 === 0 ? matGarudaGold : matGarudaBronze);
-      rib.position.set(0, 0.2, -5.0 - r * 6.0);
+      const z = -r * 6.5;
+      const rib = new THREE.Mesh(geoRibArch, r % 2 === 0 ? matArchBlue : matTunnelWhite);
+      rib.position.set(0, 0.2, z);
       g.add(rib);
+      for (const sx of [-1, 1]) {
+        const pier = new THREE.Mesh(geoPortalPier, matArchBlue);
+        pier.position.set(sx * (W * 0.5 + 1.6), 4.0, z);
+        g.add(pier);
+      }
     }
     return g;
   }
@@ -1017,31 +1020,65 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     const bannerBack = new THREE.Mesh(geoArchBanner, bannerMat);
     bannerBack.position.set(0, 13.8, -0.85);
     bannerBack.rotation.y = Math.PI;
-    const fL = new THREE.Mesh(geoFlameJet, matFlameTorch);
-    fL.position.set(-span * 0.5, 15.6, 0);
-    const fR = new THREE.Mesh(geoFlameJet, matFlameTorch);
-    fR.position.set(span * 0.5, 15.6, 0);
     const stripe = new THREE.Mesh(geoCheckStripe, matCheckered);
     stripe.position.set(0, 0.05, 0);
-    g.add(pL, pR, beam, banner, bannerBack, fL, fR, stripe);
-    g.userData.flames = [fL, fR];
+    g.add(pL, pR, beam, banner, bannerBack, stripe);
     return g;
+  }
+
+  function buildCoinMesh() {
+    return new THREE.Mesh(geoCoinMerged, matCoinMerged);
+  }
+
+  function buildGemMesh() {
+    const g = new THREE.Group();
+    const star = new THREE.Mesh(geoGemStar, matGemShared);
+    const halo = new THREE.Mesh(geoGemRing, matGemHalo);
+    halo.rotation.x = Math.PI / 2;
+    g.add(star, halo);
+    return g;
+  }
+
+  function buildStarRingMesh() {
+    const g = new THREE.Group();
+    const torus = new THREE.Mesh(geoStarRingTorus, matStarRing);
+    g.add(torus);
+    for (let f = 0; f < 5; f++) {
+      const a = (f / 5) * Math.PI * 2 + Math.PI / 2;
+      const star = new THREE.Mesh(geoStarPoint, matStarRing);
+      star.position.set(Math.cos(a) * 2.08, Math.sin(a) * 2.08, 0);
+      g.add(star);
+    }
+    return g;
+  }
+
+  function ensureCollectibleMesh(item, kind, fruitType) {
+    if (kind === 'coin' && !item.coinMesh) {
+      item.coinMesh = buildCoinMesh();
+      item.obj.add(item.coinMesh);
+    } else if (kind === 'gem' && !item.gemMesh) {
+      item.gemMesh = buildGemMesh();
+      item.obj.add(item.gemMesh);
+    } else if (kind === 'ring' && !item.starRingMesh) {
+      item.starRingMesh = buildStarRingMesh();
+      item.obj.add(item.starRingMesh);
+    } else if (kind === 'fruit' && !item.fruitVariants[fruitType]) {
+      const fm = buildToyFruit(fruitType);
+      fm.scale.setScalar(1.12);
+      item.obj.add(fm);
+      item.fruitVariants[fruitType] = fm;
+    }
   }
 
   function buildSegment() {
     const group = new THREE.Group();
     scene.add(group);
 
-    const ocean = new THREE.Mesh(geoOcean, matOcean);
-    ocean.position.y = SKYWAY_FLOOR_Y;
-    ocean.receiveShadow = true;
-    group.add(ocean);
-
-    const road = cacheBaseX(new THREE.Mesh(makeRoadGeo(W), matSkyOrange));
+    const road = cacheBaseX(new THREE.Mesh(makeRoadGeo(W, roadRows), matSkyOrange));
     road.receiveShadow = true;
     group.add(road);
 
-    const rampApproach = cacheBaseX(new THREE.Mesh(makeGapRoadGeo(L / 2, RAMP_GAP_START, W, 8), matSkyOrange));
+    const rampApproach = cacheBaseX(new THREE.Mesh(makeGapRoadGeo(L / 2, RAMP_GAP_START, W, 6), matSkyOrange));
     rampApproach.receiveShadow = true; rampApproach.visible = false;
     const rampExit = cacheBaseX(new THREE.Mesh(makeGapRoadGeo(RAMP_GAP_END, -L / 2, W, 2), matSkyOrange));
     rampExit.receiveShadow = true; rampExit.visible = false;
@@ -1089,12 +1126,12 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
 
     // Fork Group
     const forkGroup = new THREE.Group();
-    const forkLeftRoad = new THREE.Mesh(makeBeveledRibbonGeo(RIBBON_STEPS), matSkyOrange);
-    const forkRightRoad = new THREE.Mesh(makeBeveledRibbonGeo(RIBBON_STEPS), matBankYellow);
-    const forkLeftRailL = new THREE.Mesh(makeRibbonGeo(RIBBON_STEPS), matRailBlue);
-    const forkLeftRailR = new THREE.Mesh(makeRibbonGeo(RIBBON_STEPS), matRailBlue);
-    const forkRightRailL = new THREE.Mesh(makeRibbonGeo(RIBBON_STEPS), matRailOrange);
-    const forkRightRailR = new THREE.Mesh(makeRibbonGeo(RIBBON_STEPS), matRailOrange);
+    const forkLeftRoad = new THREE.Mesh(makeBeveledRibbonGeo(ribbonSteps), matSkyOrange);
+    const forkRightRoad = new THREE.Mesh(makeBeveledRibbonGeo(ribbonSteps), matBankYellow);
+    const forkLeftRailL = new THREE.Mesh(makeRibbonGeo(ribbonSteps), matRailBlue);
+    const forkLeftRailR = new THREE.Mesh(makeRibbonGeo(ribbonSteps), matRailBlue);
+    const forkRightRailL = new THREE.Mesh(makeRibbonGeo(ribbonSteps), matRailOrange);
+    const forkRightRailR = new THREE.Mesh(makeRibbonGeo(ribbonSteps), matRailOrange);
     forkGroup.add(forkLeftRoad, forkRightRoad, forkLeftRailL, forkLeftRailR, forkRightRailL, forkRightRailR);
     forkGroup.visible = false;
     group.add(forkGroup);
@@ -1104,9 +1141,9 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     const loopDeck = new THREE.Mesh(makeBeveledRibbonGeo(LOOP_STEPS), matSkyOrange);
     const loopRailL = new THREE.Mesh(makeRibbonGeo(LOOP_STEPS), matRailBlue);
     const loopRailR = new THREE.Mesh(makeRibbonGeo(LOOP_STEPS), matRailBlue);
-    const loopBypassRoad = new THREE.Mesh(makeBeveledRibbonGeo(RIBBON_STEPS), matBankYellow);
-    const loopBypassRailL = new THREE.Mesh(makeRibbonGeo(RIBBON_STEPS), matRailOrange);
-    const loopBypassRailR = new THREE.Mesh(makeRibbonGeo(RIBBON_STEPS), matRailOrange);
+    const loopBypassRoad = new THREE.Mesh(makeBeveledRibbonGeo(ribbonSteps), matBankYellow);
+    const loopBypassRailL = new THREE.Mesh(makeRibbonGeo(ribbonSteps), matRailOrange);
+    const loopBypassRailR = new THREE.Mesh(makeRibbonGeo(ribbonSteps), matRailOrange);
     loopGroup.add(loopDeck, loopRailL, loopRailR, loopBypassRoad, loopBypassRailL, loopBypassRailR);
     loopGroup.visible = false;
     group.add(loopGroup);
@@ -1126,8 +1163,8 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     overpassGroup.visible = false;
     group.add(overpassGroup);
 
-    // Golden Garuda Tunnel + 3 Rolling Red Energy Orbs
-    const skullGroup = buildGarudaSkullPortal();
+    // Clean Portal Tunnel + 3 Rolling Red Energy Orbs
+    const skullGroup = buildCleanTunnelPortal();
     skullGroup.visible = false;
     group.add(skullGroup);
 
@@ -1169,70 +1206,19 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     connector.visible = false;
     group.add(connector);
 
-    // Center dashes
-    const dashes = [];
-    for (let k = 0; k < 5; k++) {
-      const d = new THREE.Mesh(geoDash, matBankYellow);
-      group.add(d);
-      dashes.push(d);
-    }
-
-    // Smashable toy barrels
+    // Smashable toy barrels (merged body+band = 1 draw call per barrel)
     const smashProps = [];
     for (let k = 0; k < 3; k++) {
-      const bg = new THREE.Group();
-      const body = new THREE.Mesh(geoBarrelBody, k % 2 === 0 ? matPropBarrelRed : matPropBarrelYellow);
-      body.position.y = 0.62;
-      const band = new THREE.Mesh(geoBarrelBand, matRailBlue);
-      band.position.y = 0.62;
-      bg.add(body, band);
+      const bg = new THREE.Mesh(k % 2 === 0 ? geoBarrelRed : geoBarrelYellow, matPropBarrelMerged);
       bg.visible = false;
       group.add(bg);
       smashProps.push({ mesh: bg, active: false, hit: false, lx: 0, lz: 0, baseY: 0, vx: 0, vy: 0, vz: 0, rvx: 0, rvz: 0 });
     }
 
-    // Collectibles
+    // Lazy Collectibles Pool
     const collectibles = [];
-    for (let k = 0; k < MAX_COLLECTIBLES; k++) {
+    for (let k = 0; k < MAX_COLLECTIBLES_HD; k++) {
       const obj = new THREE.Group();
-      const coinMesh = new THREE.Group();
-      const cBody = new THREE.Mesh(geoCoinBody, matCoinGold);
-      const cRim = new THREE.Mesh(geoCoinRim, matCoinRim);
-      coinMesh.add(cBody, cRim);
-      obj.add(coinMesh);
-
-      const gemMesh = new THREE.Group();
-      const gemMat = new THREE.MeshPhysicalMaterial({ color: '#ff2a4b', emissive: '#ffbe0b', emissiveIntensity: 0.45, roughness: 0.14, metalness: 0.25, clearcoat: 1.0 });
-      const star = new THREE.Mesh(geoGemStar, gemMat);
-      const halo = new THREE.Mesh(geoGemRing, matGemHalo);
-      halo.rotation.x = Math.PI / 2;
-      gemMesh.add(star, halo);
-      gemMesh.userData.gemMat = gemMat;
-      gemMesh.visible = false;
-      obj.add(gemMesh);
-
-      const fruitVariants = {};
-      for (const ft of FRUIT_TYPES) {
-        const fm = buildToyFruit(ft);
-        fm.scale.setScalar(1.12);
-        fm.visible = false;
-        obj.add(fm);
-        fruitVariants[ft] = fm;
-      }
-
-      const fireRingMesh = new THREE.Group();
-      const torus = new THREE.Mesh(geoFireRingTorus, matFireRing);
-      fireRingMesh.add(torus);
-      for (let f = 0; f < 6; f++) {
-        const a = (f / 6) * Math.PI * 2;
-        const fl = new THREE.Mesh(geoFireFlame, matFireFlame);
-        fl.position.set(Math.cos(a) * 1.98, Math.sin(a) * 1.98, 0);
-        fl.rotation.z = a - Math.PI * 0.5;
-        fireRingMesh.add(fl);
-      }
-      fireRingMesh.visible = false;
-      obj.add(fireRingMesh);
-
       const groundRing = new THREE.Mesh(geoGlowRing, ringMats.gem);
       groundRing.rotation.x = -Math.PI / 2;
       groundRing.visible = false;
@@ -1241,20 +1227,20 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
       obj.visible = false;
       group.add(obj);
       collectibles.push({
-        obj, coinMesh, gemMesh, fruitMesh: fruitVariants.orange, fruitVariants, fireRingMesh, groundRing,
+        obj, coinMesh: null, gemMesh: null, fruitVariants: {}, starRingMesh: null, groundRing,
         active: false, collected: false, kind: 'coin', fruitType: 'orange',
         lx: 0, lz: 0, baseY: 0, phase: k * 0.9,
       });
     }
 
     return {
-      index: null, kind: 'plain', group, ocean, road,
+      index: null, kind: 'plain', group, road,
       rampRoads: [{ mesh: rampApproach, z0: L / 2, z1: RAMP_GAP_START }, { mesh: rampExit, z0: RAMP_GAP_END, z1: -L / 2 }],
       rampSafeRoad, rampCaps, rampGroup, boostGroup, boosterWheels,
       forkGroup, forkLeftRoad, forkRightRoad, forkLeftRailL, forkLeftRailR, forkRightRailL, forkRightRailR,
       loopGroup, loopDeck, loopRailL, loopRailR, loopBypassRoad, loopBypassRailL, loopBypassRailR,
       overpassGroup, skullGroup, orbs, warnGroup: { mesh: warnGroup, active: false, baseY: 0, phase: 0 },
-      startArch, finishArch, connector, dashes, smashProps, collectibles,
+      startArch, finishArch, connector, smashProps, collectibles,
     };
   }
 
@@ -1310,7 +1296,7 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     posRL.needsUpdate = true; seg.loopRailL.geometry.computeVertexNormals();
     posRR.needsUpdate = true; seg.loopRailR.geometry.computeVertexNormals();
 
-    displaceBeveledRibbon(seg.loopBypassRoad, RIBBON_STEPS, (t) => {
+    displaceBeveledRibbon(seg.loopBypassRoad, ribbonSteps, (t) => {
       const lz = L / 2 - t * L;
       const wz = centerZ + lz;
       const cx = getTrackCenterX(wz);
@@ -1320,7 +1306,7 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
       const rx = BYPASS_CENTER_X + BYPASS_HALF_W;
       return { lx: cx + lx, rx: cx + rx, yL: h + lx * bank, yR: h + rx * bank, z: lz };
     });
-    displaceRibbon(seg.loopBypassRailL, RIBBON_STEPS, (t) => {
+    displaceRibbon(seg.loopBypassRailL, ribbonSteps, (t) => {
       const lz = L / 2 - t * L;
       const wz = centerZ + lz;
       const cx = getTrackCenterX(wz);
@@ -1328,7 +1314,7 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
       const y = getTrackHeight(wz) + (BYPASS_CENTER_X - BYPASS_HALF_W) * bank;
       return { lx: cx + BYPASS_CENTER_X - BYPASS_HALF_W - 0.14, rx: cx + BYPASS_CENTER_X - BYPASS_HALF_W + 0.12, y: y + 0.42, z: lz };
     });
-    displaceRibbon(seg.loopBypassRailR, RIBBON_STEPS, (t) => {
+    displaceRibbon(seg.loopBypassRailR, ribbonSteps, (t) => {
       const lz = L / 2 - t * L;
       const wz = centerZ + lz;
       const cx = getTrackCenterX(wz);
@@ -1347,29 +1333,39 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     }
     if (i <= 0) return;
 
+    const maxCol = isEco ? MAX_COLLECTIBLES_ECO : MAX_COLLECTIBLES_HD;
     const kind = seg.kind;
     let cursor = 0;
+
+    const showOnlyKind = (item, activeKind, activeFruit) => {
+      if (item.coinMesh) item.coinMesh.visible = activeKind === 'coin';
+      if (item.gemMesh) item.gemMesh.visible = activeKind === 'gem';
+      if (item.starRingMesh) item.starRingMesh.visible = activeKind === 'ring';
+      for (const ft of Object.keys(item.fruitVariants)) {
+        item.fruitVariants[ft].visible = (activeKind === 'fruit' && ft === activeFruit);
+      }
+    };
 
     if (kind === 'loop') {
       const zStart = centerZ + L * 0.5;
       const zEnd = centerZ - L * 0.5;
       const y0 = getTrackHeight(zStart);
       const y1 = getTrackHeight(zEnd);
-      for (let k = 0; k < 5 && cursor < MAX_COLLECTIBLES; k++) {
+      const nLoop = isEco ? 4 : 5;
+      for (let k = 0; k < nLoop && cursor < maxCol; k++) {
         const u = 0.18 + k * 0.16;
         evalLoopPose(zStart, zEnd, y0, y1, u, 0, _tmpL, null, null);
         const item = seg.collectibles[cursor++];
+        const itemKind = k === 2 ? 'gem' : 'coin';
+        ensureCollectibleMesh(item, itemKind, item.fruitType);
         item.active = true;
-        item.kind = k === 2 ? 'gem' : 'coin';
+        item.kind = itemKind;
         item.lx = _tmpL.x;
         item.lz = _tmpL.z - centerZ;
         item.baseY = _tmpL.y + 0.9;
         item.obj.position.set(item.lx, item.baseY, item.lz);
         item.obj.visible = true;
-        item.coinMesh.visible = item.kind === 'coin';
-        item.gemMesh.visible = item.kind === 'gem';
-        item.fireRingMesh.visible = false;
-        for (const ft of FRUIT_TYPES) item.fruitVariants[ft].visible = false;
+        showOnlyKind(item, itemKind, item.fruitType);
       }
       return;
     }
@@ -1377,6 +1373,7 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     if (kind === 'ramp') {
       const rampSide = getRampSide(i);
       const item = seg.collectibles[cursor++];
+      ensureCollectibleMesh(item, 'ring', item.fruitType);
       const wz = centerZ - 4.0;
       const wx = getTrackCenterX(wz) + rampSide * RAMP_OFFSET;
       item.active = true;
@@ -1385,36 +1382,31 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
       item.baseY = getTrackHeight(wz) + 3.6;
       item.obj.position.set(wx, item.baseY, item.lz);
       item.obj.visible = true;
-      item.coinMesh.visible = false;
-      item.gemMesh.visible = false;
-      item.fireRingMesh.visible = true;
-      for (const ft of FRUIT_TYPES) item.fruitVariants[ft].visible = false;
+      showOnlyKind(item, 'ring', item.fruitType);
       return;
     }
 
     const lane = ((i % 3) - 1) * 4.4;
-    const count = 4;
-    for (let k = 0; k < count && cursor < MAX_COLLECTIBLES; k++) {
-      const lz = 7.5 - k * 4.6;
+    const count = isEco ? 3 : 4;
+    for (let k = 0; k < count && cursor < maxCol; k++) {
+      const lz = 7.5 - k * (isEco ? 6.5 : 4.6);
       const wz = centerZ + lz;
       const cx = getTrackCenterX(wz);
       const item = seg.collectibles[cursor++];
       item.active = true;
-      const isFruit = (k === 2);
-      const isGem = (k === 3 && i % 3 === 0);
+      const isFruit = (k === 1 || k === 2) && (k === 2 || !isEco);
+      const isGem = !isFruit && (k === count - 1 && i % 3 === 0);
       item.kind = isGem ? 'gem' : isFruit ? 'fruit' : 'coin';
       const ft = FRUIT_TYPES[(i + k) % FRUIT_TYPES.length];
       item.fruitType = ft;
+      ensureCollectibleMesh(item, item.kind, ft);
       item.lx = cx + lane;
       item.lz = lz;
       item.baseY = getTrackHeight(wz) + lane * getTrackBank(wz) + (isFruit ? 1.15 : 0.95);
       item.obj.position.set(item.lx, item.baseY, lz);
       item.obj.visible = true;
-      item.coinMesh.visible = item.kind === 'coin';
-      item.gemMesh.visible = item.kind === 'gem';
-      item.fireRingMesh.visible = false;
-      for (const key of FRUIT_TYPES) item.fruitVariants[key].visible = (item.kind === 'fruit' && key === ft);
-      if (item.kind === 'fruit' || item.kind === 'gem') {
+      showOnlyKind(item, item.kind, ft);
+      if (!isEco && (item.kind === 'fruit' || item.kind === 'gem')) {
         item.groundRing.material = ringMats[item.kind === 'gem' ? 'gem' : ft];
         item.groundRing.position.set(item.lx, getTrackHeight(wz) + lane * getTrackBank(wz) + 0.08, lz);
         item.groundRing.visible = true;
@@ -1425,37 +1417,21 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
   let instDirty = true;
 
   function rebuildInstancedGeometry() {
-    let cTruss = 0, cPostB = 0, cPostO = 0, cChev = 0, cIsl = 0, cPalm = 0;
+    let cPostB = 0, cPostO = 0, cChev = 0, cIsl = 0, cPalm = 0, cDash = 0;
+    const postStepCount = isEco ? 3 : 6;
+    const postStepZ = L / postStepCount;
+    const postScaleZ = isEco ? 2.0 : 1.0;
+
     for (const seg of pool) {
       if (seg.index === null) continue;
       const i = seg.index;
       const centerZ = -(i + 0.5) * L;
       const kind = seg.kind;
 
-      // 1) Blue Truss Support Pillars strictly beneath U-channel underside (pillarTopY = trackBottomY - 0.1) at outer edges (±hw * 0.85)
+      // 1) Guardrail Beams (alternating electric-blue & bright orange along sides)
       if (kind !== 'fork' && kind !== 'loop') {
-        const [, , lvl] = getSegmentElevationSpan(i);
-        if (lvl !== 'lower' || kind === 'ascent' || kind === 'descent') {
-          for (const side of [-1, 1]) {
-            if (cTruss >= MAX_TRUSS) break;
-            const wz = centerZ;
-            const off = side * (getHalfWidthAt(i, 0.5) * 0.85);
-            const trackBottomY = getTrackHeight(wz) + off * getTrackBank(wz) - DECK_THICK;
-            const pillarTopY = trackBottomY - 0.1;
-            const h = Math.max(1.0, pillarTopY - SKYWAY_FLOOR_Y);
-            _dummy.position.set(getTrackCenterX(wz) + off, SKYWAY_FLOOR_Y + h * 0.5, wz);
-            _dummy.rotation.set(0, 0, 0);
-            _dummy.scale.set(1, h, 1);
-            _dummy.updateMatrix();
-            instTrusses.setMatrixAt(cTruss++, _dummy.matrix);
-          }
-        }
-      }
-
-      // 2) Guardrail Beams (alternating electric-blue & bright orange along sides)
-      if (kind !== 'fork' && kind !== 'loop') {
-        for (let k = 0; k < 6; k++) {
-          const lz = L * 0.5 - 2.0 - k * 4.0;
+        for (let k = 0; k < postStepCount; k++) {
+          const lz = L * 0.5 - postStepZ * 0.5 - k * postStepZ;
           const wz = centerZ + lz;
           const t = Math.min(1, Math.max(0, (L * 0.5 - lz) / L));
           const hw = getHalfWidthAt(i, t);
@@ -1471,7 +1447,7 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
             _dummy.position.set(cx + lx, h + lx * bank + 0.45, wz);
             _dummy.rotation.order = 'YXZ';
             _dummy.rotation.set(Math.atan(-slope), yaw, bank);
-            _dummy.scale.set(1, 1, 1);
+            _dummy.scale.set(1, 1, postScaleZ);
             _dummy.updateMatrix();
             if ((k + (side > 0 ? 1 : 0)) % 2 === 0) {
               if (cPostB < MAX_POSTS) instPostsBlue.setMatrixAt(cPostB++, _dummy.matrix);
@@ -1482,13 +1458,14 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
         }
       }
 
-      // 3) Reflective Chevron Arrow Signs on Banked Turns & Curves
+      // 2) Reflective Chevron Arrow Signs on Banked Turns & Curves
       if (kind === 'banked' || Math.abs(getTrackBank(centerZ)) > 0.025) {
         const turnDir = getTrackSlopeX(centerZ);
         const outerSide = turnDir >= 0 ? -1 : 1;
-        for (let k = 0; k < 4; k++) {
+        const chevCount = isEco ? 2 : 4;
+        for (let k = 0; k < chevCount; k++) {
           if (cChev >= MAX_CHEVS) break;
-          const lz = L * 0.4 - k * 6.0;
+          const lz = L * 0.38 - k * (isEco ? 12.0 : 6.0);
           const wz = centerZ + lz;
           const t = Math.min(1, Math.max(0, (L * 0.5 - lz) / L));
           const hw = getHalfWidthAt(i, t);
@@ -1501,46 +1478,63 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
         }
       }
 
-      // 4) Colorful Tropical Islands & Palm Trees in the Turquoise Ocean
-      for (const side of [-1, 1]) {
-        if (hash(i * 19 + side * 7) < 0.35) continue;
-        if (cIsl >= MAX_ISLANDS) break;
-        const ix = getTrackCenterX(centerZ) + side * (29 + hash(i * 23 + side) * 26);
-        const iz = centerZ + (hash(i * 31 + side) - 0.5) * 14;
-        const sc = 0.85 + hash(i * 41 + side) * 0.85;
-        _dummy.position.set(ix, SKYWAY_FLOOR_Y + 0.9, iz);
-        _dummy.rotation.set(0, hash(i * 13 + side) * Math.PI, 0);
-        _dummy.scale.set(sc, sc, sc);
-        _dummy.updateMatrix();
-        instIslandBases.setMatrixAt(cIsl, _dummy.matrix);
-        _dummy.position.set(ix, SKYWAY_FLOOR_Y + 2.2 * sc, iz);
-        _dummy.updateMatrix();
-        instIslandTops.setMatrixAt(cIsl, _dummy.matrix);
-        cIsl++;
+      // 3) Tropical Islands & Palm Trees in the Turquoise Ocean (dibatasi di ECO mode)
+      if (!isEco || i % 2 === 0) {
+        for (const side of [-1, 1]) {
+          if (isEco && side === (i % 4 === 0 ? 1 : -1)) continue;
+          if (hash(i * 19 + side * 7) < 0.35) continue;
+          if (cIsl >= MAX_ISLANDS) break;
+          const ix = getTrackCenterX(centerZ) + side * (29 + hash(i * 23 + side) * 26);
+          const iz = centerZ + (hash(i * 31 + side) - 0.5) * 14;
+          const sc = 0.85 + hash(i * 41 + side) * 0.85;
+          _dummy.position.set(ix, SKYWAY_FLOOR_Y + 0.9, iz);
+          _dummy.rotation.set(0, hash(i * 13 + side) * Math.PI, 0);
+          _dummy.scale.set(sc, sc, sc);
+          _dummy.updateMatrix();
+          instIslandBases.setMatrixAt(cIsl, _dummy.matrix);
+          _dummy.position.set(ix, SKYWAY_FLOOR_Y + 2.2 * sc, iz);
+          _dummy.updateMatrix();
+          instIslandTops.setMatrixAt(cIsl, _dummy.matrix);
+          cIsl++;
 
-        // 2–3 Palm trees on the island
-        const pCount = 2 + (Math.abs(i) % 2);
-        for (let p = 0; p < pCount && cPalm < MAX_PALMS; p++) {
-          const px = ix + (hash(i * 53 + p * 7 + side) - 0.5) * 5.2 * sc;
-          const pz = iz + (hash(i * 61 + p * 11 + side) - 0.5) * 5.2 * sc;
-          const py = SKYWAY_FLOOR_Y + 2.5 * sc;
-          const pSc = 0.78 + hash(i * 71 + p) * 0.45;
-          _dummy.position.set(px, py + 2.4 * pSc, pz);
-          _dummy.rotation.set(0.08 * (p - 1), hash(p * 17 + i) * 3, 0.1 * (side));
-          _dummy.scale.set(pSc, pSc, pSc);
+          const pCount = isEco ? 1 : (2 + (Math.abs(i) % 2));
+          for (let p = 0; p < pCount && cPalm < MAX_PALMS; p++) {
+            const px = ix + (hash(i * 53 + p * 7 + side) - 0.5) * 5.2 * sc;
+            const pz = iz + (hash(i * 61 + p * 11 + side) - 0.5) * 5.2 * sc;
+            const py = SKYWAY_FLOOR_Y + 2.5 * sc;
+            const pSc = 0.78 + hash(i * 71 + p) * 0.45;
+            _dummy.position.set(px, py + 2.4 * pSc, pz);
+            _dummy.rotation.set(0.08 * (p - 1), hash(p * 17 + i) * 3, 0.1 * side);
+            _dummy.scale.set(pSc, pSc, pSc);
+            _dummy.updateMatrix();
+            instPalmTrunks.setMatrixAt(cPalm, _dummy.matrix);
+            _dummy.position.set(px, py + 5.1 * pSc, pz);
+            _dummy.rotation.set(0, hash(p * 29 + i) * 3, 0);
+            _dummy.scale.set(pSc, pSc, pSc);
+            _dummy.updateMatrix();
+            instPalmCrowns.setMatrixAt(cPalm, _dummy.matrix);
+            cPalm++;
+          }
+        }
+      }
+      // 4) Center Dashes (instanced across pool)
+      if (kind !== 'fork' && kind !== 'loop') {
+        for (let k = 0; k < 5; k++) {
+          const lz = -L * 0.4 + k * 4.8;
+          if (kind === 'ramp' && lz <= RAMP_GAP_START && lz >= RAMP_GAP_END) continue;
+          if (cDash >= MAX_DASHES) break;
+          const wz = centerZ + lz;
+          _dummy.position.set(getTrackCenterX(wz), getTrackHeight(wz) + 0.03, wz);
+          _dummy.rotation.order = 'YXZ';
+          _dummy.rotation.set(Math.atan(-getTrackSlope(wz)), getTrackYaw(wz), getTrackBank(wz));
+          _dummy.scale.set(1, 1, 1);
           _dummy.updateMatrix();
-          instPalmTrunks.setMatrixAt(cPalm, _dummy.matrix);
-          _dummy.position.set(px, py + 5.1 * pSc, pz);
-          _dummy.rotation.set(0, hash(p * 29 + i) * 3, 0);
-          _dummy.scale.set(pSc, pSc, pSc);
-          _dummy.updateMatrix();
-          instPalmCrowns.setMatrixAt(cPalm, _dummy.matrix);
-          cPalm++;
+          instDashes.setMatrixAt(cDash++, _dummy.matrix);
         }
       }
     }
 
-    instTrusses.count = cTruss; instTrusses.instanceMatrix.needsUpdate = true;
+    instTrusses.count = 0;
     instPostsBlue.count = cPostB; instPostsBlue.instanceMatrix.needsUpdate = true;
     instPostsOrange.count = cPostO; instPostsOrange.instanceMatrix.needsUpdate = true;
     instChevrons.count = cChev; instChevrons.instanceMatrix.needsUpdate = true;
@@ -1548,6 +1542,7 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     instIslandTops.count = cIsl; instIslandTops.instanceMatrix.needsUpdate = true;
     instPalmTrunks.count = cPalm; instPalmTrunks.instanceMatrix.needsUpdate = true;
     instPalmCrowns.count = cPalm; instPalmCrowns.instanceMatrix.needsUpdate = true;
+    instDashes.count = cDash; instDashes.instanceMatrix.needsUpdate = true;
     instDirty = false;
   }
 
@@ -1603,27 +1598,27 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     // Fork
     seg.forkGroup.visible = kind === 'fork';
     if (seg.forkGroup.visible) {
-      displaceBeveledRibbon(seg.forkLeftRoad, RIBBON_STEPS, (t) => {
+      displaceBeveledRibbon(seg.forkLeftRoad, ribbonSteps, (t) => {
         const lz = L / 2 - t * L; const wz = centerZ + lz; const cx = getTrackCenterX(wz); const fp = getForkProfile(t);
         return { lx: cx + fp.cxL - fp.hwL, rx: cx + fp.cxL + fp.hwL, y: getTrackHeight(wz) + fp.yOffL, z: lz };
       });
-      displaceBeveledRibbon(seg.forkRightRoad, RIBBON_STEPS, (t) => {
+      displaceBeveledRibbon(seg.forkRightRoad, ribbonSteps, (t) => {
         const lz = L / 2 - t * L; const wz = centerZ + lz; const cx = getTrackCenterX(wz); const fp = getForkProfile(t);
         return { lx: cx + fp.cxR - fp.hwR, rx: cx + fp.cxR + fp.hwR, y: getTrackHeight(wz) + fp.yOffR, z: lz };
       });
-      displaceRibbon(seg.forkLeftRailL, RIBBON_STEPS, (t) => {
+      displaceRibbon(seg.forkLeftRailL, ribbonSteps, (t) => {
         const lz = L / 2 - t * L; const wz = centerZ + lz; const cx = getTrackCenterX(wz); const fp = getForkProfile(t);
         return { lx: cx + fp.cxL - fp.hwL - 0.14, rx: cx + fp.cxL - fp.hwL + 0.12, y: getTrackHeight(wz) + fp.yOffL + 0.42, z: lz };
       });
-      displaceRibbon(seg.forkLeftRailR, RIBBON_STEPS, (t) => {
+      displaceRibbon(seg.forkLeftRailR, ribbonSteps, (t) => {
         const lz = L / 2 - t * L; const wz = centerZ + lz; const cx = getTrackCenterX(wz); const fp = getForkProfile(t);
         return { lx: cx + fp.cxL + fp.hwL - 0.12, rx: cx + fp.cxL + fp.hwL + 0.14, y: getTrackHeight(wz) + fp.yOffL + 0.42, z: lz };
       });
-      displaceRibbon(seg.forkRightRailL, RIBBON_STEPS, (t) => {
+      displaceRibbon(seg.forkRightRailL, ribbonSteps, (t) => {
         const lz = L / 2 - t * L; const wz = centerZ + lz; const cx = getTrackCenterX(wz); const fp = getForkProfile(t);
         return { lx: cx + fp.cxR - fp.hwR - 0.14, rx: cx + fp.cxR - fp.hwR + 0.12, y: getTrackHeight(wz) + fp.yOffR + 0.42, z: lz };
       });
-      displaceRibbon(seg.forkRightRailR, RIBBON_STEPS, (t) => {
+      displaceRibbon(seg.forkRightRailR, ribbonSteps, (t) => {
         const lz = L / 2 - t * L; const wz = centerZ + lz; const cx = getTrackCenterX(wz); const fp = getForkProfile(t);
         return { lx: cx + fp.cxR + fp.hwR - 0.12, rx: cx + fp.cxR + fp.hwR + 0.14, y: getTrackHeight(wz) + fp.yOffR + 0.42, z: lz };
       });
@@ -1692,7 +1687,7 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
     }
 
     // Connector blue clip cleanly wrapping U-channel underside & outer edges
-    seg.connector.visible = isPlainDeck && i % 2 === 0;
+    seg.connector.visible = isPlainDeck && i % (isEco ? 4 : 2) === 0;
     if (seg.connector.visible) {
       const wz = centerZ - L * 0.5;
       const hwEnd = getHalfWidthAt(i, 1);
@@ -1701,20 +1696,8 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
       seg.connector.scale.set((hwEnd * 2 + 1.5) / (W + 1.5), 1, 1);
     }
 
-    // Center dashes
-    seg.dashes.forEach((d, k) => {
-      const lz = -L * 0.4 + k * 4.8;
-      d.visible = isPlainDeck || (isRamp && (lz > RAMP_GAP_START || lz < RAMP_GAP_END));
-      if (d.visible) {
-        const wz = centerZ + lz;
-        d.position.set(getTrackCenterX(wz), getTrackHeight(wz) + 0.03, lz);
-        d.rotation.order = 'YXZ';
-        d.rotation.set(Math.atan(-getTrackSlope(wz)), getTrackYaw(wz), getTrackBank(wz));
-      }
-    });
-
     // Smashable barrels
-    const showProps = (kind === 'plain' || kind === 'underpass') && i >= 4 && (i % 3 === 0);
+    const showProps = (kind === 'plain' || kind === 'underpass') && i >= 4 && (i % (isEco ? 6 : 3) === 0);
     const propLane = ((i % 2 === 0) ? -1 : 1) * 4.2;
     seg.smashProps.forEach((p, idx) => {
       p.hit = false;
@@ -1740,50 +1723,81 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
   for (let s = 0; s < POOL_SIZE; s++) pool.push(buildSegment());
 
   let prevT = null;
+  let lastCur = -999999;
+
+  function setQuality(high) {
+    const nextEco = !high;
+    if (nextEco === isEco) return;
+    isEco = nextEco;
+    ribbonSteps = isEco ? RIBBON_STEPS_ECO : RIBBON_STEPS_HD;
+    roadRows = isEco ? 6 : 14;
+    for (const seg of pool) {
+      const replaceGeo = (mesh, newGeo, storeBase = false) => {
+        mesh.geometry.dispose();
+        mesh.geometry = newGeo;
+        if (storeBase) cacheBaseX(mesh);
+      };
+      replaceGeo(seg.road, makeRoadGeo(W, roadRows), true);
+      replaceGeo(seg.forkLeftRoad, makeBeveledRibbonGeo(ribbonSteps));
+      replaceGeo(seg.forkRightRoad, makeBeveledRibbonGeo(ribbonSteps));
+      replaceGeo(seg.forkLeftRailL, makeRibbonGeo(ribbonSteps));
+      replaceGeo(seg.forkLeftRailR, makeRibbonGeo(ribbonSteps));
+      replaceGeo(seg.forkRightRailL, makeRibbonGeo(ribbonSteps));
+      replaceGeo(seg.forkRightRailR, makeRibbonGeo(ribbonSteps));
+      replaceGeo(seg.loopBypassRoad, makeBeveledRibbonGeo(ribbonSteps));
+      replaceGeo(seg.loopBypassRailL, makeRibbonGeo(ribbonSteps));
+      replaceGeo(seg.loopBypassRailR, makeRibbonGeo(ribbonSteps));
+      if (seg.index !== null) assign(seg, seg.index);
+    }
+    rebuildInstancedGeometry();
+  }
+
   function updateTrack(playerZ, t = 0) {
     const dt = prevT === null ? 0.016 : Math.min(0.05, Math.max(0, t - prevT));
     prevT = t;
 
     const cur = Math.floor(-playerZ / L);
-    const min = cur - TRACK.segmentsBehind;
-    const max = cur + TRACK.segmentsAhead;
-    const needed = new Set();
-    for (let i = min; i <= max; i++) needed.add(i);
-
-    for (const seg of pool) {
-      if (seg.index !== null && !needed.has(seg.index)) {
-        seg.index = null;
-        instDirty = true;
+    if (cur !== lastCur) {
+      lastCur = cur;
+      const min = cur - TRACK.segmentsBehind;
+      const max = cur + TRACK.segmentsAhead;
+      for (const seg of pool) {
+        if (seg.index !== null && (seg.index < min || seg.index > max)) {
+          seg.index = null;
+          instDirty = true;
+        }
       }
-    }
-    const present = new Set(pool.filter((s) => s.index !== null).map((s) => s.index));
-    for (const i of needed) {
-      if (present.has(i)) continue;
-      const free = pool.find((s) => s.index === null);
-      if (free) { assign(free, i); present.add(i); }
+      for (let i = min; i <= max; i++) {
+        let already = false;
+        for (const seg of pool) { if (seg.index === i) { already = true; break; } }
+        if (already) continue;
+        const free = pool.find((s) => s.index === null);
+        if (free) assign(free, i);
+      }
+      if (instDirty) rebuildInstancedGeometry();
     }
 
-    if (instDirty) rebuildInstancedGeometry();
+    oceanMesh.position.set(getTrackCenterX(playerZ), SKYWAY_FLOOR_Y, playerZ - 110);
 
-    // Animate orbs, booster wheels, flames, collectibles, and smashed barrels
+    const gemHue = (t * 0.55) % 1;
+    matGemShared.color.setHSL(gemHue, 0.92, 0.62);
+    matGemShared.emissive.setHSL(gemHue, 0.95, 0.52);
+
+    const maxSegVis = cur + (isEco ? 6 : 9);
+    const maxColVis = cur + (isEco ? 4 : 6);
+
+    // Animate orbs, booster wheels, collectibles, and smashed barrels
     for (const seg of pool) {
-      if (seg.index === null) continue;
+      if (seg.index === null) { seg.group.visible = false; continue; }
+      const segVis = seg.index >= cur - 1 && seg.index <= maxSegVis;
+      seg.group.visible = segVis;
+      if (!segVis) continue;
+
       const centerZ = seg.group.position.z;
+      const colVis = seg.index <= maxColVis;
 
       if (seg.boostGroup.visible) {
         for (const w of seg.boosterWheels) w.rotation.x = -t * 22;
-      }
-      if (seg.startArch.visible && seg.startArch.userData.flames) {
-        for (let f = 0; f < seg.startArch.userData.flames.length; f++) {
-          const fl = seg.startArch.userData.flames[f];
-          fl.scale.set(1, 0.88 + 0.32 * Math.sin(t * 14 + f), 1);
-        }
-      }
-      if (seg.finishArch.visible && seg.finishArch.userData.flames) {
-        for (let f = 0; f < seg.finishArch.userData.flames.length; f++) {
-          const fl = seg.finishArch.userData.flames[f];
-          fl.scale.set(1, 0.88 + 0.32 * Math.sin(t * 14 + f), 1);
-        }
       }
       if (seg.warnGroup.active) {
         seg.warnGroup.mesh.position.y = seg.warnGroup.baseY + Math.sin(t * 5.2 + seg.warnGroup.phase) * 0.18;
@@ -1804,7 +1818,12 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
       }
 
       for (const p of seg.smashProps) {
-        if (!p.active || !p.hit || !p.mesh.visible) continue;
+        if (!p.active) continue;
+        if (!p.hit) {
+          p.mesh.visible = colVis;
+          continue;
+        }
+        if (!p.mesh.visible) continue;
         p.mesh.position.x += p.vx * dt;
         p.mesh.position.y += p.vy * dt;
         p.mesh.position.z += p.vz * dt;
@@ -1815,20 +1834,24 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
       }
 
       for (const item of seg.collectibles) {
-        if (!item.active || item.collected) continue;
+        if (!item.active || item.collected) {
+          item.obj.visible = false;
+          item.groundRing.visible = false;
+          continue;
+        }
+        item.obj.visible = colVis;
+        item.groundRing.visible = colVis && !isEco && (item.kind === 'fruit' || item.kind === 'gem');
+        if (!colVis) continue;
         item.obj.position.y = item.baseY + Math.sin(t * 3.6 + item.phase) * 0.18;
-        if (item.kind === 'coin') {
+        if (item.kind === 'coin' && item.coinMesh) {
           item.coinMesh.rotation.y = t * 3.4 + item.phase;
-        } else if (item.kind === 'gem') {
+        } else if (item.kind === 'gem' && item.gemMesh) {
           item.gemMesh.rotation.y = t * 2.8 + item.phase;
-          const gm = item.gemMesh.userData.gemMat;
-          const hue = (t * 0.55 + item.phase * 0.15) % 1;
-          gm.color.setHSL(hue, 0.92, 0.62);
-          gm.emissive.setHSL(hue, 0.95, 0.52);
-        } else if (item.kind === 'ring') {
-          item.fireRingMesh.rotation.z = t * 3.2 + item.phase;
-        } else {
-          item.fruitMesh.rotation.y = t * 2.4 + item.phase;
+        } else if (item.kind === 'ring' && item.starRingMesh) {
+          item.starRingMesh.rotation.z = t * 3.2 + item.phase;
+        } else if (item.kind === 'fruit') {
+          const fm = item.fruitVariants[item.fruitType];
+          if (fm) fm.rotation.y = t * 2.4 + item.phase;
         }
       }
     }
@@ -1927,7 +1950,7 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
         if (item.active) {
           item.collected = false;
           item.obj.visible = true;
-          item.groundRing.visible = item.kind === 'fruit' || item.kind === 'gem';
+          item.groundRing.visible = !isEco && (item.kind === 'fruit' || item.kind === 'gem');
         }
       }
       for (const p of seg.smashProps) {
@@ -1967,37 +1990,36 @@ export function createFantasyTrack(scene, { maxAnisotropy = 8 } = {}) {
       seg.forkRightRailL.geometry.dispose(); seg.forkRightRailR.geometry.dispose();
       seg.loopDeck.geometry.dispose(); seg.loopRailL.geometry.dispose(); seg.loopRailR.geometry.dispose();
       seg.loopBypassRoad.geometry.dispose(); seg.loopBypassRailL.geometry.dispose(); seg.loopBypassRailR.geometry.dispose();
-      for (const item of seg.collectibles) item.gemMesh.userData.gemMat.dispose();
     }
+    scene.remove(oceanMesh);
     for (const im of allInstanced) { scene.remove(im); im.dispose(); }
     [
       geoOcean, geoDash, geoConnectorBar, geoRamp, geoRampLip, geoBoostPad, geoGreenChev,
       geoBoosterHousing, geoBoosterWheel, geoOrb, geoOrbRing, geoWarnPost, geoWarnBoard,
-      geoBarrelBody, geoBarrelBand, geoArchPillar, geoArchBeam, geoArchBanner, geoFlameJet, geoCheckStripe,
-      geoOverpassDeck, geoOverpassRail, geoOverpassPier, geoCoinBody, geoCoinRim, geoGemStar, geoGemRing,
-      geoGlowRing, geoFireRingTorus, geoFireFlame, geoSkullCrown, geoSkullJaw, geoSkullBeak,
-      geoSkullHorn, geoSkullEye, geoSkullGear, geoRibArch, geoInstTruss, geoInstPost,
+      geoBarrelBody, geoBarrelBand, geoBarrelRed, geoBarrelYellow, geoArchPillar, geoArchBeam, geoArchBanner, geoCheckStripe,
+      geoOverpassDeck, geoOverpassRail, geoOverpassPier, geoCoinBody, geoCoinRim, geoCoinMerged, geoGemStar, geoGemRing,
+      geoGlowRing, geoStarRingTorus, geoStarPoint, geoRibArch, geoPortalPier, geoInstTruss, geoInstPost,
       geoInstChevron, geoInstIsland, geoInstIslandTop, geoInstPalmTrunk, geoInstPalmCrown,
     ].forEach((g) => g.dispose());
     [
       matSkyOrange, matBankYellow, matBoostBlue, matDeckSide, matRailBlue, matRailOrange, matConnectorBlue,
       matOcean, matGreenBoost, matBoosterWheel, matRamp, matHazardStripe, matStartBanner, matFinishBanner,
-      matCheckered, matArchBlue, matArchRed, matArchOrange, matFlameTorch, matGarudaGold, matGarudaBronze,
-      matGarudaEye, matEnergyOrb, matEnergyRing, matWarnSign, matCoinGold, matCoinRim, matGemHalo,
-      matFireRing, matFireFlame, matTrussSteel, matChevronSign, matIslandSand, matIslandLush,
-      matPalmTrunk, matPalmCrown, matPostBlue, matPostOrange, matPropBarrelRed, matPropBarrelYellow,
+      matCheckered, matArchBlue, matArchRed, matArchOrange, matTunnelWhite,
+      matEnergyOrb, matEnergyRing, matWarnSign, matCoinGold, matCoinRim, matCoinMerged, matGemShared, matGemHalo,
+      matStarRing, matTrussSteel, matChevronSign, matIslandSand, matIslandLush,
+      matPalmTrunk, matPalmCrown, matPostBlue, matPostOrange, matPropBarrelMerged,
       ...Object.values(ringMats),
     ].forEach((m) => m.dispose());
     [
-      texOrange, texYellow, texBlue, texOcean, texStartBanner, texFinishBanner,
+      matSkyOrange.map, texYellow, texBlue, texOcean, texStartBanner, texFinishBanner,
       texChevronSign, texWarn, texCheckered, texRampChev, texGlowRing, texHazard,
-    ].forEach((t) => t.dispose());
+    ].forEach((t) => t?.dispose());
     pool.length = 0;
   }
 
   return {
     updateTrack, collectNearby, checkPropSmash, checkHazardCollision, getUpcomingHazards,
-    getCollectibleTargets, resetCollectibles, dispose,
+    getCollectibleTargets, resetCollectibles, setQuality, dispose,
     getTrackHeight, getTrackSlope, getTrackCenterX, getTrackYaw, getTrackBank, getRampSide,
     getTrackSurfaceAt, evalLoopPose, checkRampCollision, checkBoostCollision, getSegmentType,
     get segmentCount() { return pool.length; },

@@ -67,9 +67,9 @@ export const LIGHTING = Object.freeze({
 
 /* ---------- Kamera chase 45° halus dengan damping eksponensial ---------- */
 export const CAMERA = Object.freeze({
-  fov: 55, maxFov: 67, near: 0.1, far: 560,
+  fov: 55, maxFov: 61, near: 0.1, far: 560,
   height: 6.4, distance: 6.6,
-  lookAhead: 10.5, lookHeight: 1.25,
+  lookAhead: 18, lookHeight: 1.25,
   posLerp: 6.2, aimLerp: 8.4,
   skywayHeight: 7.0, skywayDistance: 7.4,
   skywayPosLerp: 5.2, skywayAimLerp: 7.2, skywayShakeMul: 0.35,
@@ -90,14 +90,23 @@ export const PHYSICS = Object.freeze({
 });
 
 /* ---------- Trek streaming undulasi (dipakai trackGenerator) ---------- */
+export const TRACK_PROFILE = Object.freeze({
+  maxSlope: 0.12,
+  flatZoneMaxSlope: 0.03,
+  salatigaHillOffset: 2.5,
+  salatigaBridgeHeight: 0.5,
+  salatigaBridgeSpan: 27,
+  skywayWaveAmp: 0.2,
+});
+
 export const TRACK = Object.freeze({
   width: 16, lanes: 3,
   segmentLength: 24, segmentsAhead: 10, segmentsBehind: 2,
-  hill: { amp1: 3.1, freq1: 0.020, amp2: 1.5, freq2: 0.048 },
+  hill: { amp1: 1.8, freq1: 0.0085, amp2: 0.65, freq2: 0.017 },
   curve: { amp: 3.8, freq: 0.0135, startZ: 96, rampZ: 168, bankGain: 0.055 },
   rampEvery: 5, boostEvery: 7, bridgeEvery: 9,
   loopRadius: 7.8, loopWidth: 6.2, narrowWidth: 7.8, forkWidthL: 6.8, forkWidthR: 8.6,
-  landmarkEvery: 2, landmarkOffset: 26.5, archEvery: 8, lapDistance: 1500,
+  landmarkEvery: 8, landmarkOffset: 30, archEvery: 8, lapDistance: 1500,
 });
 
 /* ---------- Lalu lintas Nusantara (dipakai trafficManager) ---------- */
@@ -120,8 +129,8 @@ export const SCORE = Object.freeze({
 
 /* ---------- Pipeline aset dual-mode ---------- */
 export const ASSETS = Object.freeze({
-  basePath: './public/assets/',
-  dracoPath: 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/gltf/',
+  basePath: `${import.meta.env?.BASE_URL || '/'}assets/`,
+  dracoPath: 'https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/libs/draco/gltf/',
 });
 
 /* ---------- ARMADA: 4 kendaraan ikonik Nusantara ----------

@@ -33,6 +33,8 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
   let airborne = false;
   let latVel = 0;
   let rollAngle = 0;
+  let rollDecayTimer = 0;
+  let rollDecayStart = 0;
   let rolling = false;
   let turboTimer = 0;
   let suspOffset = 0, suspVel = 0;
@@ -163,7 +165,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
     lastLoopLap = -1;
     speed = PHYSICS.baseSpeed;
     vy = 0; airborne = false; latVel = 0;
-    rollAngle = 0; rolling = false; turboTimer = 0;
+    rollAngle = 0; rollDecayTimer = 0; rollDecayStart = 0; rolling = false; turboTimer = 0;
     suspOffset = 0; suspVel = 0; pitch = 0; crashCooldown = 0;
     loopState = null; lastLoopSeg = -1;
     falling = false; fallTimer = 0;
@@ -185,6 +187,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
     airborne = false;
     loopState = null;
     turboTimer = 0;
+    rollAngle = 0; rollDecayTimer = 0; rollDecayStart = 0;
     rolling = false;
     clearPuffs();
     vy = Math.min(-2.5, vy);
@@ -464,7 +467,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
       if (ramp && effSpeed > P.ramp.minSpeed) {
         airborne = true;
         vy = ramp.launchVy + effSpeed * 0.12;
-        rollAngle = 0; rolling = false;
+        rollAngle = 0; rollDecayTimer = 0; rollDecayStart = 0; rolling = false;
         audio?.playTeloletHorn?.();
         callbacks.onLaunch?.();
       }
@@ -474,7 +477,12 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
         stuntBonus += SCORE.boostPadBonus;
         callbacks.onBoost?.('pad');
       }
-      rollAngle += (0 - rollAngle) * (1 - Math.exp(-12 * dt));
+      if (rollDecayTimer > 0) {
+        rollDecayTimer = Math.max(0, rollDecayTimer - dt);
+        rollAngle = rollDecayStart * (rollDecayTimer / 0.25);
+      } else {
+        rollAngle = 0;
+      }
     } else {
       if (steer !== 0) {
         if (!rolling) { rolling = true; callbacks.onRollStart?.(); }
@@ -506,10 +514,15 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
           if (P.barrelRoll.landingBoost) turboTimer = P.turbo.duration;
           audio?.playTeloletFlourish?.();
           callbacks.onLand?.(rolls, bonus);
+          rollAngle = 0; rollDecayTimer = 0; rollDecayStart = 0;
         } else {
           callbacks.onLand?.(0, 0);
+          const rem = ((rollAngle + Math.PI) % TWO_PI + TWO_PI) % TWO_PI - Math.PI;
+          rollAngle = rem;
+          rollDecayStart = rem;
+          rollDecayTimer = Math.abs(rem) > 0.001 ? 0.25 : 0;
         }
-        rollAngle = 0; rolling = false;
+        rolling = false;
         suspVel = -7 - Math.min(4, Math.abs(vy) * 0.1);
       }
     }
@@ -600,8 +613,10 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
       camAnchor.x += (pos.x - camAnchor.x) * camAlphaX;
       camAnchor.y += (pos.y - camAnchor.y) * camAlphaY;
       camAnchor.z = pos.z;
+      sCoord = -pos.z;
+      latX = pos.x - getTrackCenterX(pos.z);
       return {
-        pos, camAnchor, s: -pos.z, speed, airborne: true, stuntBonus: 0,
+        pos, camAnchor, s: sCoord, latX, speed, airborne: true, stuntBonus: 0,
         turbo: false, inBoost: false, rollAngle: 0, totalStunt,
         inLoop: false, loopCenterZ: 0, falling: false, respawning: true, rightVec,
       };
@@ -629,8 +644,10 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
       camAnchor.x += (pos.x - camAnchor.x) * fallK;
       camAnchor.y += (pos.y - camAnchor.y) * fallK;
       camAnchor.z = pos.z;
+      sCoord = -pos.z;
+      latX = pos.x - getTrackCenterX(pos.z);
       return {
-        pos, camAnchor, s: -pos.z, speed, airborne: true, stuntBonus: 0,
+        pos, camAnchor, s: sCoord, latX, speed, airborne: true, stuntBonus: 0,
         turbo: false, inBoost: false, rollAngle, totalStunt,
         inLoop: false, loopCenterZ: 0, falling: true, respawning: false, rightVec,
       };
@@ -679,10 +696,14 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
       camAnchor.y += (pos.y - camAnchor.y) * lpAlpha;
       camAnchor.z = pos.z;
 
+      sCoord = -pos.z;
+      latX = pos.x - getTrackCenterX(pos.z);
       const loopCenterZ = (loopState.zStart + loopState.zEnd) * 0.5;
       if (loopState.u >= 1) {
         lastLoopSeg = loopState.segIndex;
         pos.set(getTrackCenterX(loopState.zEnd) + LOOP_CENTER_X + loopState.latX, H(loopState.zEnd), loopState.zEnd - 0.06);
+        sCoord = -pos.z;
+        latX = pos.x - getTrackCenterX(pos.z);
         rightVec.set(1, 0, 0);
         loopState = null;
         turboTimer = Math.max(turboTimer, 1.5);
@@ -691,14 +712,14 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
         audio?.playLoopWhoosh?.();
         callbacks.onLoopComplete?.();
         return {
-          pos, camAnchor, s: -pos.z, speed: loopSpeed, airborne: false, stuntBonus,
+          pos, camAnchor, s: sCoord, latX, speed: loopSpeed, airborne: false, stuntBonus,
           turbo: true, inBoost: true, rollAngle: 0, totalStunt,
           inLoop: false, loopCenterZ, falling: false, respawning: false, rightVec,
         };
       }
 
       return {
-        pos, camAnchor, s: -pos.z, speed: loopSpeed, airborne: false, stuntBonus,
+        pos, camAnchor, s: sCoord, latX, speed: loopSpeed, airborne: false, stuntBonus,
         turbo: true, inBoost: true, rollAngle: 0, totalStunt,
         inLoop: true, loopCenterZ, falling: false, respawning: false, rightVec,
       };
@@ -736,8 +757,10 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
         group.quaternion.copy(_loopQuat);
         updateFlames(dt, true);
       }
+      sCoord = -pos.z;
+      latX = pos.x - cxNow;
       return {
-        pos, speed: effSpeed, s: -pos.z, airborne: false, stuntBonus: 0,
+        pos, camAnchor, speed: effSpeed, s: sCoord, latX, airborne: false, stuntBonus: 0,
         turbo: true, inBoost: true, rollAngle: 0, totalStunt,
         inLoop: true, loopCenterZ: (zStart + zEnd) * 0.5, falling: false, respawning: false, rightVec,
       };
@@ -754,8 +777,10 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
 
       if (!surf.onTrack) {
         triggerAbyssFall(surf.type);
+        sCoord = -pos.z;
+        latX = pos.x - cxNow;
         return {
-          pos, camAnchor, s: -pos.z, speed: effSpeed, airborne: true, stuntBonus: 0,
+          pos, camAnchor, s: sCoord, latX, speed: effSpeed, airborne: true, stuntBonus: 0,
           turbo: false, inBoost: false, rollAngle, totalStunt,
           inLoop: false, loopCenterZ: 0, falling: true, respawning: false, rightVec,
         };
@@ -768,7 +793,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
       if (ramp && effSpeed > P.ramp.minSpeed) {
         airborne = true;
         vy = ramp.launchVy + effSpeed * 0.12;
-        rollAngle = 0; rolling = false;
+        rollAngle = 0; rollDecayTimer = 0; rollDecayStart = 0; rolling = false;
         audio?.playTeloletHorn?.();
         callbacks.onLaunch?.();
       }
@@ -779,7 +804,12 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
         stuntBonus += SCORE.boostPadBonus;
         callbacks.onBoost?.('pad');
       }
-      rollAngle += (0 - rollAngle) * (1 - Math.exp(-12 * dt));
+      if (rollDecayTimer > 0) {
+        rollDecayTimer = Math.max(0, rollDecayTimer - dt);
+        rollAngle = rollDecayStart * (rollDecayTimer / 0.25);
+      } else {
+        rollAngle = 0;
+      }
     } else {
       /* Di udara: Kiri/Kanan = Barrel Roll 360° liar */
       if (steer !== 0) {
@@ -796,8 +826,10 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
       if (pos.y <= surf.groundY && vy < 0) {
         if (!surf.onTrack) {
           triggerAbyssFall(surf.type);
+          sCoord = -pos.z;
+          latX = pos.x - cxNow;
           return {
-            pos, camAnchor, s: -pos.z, speed: effSpeed, airborne: true, stuntBonus: 0,
+            pos, camAnchor, s: sCoord, latX, speed: effSpeed, airborne: true, stuntBonus: 0,
             turbo: false, inBoost: false, rollAngle, totalStunt,
             inLoop: false, loopCenterZ: 0, falling: true, respawning: false, rightVec,
           };
@@ -813,10 +845,15 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
           if (P.barrelRoll.landingBoost) turboTimer = P.turbo.duration;
           audio?.playTeloletFlourish?.();
           callbacks.onLand?.(rolls, bonus);
+          rollAngle = 0; rollDecayTimer = 0; rollDecayStart = 0;
         } else {
           callbacks.onLand?.(0, 0);
+          const rem = ((rollAngle + Math.PI) % TWO_PI + TWO_PI) % TWO_PI - Math.PI;
+          rollAngle = rem;
+          rollDecayStart = rem;
+          rollDecayTimer = Math.abs(rem) > 0.001 ? 0.25 : 0;
         }
-        rollAngle = 0; rolling = false;
+        rolling = false;
         suspVel = -7 - Math.min(4, Math.abs(vy) * 0.1);
       }
     }
@@ -855,8 +892,10 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
     camAnchor.y += ((pos.y + suspOffset * 0.25) - camAnchor.y) * anchorKY;
     camAnchor.z = pos.z;
 
+    sCoord = -pos.z;
+    latX = pos.x - cxNow;
     return {
-      pos, camAnchor, s: -pos.z, speed: effSpeed, airborne, stuntBonus,
+      pos, camAnchor, s: sCoord, latX, speed: effSpeed, airborne, stuntBonus,
       turbo: turboActive,
       inBoost: turboActive || (airborne && Math.abs(rollAngle) > 0.25),
       rollAngle, totalStunt,

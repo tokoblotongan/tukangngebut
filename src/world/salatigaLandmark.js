@@ -81,16 +81,18 @@ export async function createLandmarkManager(scene) {
   }
 
   const slots = []; // { key, index, side, type, group }
+  const MONAS_STRAIGHT_IDX = 2; // akhir lurusan awal dengan ruang bebas >= 12 m dari landmark berikutnya (i=8)
+  const SIDE_TYPES = LANDMARK_TYPES.filter((t) => t !== 'monas');
+  let lastCur = -999999;
 
-  function landmarkSpec(i, side) {
+  function landmarkSpec(i, side, forceType = null) {
     const n = Math.floor(i / EVERY);
-    const offsetIdx = side < 0 ? n : (n + 1 + (n % 2));
-    const type = LANDMARK_TYPES[offsetIdx % LANDMARK_TYPES.length];
+    const pool = SIDE_TYPES.length ? SIDE_TYPES : LANDMARK_TYPES;
+    const type = forceType || pool[n % pool.length];
     const def = LANDMARKS[type];
-    const zOffset = side < 0 ? 0 : (L * 0.28);
-    const z = -(i + 0.5) * L - zOffset;
+    const z = -(i + 0.5) * L;
     const scaledDepth = def.targetSize.z * LANDMARK_SCALE;
-    const x = side * (23.4 + scaledDepth * 0.5);
+    const x = side * Math.max(TRACK.landmarkOffset || 30, 30 + scaledDepth * 0.5);
     return { key: `${i}:${side}`, index: i, side, type, z, x, def };
   }
 
@@ -118,14 +120,19 @@ export async function createLandmarkManager(scene) {
 
   function update(playerZ) {
     const cur = Math.floor(-playerZ / L);
+    if (cur === lastCur) return;
+    lastCur = cur;
     const min = cur - TRACK.segmentsBehind;
     const max = cur + TRACK.segmentsAhead;
 
     const needed = [];
     for (let i = Math.max(2, min); i <= max; i++) {
-      if (i % EVERY === 0) {
-        needed.push(landmarkSpec(i, -1));
-        needed.push(landmarkSpec(i, 1));
+      if (i === MONAS_STRAIGHT_IDX) {
+        needed.push(landmarkSpec(i, 1, 'monas'));
+      } else if (i % EVERY === 0) {
+        const n = Math.floor(i / EVERY);
+        const side = (n % 2 === 0) ? -1 : 1;
+        needed.push(landmarkSpec(i, side));
       }
     }
     const neededKeys = new Set(needed.map((s) => s.key));

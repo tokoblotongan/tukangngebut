@@ -64,15 +64,19 @@ export function getTrackPreviewPoints(zFrom, zTo, steps = 28, out = []) {
   if (currentMod.isSplineCircuit && currentMod.getCircuitPreviewPoints) {
     return currentMod.getCircuitPreviewPoints(out);
   }
-  out.length = 0;
+  const needed = steps + 1;
+  out.length = needed;
   for (let s = 0; s <= steps; s++) {
     const t = s / steps;
     const z = zFrom + (zTo - zFrom) * t;
-    out.push({
-      x: currentMod.getTrackCenterX(z),
-      y: currentMod.getTrackHeight(z),
-      z,
-    });
+    let slot = out[s];
+    if (!slot) {
+      slot = { x: 0, y: 0, z: 0 };
+      out[s] = slot;
+    }
+    slot.x = currentMod.getTrackCenterX(z);
+    slot.y = currentMod.getTrackHeight(z);
+    slot.z = z;
   }
   return out;
 }

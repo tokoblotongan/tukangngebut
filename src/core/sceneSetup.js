@@ -6,7 +6,29 @@
    ===================================================================== */
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RENDERER, LIGHTING, CAMERA, PHYSICS, PALETTE } from '../config/gameConfig.js';
+
+function bakeColoredPart(srcGeo, hexColor, tx = 0, ty = 0, tz = 0, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) {
+  const g = srcGeo.index ? srcGeo.toNonIndexed() : srcGeo.clone();
+  if (rx || ry || rz) {
+    const m = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rx, ry, rz));
+    g.applyMatrix4(m);
+  }
+  if (sx !== 1 || sy !== 1 || sz !== 1) g.scale(sx, sy, sz);
+  if (tx || ty || tz) g.translate(tx, ty, tz);
+  const posAttr = g.getAttribute('position');
+  const col = new THREE.Color(hexColor);
+  const cols = new Float32Array(posAttr.count * 3);
+  for (let i = 0; i < posAttr.count; i++) {
+    cols[i * 3] = col.r;
+    cols[i * 3 + 1] = col.g;
+    cols[i * 3 + 2] = col.b;
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  if (!g.getAttribute('normal')) g.computeVertexNormals();
+  return g;
+}
 
 export function createSceneContext(canvas) {
   /* ---------------- Renderer (Strict Visual Lock + Software-GL guard) ---------------- */
@@ -18,12 +40,19 @@ export function createSceneContext(canvas) {
   const gpuStr = String(gl?.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER) || '');
   const isSoftwareGl = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpuStr);
 
+  const isCoarsePointer = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
+  const lowCoreCount = typeof navigator !== 'undefined' && typeof navigator.hardwareConcurrency === 'number' && navigator.hardwareConcurrency > 0 && navigator.hardwareConcurrency <= 4;
+  const motionQuery = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
+  let highQuality = !isSoftwareGl && !(isCoarsePointer || lowCoreCount);
+  let basePixelRatio = highQuality ? Math.min(window.devicePixelRatio || 1, RENDERER.maxPixelRatio) : 1;
+  let activePixelRatio = basePixelRatio;
+
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.08;
+  renderer.toneMappingExposure = RENDERER.exposure;
   renderer.shadowMap.enabled = !isSoftwareGl;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, RENDERER.maxPixelRatio));
+  renderer.setPixelRatio(isSoftwareGl ? 1 : activePixelRatio);
   const maxAnisotropy = Math.max(1, renderer.capabilities.getMaxAnisotropy());
 
   function applyCanvasTextureFiltering(tex) {
@@ -57,8 +86,8 @@ export function createSceneContext(canvas) {
 
   /* ---------------- Scene + fog atmosfer (linear di cakrawala jauh) ---------------- */
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xbfe9ff);
-  scene.fog = new THREE.Fog(0xbfe9ff, 140, 460);
+  scene.background = new THREE.Color(LIGHTING.fog.color);
+  scene.fog = new THREE.Fog(LIGHTING.fog.color, LIGHTING.fog.near, LIGHTING.fog.far);
 
   /* Studio environment map halus agar emas koin, buah glossy & plastik mainan berkilau */
   const pmrem = new THREE.PMREMGenerator(renderer);
@@ -72,13 +101,14 @@ export function createSceneContext(canvas) {
   camera.up.set(0, 1, 0); // horizon-lock: up tidak pernah berubah
 
   /* ---------------- Tiga titik cahaya daylight lembut ---------------- */
-  const hemi = new THREE.HemisphereLight(0x8be0ff, 0xffe6c7, 0.95);
+  const hemi = new THREE.HemisphereLight(LIGHTING.hemi.sky, LIGHTING.hemi.ground, LIGHTING.hemi.intensity);
   scene.add(hemi);
 
   const keyDir = new THREE.Vector3(LIGHTING.key.dir.x, LIGHTING.key.dir.y, LIGHTING.key.dir.z).normalize();
   const key = new THREE.DirectionalLight(LIGHTING.key.color, LIGHTING.key.intensity);
   key.castShadow = !isSoftwareGl;
-  key.shadow.mapSize.set(RENDERER.shadowMapSize, RENDERER.shadowMapSize);
+  const initShadowSize = highQuality ? RENDERER.shadowMapSize : 1024;
+  key.shadow.mapSize.set(initShadowSize, initShadowSize);
   key.shadow.radius = 3.5;
   key.shadow.bias = RENDERER.shadowBias;
   key.shadow.normalBias = RENDERER.shadowNormalBias;
@@ -109,17 +139,18 @@ export function createSceneContext(canvas) {
     currentAtmosphere = arenaId === 'mandalika' ? 'mandalika' : isFantasy ? 'skyway' : 'salatiga';
     skyMat.map = isFantasy ? skyTexSkyway : skyTexSalatiga;
     skyMat.needsUpdate = true;
-    scene.background.setHex(0xbfe9ff);
-    scene.fog.color.setHex(0xbfe9ff);
-    scene.fog.near = 140;
-    scene.fog.far = 460;
-    hemi.color.setHex(0x8be0ff);
-    hemi.groundColor.setHex(0xffe6c7);
-    hemi.intensity = 0.95;
-    key.color.set(isFantasy ? '#fff6e0' : '#ffefd0');
-    key.intensity = isFantasy ? 1.78 : 1.72;
-    rim.color.setHex(0xd8f3ff);
-    rim.intensity = isFantasy ? 0.76 : 0.70;
+    renderer.toneMappingExposure = RENDERER.exposure;
+    scene.background.set(LIGHTING.fog.color);
+    scene.fog.color.set(LIGHTING.fog.color);
+    scene.fog.near = LIGHTING.fog.near;
+    scene.fog.far = LIGHTING.fog.far;
+    hemi.color.set(LIGHTING.hemi.sky);
+    hemi.groundColor.set(LIGHTING.hemi.ground);
+    hemi.intensity = LIGHTING.hemi.intensity;
+    key.color.set(LIGHTING.key.color);
+    key.intensity = LIGHTING.key.intensity;
+    rim.color.set(LIGHTING.rim.color);
+    rim.intensity = LIGHTING.rim.intensity;
   }
 
   /* Matahari: inti + halo aditif, searah key light */
@@ -137,28 +168,35 @@ export function createSceneContext(canvas) {
   sunCore.renderOrder = -9; sunHalo.renderOrder = -9;
   scene.add(sunCore, sunHalo);
 
-  /* ---------------- Awan mainan lembut (drift + wrap) ---------------- */
-  const puffGeo = new THREE.SphereGeometry(1, 14, 10);
+  /* ---------------- Awan mainan lembut (merged 1 mesh/awan, drift + wrap) ---------------- */
+  const puffBaseGeo = new THREE.SphereGeometry(1, 12, 9);
   const cloudMat = new THREE.MeshStandardMaterial({ color: '#fff8f0', roughness: 0.85, metalness: 0 });
   const clouds = [];
+  const cloudGeos = [];
   for (let i = 0; i < LIGHTING.clouds.count; i++) {
-    const g = new THREE.Group();
     const puffs = 3 + (i % 3);
+    const parts = [];
     for (let p = 0; p < puffs; p++) {
-      const m = new THREE.Mesh(puffGeo, cloudMat);
-      m.position.set((p - puffs / 2) * 1.15, Math.sin(p * 2.1) * 0.35, Math.cos(p * 1.7) * 0.5);
-      m.scale.set(1.3 + (p % 2) * 0.6, 0.85 + (p % 3) * 0.2, 1.1);
-      g.add(m);
+      const part = puffBaseGeo.clone();
+      part.scale(1.3 + (p % 2) * 0.6, 0.85 + (p % 3) * 0.2, 1.1);
+      part.translate((p - puffs / 2) * 1.15, Math.sin(p * 2.1) * 0.35, Math.cos(p * 1.7) * 0.5);
+      parts.push(part);
     }
+    const mergedCloudGeo = mergeGeometries(parts, false);
+    parts.forEach((pt) => pt.dispose());
+    cloudGeos.push(mergedCloudGeo);
+    const cMesh = new THREE.Mesh(mergedCloudGeo, cloudMat);
     const ang = (i / LIGHTING.clouds.count) * Math.PI * 2;
     const rad = 60 + (i % 4) * 26;
-    g.position.set(Math.cos(ang) * rad, 26 + (i % 5) * 5, Math.sin(ang) * rad);
-    g.scale.setScalar(3.6 + (i % 3) * 1.8);
-    g.userData.drift = LIGHTING.clouds.driftSpeed * (0.7 + (i % 4) * 0.18);
-    scene.add(g); clouds.push(g);
+    cMesh.position.set(Math.cos(ang) * rad, 26 + (i % 5) * 5, Math.sin(ang) * rad);
+    cMesh.scale.setScalar(3.6 + (i % 3) * 1.8);
+    cMesh.userData.drift = LIGHTING.clouds.driftSpeed * (0.7 + (i % 4) * 0.18);
+    scene.add(cMesh);
+    clouds.push(cMesh);
   }
+  puffBaseGeo.dispose();
 
-  /* ---------------- Balon udara warna-warni mainan di langit ---------------- */
+  /* ---------------- Balon udara warna-warni mainan di langit (3 draw call/balon) ---------------- */
   const balloonProfile = [
     new THREE.Vector2(0.01, 2.3),
     new THREE.Vector2(0.85, 2.15),
@@ -168,11 +206,23 @@ export function createSceneContext(canvas) {
     new THREE.Vector2(0.58, -0.55),
     new THREE.Vector2(0.45, -0.75),
   ];
-  const balloonEnvGeo = new THREE.LatheGeometry(balloonProfile, 20);
-  const balloonCollarGeo = new THREE.TorusGeometry(0.47, 0.07, 8, 18);
-  const balloonBasketGeo = new THREE.BoxGeometry(0.68, 0.52, 0.68);
-  const balloonRopeGeo = new THREE.CylinderGeometry(0.025, 0.025, 0.9, 6);
-  const balloonFlameGeo = new THREE.SphereGeometry(0.18, 10, 8);
+  const balloonEnvGeo = new THREE.LatheGeometry(balloonProfile, 18);
+  const _bCollarRaw = new THREE.TorusGeometry(0.47, 0.07, 8, 16);
+  const _bBasketRaw = new THREE.BoxGeometry(0.68, 0.52, 0.68);
+  const _bRopeRaw = new THREE.CylinderGeometry(0.025, 0.025, 0.9, 6);
+  const rigParts = [
+    bakeColoredPart(_bCollarRaw, PALETTE.toyYellow, 0, -0.75, 0, Math.PI / 2, 0, 0),
+    bakeColoredPart(_bBasketRaw, PALETTE.wood, 0, -1.78, 0),
+  ];
+  for (const rx of [-0.28, 0.28]) {
+    for (const rz of [-0.28, 0.28]) {
+      rigParts.push(bakeColoredPart(_bRopeRaw, PALETTE.warmWhite, rx, -1.2, rz));
+    }
+  }
+  const balloonRigGeo = mergeGeometries(rigParts, false);
+  rigParts.forEach((p) => p.dispose());
+  _bCollarRaw.dispose(); _bBasketRaw.dispose(); _bRopeRaw.dispose();
+  const balloonFlameGeo = new THREE.SphereGeometry(0.18, 8, 6);
 
   const balloonPalettes = [
     [PALETTE.toyRed, PALETTE.toyYellow, PALETTE.warmWhite],
@@ -185,9 +235,7 @@ export function createSceneContext(canvas) {
   const balloonEnvMats = balloonTextures.map((tex) => new THREE.MeshStandardMaterial({
     map: tex, roughness: 0.42, metalness: 0.05,
   }));
-  const basketMat = new THREE.MeshStandardMaterial({ color: PALETTE.wood, roughness: 0.78 });
-  const ropeMat = new THREE.MeshStandardMaterial({ color: PALETTE.warmWhite, roughness: 0.6 });
-  const collarMat = new THREE.MeshStandardMaterial({ color: PALETTE.toyYellow, roughness: 0.45 });
+  const balloonRigMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.68, metalness: 0.02 });
   const burnerMat = new THREE.MeshStandardMaterial({
     color: '#ffe082', emissive: '#ff9f1c', emissiveIntensity: 1.6, roughness: 0.3,
   });
@@ -198,22 +246,10 @@ export function createSceneContext(canvas) {
   for (let i = 0; i < balloonCount; i++) {
     const g = new THREE.Group();
     const env = new THREE.Mesh(balloonEnvGeo, balloonEnvMats[i % balloonEnvMats.length]);
-    const collar = new THREE.Mesh(balloonCollarGeo, collarMat);
-    collar.rotation.x = Math.PI / 2;
-    collar.position.y = -0.75;
+    const rig = new THREE.Mesh(balloonRigGeo, balloonRigMat);
     const flame = new THREE.Mesh(balloonFlameGeo, burnerMat);
     flame.position.y = -0.82;
-    const basket = new THREE.Mesh(balloonBasketGeo, basketMat);
-    basket.position.y = -1.78;
-    g.add(env, collar, flame, basket);
-
-    for (const rx of [-0.28, 0.28]) {
-      for (const rz of [-0.28, 0.28]) {
-        const rope = new THREE.Mesh(balloonRopeGeo, ropeMat);
-        rope.position.set(rx, -1.2, rz);
-        g.add(rope);
-      }
-    }
+    g.add(env, rig, flame);
 
     const ang = (i / balloonCount) * Math.PI * 2 + 0.35;
     const rad = 44 + (i % 3) * 32;
@@ -231,40 +267,46 @@ export function createSceneContext(canvas) {
     balloons.push(g);
   }
 
-  /* ---------------- Pelangi 3D pastel-gloss & bintang kecil berkelap-kelip ---------------- */
+  /* ---------------- Pelangi 3D pastel-gloss (merged 1 mesh/pelangi) & bintang kecil ---------------- */
   const RAINBOW_COLORS = ['#ff758f', '#ff9f43', '#ffe066', '#6ee7b7', '#60a5fa', '#c084fc'];
-  const rainbowBandGeos = RAINBOW_COLORS.map((_, idx) =>
-    new THREE.TorusGeometry(64 - idx * 2.15, 0.95, 10, 52, Math.PI)
-  );
-  const rainbowBandMats = RAINBOW_COLORS.map((col) => new THREE.MeshPhysicalMaterial({
-    color: col,
-    emissive: col,
-    emissiveIntensity: 0.24,
-    roughness: 0.22,
+  const rainbowParts = RAINBOW_COLORS.map((col, idx) => {
+    const raw = new THREE.TorusGeometry(64 - idx * 2.15, 0.95, 9, 44, Math.PI);
+    const baked = bakeColoredPart(raw, col);
+    raw.dispose();
+    return baked;
+  });
+  const rainbowGeo = mergeGeometries(rainbowParts, false);
+  rainbowParts.forEach((p) => p.dispose());
+  const rainbowMatHD = new THREE.MeshPhysicalMaterial({
+    vertexColors: true,
+    roughness: 0.24,
     metalness: 0.04,
-    clearcoat: 0.9,
-    clearcoatRoughness: 0.1,
+    clearcoat: 0.85,
+    clearcoatRoughness: 0.12,
     transparent: true,
     opacity: 0.88,
-  }));
+  });
+  const rainbowMatEco = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.36,
+    metalness: 0.04,
+    transparent: true,
+    opacity: 0.88,
+  });
   const rainbows = [];
   const rainbowConfigs = [
     { x: -24, y: 4, zOff: -155, ry: 0.22, sc: 1.05 },
     { x: 34, y: 6, zOff: -255, ry: -0.26, sc: 1.2 },
   ];
   for (const cfg of rainbowConfigs) {
-    const rg = new THREE.Group();
-    for (let b = 0; b < RAINBOW_COLORS.length; b++) {
-      const band = new THREE.Mesh(rainbowBandGeos[b], rainbowBandMats[b]);
-      band.renderOrder = -6;
-      rg.add(band);
-    }
-    rg.position.set(cfg.x, cfg.y, cfg.zOff);
-    rg.rotation.y = cfg.ry;
-    rg.scale.setScalar(cfg.sc);
-    rg.userData = { baseX: cfg.x, baseY: cfg.y };
-    scene.add(rg);
-    rainbows.push(rg);
+    const rMesh = new THREE.Mesh(rainbowGeo, highQuality ? rainbowMatHD : rainbowMatEco);
+    rMesh.renderOrder = -6;
+    rMesh.position.set(cfg.x, cfg.y, cfg.zOff);
+    rMesh.rotation.y = cfg.ry;
+    rMesh.scale.setScalar(cfg.sc);
+    rMesh.userData = { baseX: cfg.x, baseY: cfg.y };
+    scene.add(rMesh);
+    rainbows.push(rMesh);
   }
 
   const starShape = new THREE.Shape();
@@ -518,7 +560,7 @@ export function createSceneContext(canvas) {
   const desiredAim = new THREE.Vector3();
   const _lastHorizFwd = new THREE.Vector3(0, 0, -1);
   const _horizRight = new THREE.Vector3(1, 0, 0);
-  let camInit = false, currentFov = CAMERA.fov;
+  let camInit = false, currentFov = CAMERA.fov, smoothTrackSlope = 0;
 
   function updateHorizBasis(forwardVec) {
     if (forwardVec) {
@@ -536,6 +578,7 @@ export function createSceneContext(canvas) {
     const isFantasy = currentAtmosphere === 'skyway' || currentAtmosphere === 'mandalika';
     const h = isFantasy ? (CAMERA.skywayHeight ?? CAMERA.height) : CAMERA.height;
     const d = isFantasy ? (CAMERA.skywayDistance ?? CAMERA.distance) : CAMERA.distance;
+    smoothTrackSlope = 0;
     if (forwardVec) {
       updateHorizBasis(forwardVec);
       camPos.set(
@@ -560,13 +603,14 @@ export function createSceneContext(canvas) {
   /** Ikuti player tanpa pernah ikut roll — damping eksponensial halus anti-jitter */
   function followCamera(pos, dt, {
     speedRatio = 0, turbo = false, inLoop = false, loopCenterZ = 0,
-    falling = false, aimOffsetX = 0, arenaId = currentAtmosphere, introProgress = 1,
+    falling = false, aimOffsetX = 0, trackSlope = 0, arenaId = currentAtmosphere, introProgress = 1,
     forwardVec = null,
   } = {}) {
     if (!camInit) snapCamera(pos, forwardVec);
     const safeDt = Math.min(Math.max(dt || 0.016, 0), 0.05);
     const isFantasy = arenaId === 'skyway' || arenaId === 'mandalika';
     const sr = THREE.MathUtils.clamp(speedRatio, 0, 1.6);
+    smoothTrackSlope += (THREE.MathUtils.clamp(trackSlope || 0, -0.25, 0.25) - smoothTrackSlope) * (1 - Math.exp(-5.0 * safeDt));
     const basePosLerp = isFantasy ? (CAMERA.skywayPosLerp ?? 5.2) : CAMERA.posLerp;
     const baseAimLerp = isFantasy ? (CAMERA.skywayAimLerp ?? 7.2) : CAMERA.aimLerp;
     const kpX = 1 - Math.exp(-(inLoop ? 5.2 : basePosLerp) * safeDt);
@@ -606,7 +650,7 @@ export function createSceneContext(canvas) {
         );
         desiredAim.set(
           pos.x + _lastHorizFwd.x * lookDist + _horizRight.x * aimOffsetX * e,
-          pos.y + THREE.MathUtils.lerp(2.5, CAMERA.lookHeight, e),
+          pos.y + THREE.MathUtils.lerp(2.5, CAMERA.lookHeight, e) + smoothTrackSlope * lookDist * 0.5 * e,
           pos.z + _lastHorizFwd.z * lookDist + _horizRight.z * aimOffsetX * e
         );
       } else {
@@ -619,7 +663,7 @@ export function createSceneContext(canvas) {
         );
         desiredAim.set(
           pos.x + _lastHorizFwd.x * lookDist + _horizRight.x * aimOffsetX,
-          pos.y + CAMERA.lookHeight,
+          pos.y + CAMERA.lookHeight + smoothTrackSlope * lookDist * 0.5,
           pos.z + _lastHorizFwd.z * lookDist + _horizRight.z * aimOffsetX
         );
       }
@@ -643,6 +687,7 @@ export function createSceneContext(canvas) {
         const chaseX = pos.x * 0.94;
         const chaseY = pos.y + camH - sr * 0.3;
         const chaseZ = pos.z + camD + sr * 0.4;
+        const lookDist = THREE.MathUtils.lerp(28.0, CAMERA.lookAhead, e);
         desiredPos.set(
           THREE.MathUtils.lerp(pos.x + 9.0, chaseX, e),
           THREE.MathUtils.lerp(pos.y + 15.5, chaseY, e),
@@ -650,16 +695,21 @@ export function createSceneContext(canvas) {
         );
         desiredAim.set(
           pos.x + aimOffsetX * e,
-          THREE.MathUtils.lerp(pos.y + 2.8, pos.y + CAMERA.lookHeight, e),
-          THREE.MathUtils.lerp(pos.z - 28.0, pos.z - CAMERA.lookAhead, e)
+          THREE.MathUtils.lerp(pos.y + 2.8, pos.y + CAMERA.lookHeight, e) + smoothTrackSlope * lookDist * 0.5 * e,
+          pos.z - lookDist
         );
       } else {
+        const lookDist = CAMERA.lookAhead + sr * 1.4;
         desiredPos.set(
           pos.x * 0.94,
           pos.y + camH - sr * (isFantasy ? 0.22 : 0.38),
           pos.z + camD + sr * 0.45
         );
-        desiredAim.set(pos.x + aimOffsetX, pos.y + CAMERA.lookHeight, pos.z - CAMERA.lookAhead - sr * 1.4);
+        desiredAim.set(
+          pos.x + aimOffsetX,
+          pos.y + CAMERA.lookHeight + smoothTrackSlope * lookDist * 0.5,
+          pos.z - lookDist
+        );
       }
 
       camPos.x += (desiredPos.x - camPos.x) * kpX;
@@ -670,13 +720,14 @@ export function createSceneContext(canvas) {
       aim.z += (desiredAim.z - aim.z) * kaZ;
     }
 
-    const shakeMul = isFantasy ? (CAMERA.skywayShakeMul ?? 0.35) : 1.0;
+    const reducedMotion = !!motionQuery?.matches;
+    const shakeMul = (isFantasy ? (CAMERA.skywayShakeMul ?? 0.35) : 1.0) * (reducedMotion ? 0.2 : 1.0);
     camera.position.copy(camPos);
     camera.position.x += shakeOffset.x * shakeMul;
     camera.position.y += shakeOffset.y * shakeMul;
     camera.up.set(0, 1, 0);
     camera.lookAt(aim);
-    const maxFov = isFantasy ? 65 : (CAMERA.maxFov ?? 67);
+    const maxFov = CAMERA.maxFov ?? 61;
     const baseGain = Math.min(1, sr) * (CAMERA.fovSpeedGain ?? 6.0);
     const targetFov = (turbo || inLoop) ? maxFov : Math.min(maxFov, CAMERA.fov + baseGain);
     const fovLerp = 1 - Math.exp(-((turbo || inLoop) ? 7.2 : 4.2) * safeDt);
@@ -711,7 +762,9 @@ export function createSceneContext(canvas) {
     const tr2 = trauma * trauma;
     shakeOffset.set(tr2 * CAMERA.shakeAmp * Math.sin(t * 47.3), tr2 * CAMERA.shakeAmp * 0.75 * Math.sin(t * 39.7 + 1.7), 0);
 
-    for (const c of clouds) {
+    const activeClouds = highQuality ? clouds.length : Math.min(5, Math.ceil(clouds.length * 0.6));
+    for (let i = 0; i < activeClouds; i++) {
+      const c = clouds[i];
       c.position.x += c.userData.drift * dt;
       if (c.position.x - anchor.x > wrapR) c.position.x -= wrapR * 2;
       if (c.position.x - anchor.x < -wrapR) c.position.x += wrapR * 2;
@@ -719,7 +772,9 @@ export function createSceneContext(canvas) {
       if (c.position.z - anchor.z < -wrapR) c.position.z += wrapR * 2;
     }
 
-    for (const b of balloons) {
+    const activeBalloons = highQuality ? balloons.length : Math.min(4, Math.ceil(balloons.length * 0.5));
+    for (let i = 0; i < activeBalloons; i++) {
+      const b = balloons[i];
       const ud = b.userData;
       b.position.x += ud.driftX * dt;
       b.position.y = ud.baseY + Math.sin(t * 0.7 + ud.phase) * ud.bobAmp;
@@ -730,14 +785,18 @@ export function createSceneContext(canvas) {
       if (b.position.z - anchor.z < -balloonWrapR) b.position.z += balloonWrapR * 2;
     }
 
-    for (const rg of rainbows) {
+    const activeRainbows = highQuality ? rainbows.length : 1;
+    for (let i = 0; i < activeRainbows; i++) {
+      const rg = rainbows[i];
       if (rg.position.z - anchor.z > 85) rg.position.z -= 260;
       if (rg.position.z - anchor.z < -265) rg.position.z += 260;
       rg.position.x = anchor.x + rg.userData.baseX;
       rg.position.y = rg.userData.baseY + Math.sin(t * 0.35 + rg.userData.baseX) * 0.8;
     }
 
-    for (const st of stars) {
+    const activeStars = highQuality ? stars.length : Math.min(6, Math.ceil(stars.length * 0.3));
+    for (let i = 0; i < activeStars; i++) {
+      const st = stars[i];
       const ud = st.userData;
       const tw = 0.5 + 0.5 * Math.sin(t * ud.twinkleSpd + ud.phase);
       st.scale.setScalar(ud.baseScale * (0.78 + tw * 0.42));
@@ -816,6 +875,46 @@ export function createSceneContext(canvas) {
     sunHalo.material.opacity = 0.22 + Math.sin(t * 0.7) * 0.04;
   }
 
+  function applyQualityState(high, doResize = true) {
+    highQuality = !isSoftwareGl && !!high;
+    basePixelRatio = highQuality ? Math.min(window.devicePixelRatio || 1, RENDERER.maxPixelRatio) : 1;
+    activePixelRatio = basePixelRatio;
+    renderer.setPixelRatio(isSoftwareGl ? 1 : activePixelRatio);
+
+    const shadowSz = highQuality ? RENDERER.shadowMapSize : 1024;
+    if (key.shadow.mapSize.x !== shadowSz || key.shadow.mapSize.y !== shadowSz) {
+      key.shadow.mapSize.set(shadowSz, shadowSz);
+      key.shadow.map?.dispose();
+      key.shadow.map = null;
+    }
+
+    const activeClouds = highQuality ? clouds.length : Math.min(5, Math.ceil(clouds.length * 0.6));
+    for (let i = 0; i < clouds.length; i++) clouds[i].visible = i < activeClouds;
+    const activeBalloons = highQuality ? balloons.length : Math.min(4, Math.ceil(balloons.length * 0.5));
+    for (let i = 0; i < balloons.length; i++) balloons[i].visible = i < activeBalloons;
+    const activeRainbows = highQuality ? rainbows.length : 1;
+    const rMat = highQuality ? rainbowMatHD : rainbowMatEco;
+    for (let i = 0; i < rainbows.length; i++) {
+      rainbows[i].visible = i < activeRainbows;
+      rainbows[i].material = rMat;
+    }
+    const activeStars = highQuality ? stars.length : Math.min(6, Math.ceil(stars.length * 0.3));
+    for (let i = 0; i < stars.length; i++) stars[i].visible = i < activeStars;
+
+    frameSampleCount = 0;
+    frameWriteIdx = 0;
+    frameSumMs = 0;
+    if (doResize) resize();
+  }
+
+  /* Ring buffer 60 frame untuk penskalaan resolusi dinamis */
+  const FRAME_WINDOW = 60;
+  const frameSamples = new Float32Array(FRAME_WINDOW);
+  let frameSampleCount = 0;
+  let frameWriteIdx = 0;
+  let frameSumMs = 0;
+  let lastRenderTs = 0;
+
   /* ---------------- Resize, kualitas, render, dispose ---------------- */
   function resize() {
     const w = canvas.clientWidth || window.innerWidth;
@@ -825,14 +924,49 @@ export function createSceneContext(canvas) {
     camera.updateProjectionMatrix();
   }
   window.addEventListener('resize', resize);
+  applyQualityState(highQuality, false);
   resize();
 
   function setQuality(high) {
-    renderer.setPixelRatio(isSoftwareGl ? 1 : (high ? Math.min(window.devicePixelRatio, RENDERER.maxPixelRatio) : 1));
-    resize();
+    applyQualityState(high, true);
   }
 
-  function render() { renderer.render(scene, camera); }
+  function render() {
+    const now = performance.now();
+    if (lastRenderTs > 0 && !isSoftwareGl) {
+      const deltaMs = now - lastRenderTs;
+      if (deltaMs > 0 && deltaMs < 120) {
+        if (frameSampleCount >= FRAME_WINDOW) {
+          frameSumMs -= frameSamples[frameWriteIdx];
+        } else {
+          frameSampleCount++;
+        }
+        frameSamples[frameWriteIdx] = deltaMs;
+        frameSumMs += deltaMs;
+        frameWriteIdx = (frameWriteIdx + 1) % FRAME_WINDOW;
+
+        if (frameSampleCount >= FRAME_WINDOW) {
+          const avgMs = frameSumMs / FRAME_WINDOW;
+          let nextRatio = activePixelRatio;
+          if (avgMs > 24 && activePixelRatio > 0.75) {
+            nextRatio = Math.max(0.75, Math.round((activePixelRatio - 0.25) * 100) / 100);
+          } else if (avgMs < 15 && activePixelRatio < basePixelRatio) {
+            nextRatio = Math.min(basePixelRatio, Math.round((activePixelRatio + 0.25) * 100) / 100);
+          }
+          if (nextRatio !== activePixelRatio) {
+            activePixelRatio = nextRatio;
+            renderer.setPixelRatio(activePixelRatio);
+            resize();
+            frameSampleCount = 0;
+            frameWriteIdx = 0;
+            frameSumMs = 0;
+          }
+        }
+      }
+    }
+    lastRenderTs = now;
+    renderer.render(scene, camera);
+  }
 
   /** Lepas resource milik sceneSetup saja (cache assetFactory tetap hidup). */
   function dispose() {
@@ -840,14 +974,12 @@ export function createSceneContext(canvas) {
     envTex.dispose();
     sky.geometry.dispose(); skyTexSalatiga.dispose(); skyTexSkyway.dispose(); skyMat.dispose();
     sunCore.material.dispose(); sunHalo.material.dispose(); sunTex.dispose();
-    puffGeo.dispose(); cloudMat.dispose();
-    balloonEnvGeo.dispose(); balloonCollarGeo.dispose(); balloonBasketGeo.dispose();
-    balloonRopeGeo.dispose(); balloonFlameGeo.dispose();
+    cloudGeos.forEach((g) => g.dispose()); cloudMat.dispose();
+    balloonEnvGeo.dispose(); balloonRigGeo.dispose(); balloonFlameGeo.dispose();
     balloonTextures.forEach((t) => t.dispose());
     balloonEnvMats.forEach((m) => m.dispose());
-    basketMat.dispose(); ropeMat.dispose(); collarMat.dispose(); burnerMat.dispose();
-    rainbowBandGeos.forEach((g) => g.dispose());
-    rainbowBandMats.forEach((m) => m.dispose());
+    balloonRigMat.dispose(); burnerMat.dispose();
+    rainbowGeo.dispose(); rainbowMatHD.dispose(); rainbowMatEco.dispose();
     starGeo.dispose(); starTex.dispose();
     stars.forEach((st) => { st.userData.mat.dispose(); st.userData.halo.material.dispose(); });
     moteGeo.dispose(); motes.material.dispose(); moteTex.dispose();
@@ -862,7 +994,7 @@ export function createSceneContext(canvas) {
     keyLight: key, hemiLight: hemi, rimLight: rim,
     contactShadow, updateContactShadow, spawnSparkles, spawnFireworks,
     projectToScreen, setAnchor, setAtmosphere, snapCamera, followCamera, addShake,
-    update, setQuality, resize, render, dispose,
+    update, setQuality, get isHighQuality() { return highQuality; }, resize, render, dispose,
   };
 }
 

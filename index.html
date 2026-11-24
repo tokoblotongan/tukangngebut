@@ -14,17 +14,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;700;800&display=swap" rel="stylesheet" />
 
-<!-- Importmap Three.js r160 + addons: jalan langsung tanpa bundler, tetap Vite-compatible -->
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
-  }
-}
-</script>
-
 <style>
+[hidden]{display:none!important}
 /* ============ Palet cermin dari src/config/gameConfig.js ============ */
 :root{
   --cream:#fff3e0; --paper:#fff8eb; --ink:#3b2f2f; --ink-soft:#6b5a52;
@@ -245,7 +236,8 @@ let bootStarted = false;
   try {
     await import('./src/main.js');                       // Part 3 mengambil alih penuh
     document.querySelectorAll('[data-preview]').forEach(el => el.remove());
-  } catch {
+  } catch (err) {
+    console.error('[Juragan] main.js gagal dimuat:', err);
     console.info('[Juragan] main.js belum tersedia — menjalankan Diorama Preview Part 1.');
     startPreview().catch(err => {
       console.error(err);

@@ -18,6 +18,8 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { whenFontsReady } from '../world/trackMaterial.js';
 import {
   ASSETS, PALETTE as P, VEHICLES, LANDMARKS,
   VEHICLE_TYPES, LANDMARK_TYPES, getVehicleDef, getLandmarkDef,
@@ -73,6 +75,7 @@ function getDieCastMat(color, opts = {}) {
   });
 }
 const extraBackdropMats = [];
+const extraBackdropGeos = [];
 function getChromeMat() {
   return getGlossMat(P.chrome || '#eef2f7', {
     metal: 0.92,
@@ -95,10 +98,15 @@ function addWheelArch(parent, x, y, z, width = 0.24, radius = 0.44) {
 }
 const glassMat = () => getMat(P.glass, 0.4, { opacity: 0.55, metal: 0.1 });
 
-function rboxGeo(w, h, d, r) {
+function rboxGeo(w, h, d, r, seg = 3) {
   const radius = Math.max(0.005, Math.min(r, Math.min(w, h, d) * 0.49));
-  const key = `rb|${w}|${h}|${d}|${radius.toFixed(3)}`;
-  if (!geoCache.has(key)) geoCache.set(key, new RoundedBoxGeometry(w, h, d, 3, radius));
+  const key = `rb|${w}|${h}|${d}|${radius.toFixed(3)}|${seg}`;
+  if (!geoCache.has(key)) geoCache.set(key, new RoundedBoxGeometry(w, h, d, seg, radius));
+  return geoCache.get(key);
+}
+function boxGeo(w, h, d) {
+  const key = `bx|${w}|${h}|${d}`;
+  if (!geoCache.has(key)) geoCache.set(key, new THREE.BoxGeometry(w, h, d));
   return geoCache.get(key);
 }
 function cylGeo(rt, rb, h, seg = 16) {
@@ -123,7 +131,19 @@ function add(parent, mesh, x = 0, y = 0, z = 0, o = {}) {
   return mesh;
 }
 function rbox(w, h, d, r, color, rough = 0.6, opts = {}) {
-  const m = new THREE.Mesh(rboxGeo(w, h, d, r), opts.mat || getMat(color, rough, opts));
+  const m = new THREE.Mesh(rboxGeo(w, h, d, r, opts.seg ?? 3), opts.mat || getMat(color, rough, opts));
+  m.castShadow = opts.cast !== false;
+  m.receiveShadow = !!opts.receive;
+  return m;
+}
+function lbox(w, h, d, color, rough = 0.6, opts = {}) {
+  const m = new THREE.Mesh(boxGeo(w, h, d), opts.mat || getMat(color, rough, opts));
+  m.castShadow = opts.cast !== false;
+  m.receiveShadow = !!opts.receive;
+  return m;
+}
+function lrbox(w, h, d, r, color, rough = 0.6, opts = {}) {
+  const m = new THREE.Mesh(rboxGeo(w, h, d, r, 1), opts.mat || getMat(color, rough, opts));
   m.castShadow = opts.cast !== false;
   m.receiveShadow = !!opts.receive;
   return m;
@@ -135,9 +155,12 @@ function cyl(rt, rb, h, color, rough = 0.6, seg = 16, opts = {}) {
   return m;
 }
 function sphere(r, color, rough = 0.6, opts = {}) {
-  const m = new THREE.Mesh(sphereGeo(r), opts.mat || getMat(color, rough, opts));
+  const m = new THREE.Mesh(sphereGeo(r, opts.ws ?? 18, opts.hs ?? 14), opts.mat || getMat(color, rough, opts));
   m.castShadow = opts.cast !== false;
   return m;
+}
+function lsphere(r, color, rough = 0.6, opts = {}) {
+  return sphere(r, color, rough, { ...opts, ws: opts.ws ?? 6, hs: opts.hs ?? 5 });
 }
 /** batang di antara dua titik (lengan, kaki, fork motor) */
 function limb(parent, from, to, r, color, rough = 0.6) {
@@ -151,16 +174,49 @@ function limb(parent, from, to, r, color, rough = 0.6) {
   return m;
 }
 
+function bakeColorGeo(srcGeo, matrix, colorObj) {
+  const g = srcGeo.index ? srcGeo.toNonIndexed() : srcGeo.clone();
+  if (g.attributes.uv) g.deleteAttribute('uv');
+  if (matrix) g.applyMatrix4(matrix);
+  if (!g.attributes.normal) g.computeVertexNormals();
+  const count = g.attributes.position.count;
+  const cols = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    cols[i * 3] = colorObj.r;
+    cols[i * 3 + 1] = colorObj.g;
+    cols[i * 3 + 2] = colorObj.b;
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  return g;
+}
+
 function wheel(r, w, name) {
   const g = new THREE.Group(); g.name = name;
-  const tire = cyl(r, r, w, P.tire, 0.85, 20); tire.rotation.z = Math.PI / 2;
-  const rim = cyl(r * 0.58, r * 0.58, w + 0.025, P.chrome || '#eef2f7', 0.12, 16, { mat: getChromeMat() });
-  rim.rotation.z = Math.PI / 2;
-  const hub = cyl(r * 0.26, r * 0.26, w + 0.045, P.chrome || '#eef2f7', 0.15, 10, { mat: getChromeMat() });
-  hub.rotation.z = Math.PI / 2;
-  const lugRing = cyl(r * 0.4, r * 0.4, w + 0.032, P.asphaltDark, 0.5, 10);
-  lugRing.rotation.z = Math.PI / 2;
-  g.add(tire, rim, lugRing, hub);
+  const key = `wh|${r}|${w}`;
+  if (!geoCache.has(`${key}|rub`)) {
+    const tGeo = cylGeo(r, r, w, 20).clone(); tGeo.rotateZ(Math.PI / 2);
+    const lGeo = cylGeo(r * 0.4, r * 0.4, w + 0.032, 10).clone(); lGeo.rotateZ(Math.PI / 2);
+    const rubGeo = mergeGeometries([
+      bakeColorGeo(tGeo, null, new THREE.Color(P.tire)),
+      bakeColorGeo(lGeo, null, new THREE.Color(P.asphaltDark)),
+    ], false);
+    tGeo.dispose(); lGeo.dispose();
+    geoCache.set(`${key}|rub`, rubGeo);
+
+    const rGeo = cylGeo(r * 0.58, r * 0.58, w + 0.025, 16).clone(); rGeo.rotateZ(Math.PI / 2);
+    const hGeo = cylGeo(r * 0.26, r * 0.26, w + 0.045, 10).clone(); hGeo.rotateZ(Math.PI / 2);
+    const chmGeo = mergeGeometries([rGeo.toNonIndexed(), hGeo.toNonIndexed()], false);
+    rGeo.dispose(); hGeo.dispose();
+    geoCache.set(`${key}|chm`, chmGeo);
+  }
+  if (!matCache.has('wh|rub')) {
+    matCache.set('wh|rub', new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78, metalness: 0.06 }));
+  }
+  const tireMesh = new THREE.Mesh(geoCache.get(`${key}|rub`), matCache.get('wh|rub'));
+  tireMesh.castShadow = true;
+  const rimMesh = new THREE.Mesh(geoCache.get(`${key}|chm`), getChromeMat());
+  rimMesh.castShadow = true;
+  g.add(tireMesh, rimMesh);
   return g;
 }
 
@@ -171,19 +227,24 @@ function labelTexture(text, o = {}) {
   const w = o.w || 512, h = o.h || 128;
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const g = c.getContext('2d');
-  if (o.bg !== 'none') {
-    g.fillStyle = o.bg || P.paper;
-    g.beginPath(); g.roundRect(3, 3, w - 6, h - 6, o.radius ?? 24); g.fill();
-    if (o.border) { g.strokeStyle = o.border; g.lineWidth = 6; g.stroke(); }
-  }
-  g.fillStyle = o.fg || P.ink;
-  g.font = o.font || `700 ${Math.floor(h * 0.5)}px Fredoka, "Plus Jakarta Sans", sans-serif`;
-  g.textAlign = 'center'; g.textBaseline = 'middle';
-  const lines = text.split('\n');
-  const lh = h / (lines.length + 0.4);
-  lines.forEach((ln, i) => g.fillText(ln, w / 2, h / 2 + (i - (lines.length - 1) / 2) * lh));
+  const draw = () => {
+    g.clearRect(0, 0, w, h);
+    if (o.bg !== 'none') {
+      g.fillStyle = o.bg || P.paper;
+      g.beginPath(); g.roundRect(3, 3, w - 6, h - 6, o.radius ?? 24); g.fill();
+      if (o.border) { g.strokeStyle = o.border; g.lineWidth = 6; g.stroke(); }
+    }
+    g.fillStyle = o.fg || P.ink;
+    g.font = o.font || `700 ${Math.floor(h * 0.5)}px Fredoka, "Plus Jakarta Sans", sans-serif`;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    const lines = text.split('\n');
+    const lh = h / (lines.length + 0.4);
+    lines.forEach((ln, i) => g.fillText(ln, w / 2, h / 2 + (i - (lines.length - 1) / 2) * lh));
+  };
+  draw();
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+  whenFontsReady(() => { draw(); tex.needsUpdate = true; });
   texCache.set(key, tex);
   return tex;
 }
@@ -212,27 +273,170 @@ function driver(shirt, hat = 'peci') {
   }
   return g;
 }
-/* Bendera Merah Putih di tiang */
-function flagPole(h) {
+/* Bendera Merah Putih di tiang (low-poly landmark) */
+function lflagPole(h) {
   const g = new THREE.Group();
-  add(g, cyl(0.05, 0.07, h, P.warmWhite, 0.5, 10), 0, h / 2, 0);
-  add(g, sphere(0.09, P.gold, 0.4, { metal: 0.5 }), 0, h + 0.05, 0);
-  add(g, rbox(1.05, 0.34, 0.03, 0.01, P.merahPutih, 0.55), 0.56, h - 0.24, 0, { ry: 0.25, rz: 0.03 });
-  add(g, rbox(1.05, 0.34, 0.03, 0.01, P.warmWhite, 0.55), 0.56, h - 0.58, 0, { ry: 0.25, rz: 0.03 });
+  add(g, cyl(0.05, 0.07, h, P.warmWhite, 0.5, 6), 0, h / 2, 0);
+  add(g, lsphere(0.09, P.gold, 0.4, { metal: 0.5 }), 0, h + 0.05, 0);
+  add(g, lbox(1.05, 0.34, 0.03, P.merahPutih, 0.55), 0.56, h - 0.24, 0, { ry: 0.25, rz: 0.03 });
+  add(g, lbox(1.05, 0.34, 0.03, P.warmWhite, 0.55), 0.56, h - 0.58, 0, { ry: 0.25, rz: 0.03 });
   return g;
 }
-function bush(r = 0.5) {
-  const m = sphere(r, P.grassDark, 0.75);
+function lbush(r = 0.5) {
+  const m = lsphere(r, P.grassDark, 0.75);
   m.scale.set(1, 0.8, 1);
   return m;
 }
-function tree(s = 1) {
+function ltree(s = 1) {
   const g = new THREE.Group();
-  add(g, cyl(0.12, 0.17, 0.9, P.woodDark, 0.8, 10), 0, 0.45, 0);
-  add(g, sphere(0.72, P.grass, 0.75), 0, 1.35, 0);
-  add(g, sphere(0.45, P.grassDark, 0.75), 0.4, 1.75, 0.15);
+  add(g, cyl(0.12, 0.17, 0.9, P.woodDark, 0.8, 6), 0, 0.45, 0);
+  add(g, lsphere(0.72, P.grass, 0.75), 0, 1.35, 0);
+  add(g, lsphere(0.45, P.grassDark, 0.75), 0.4, 1.75, 0.15);
   g.scale.setScalar(s);
   return g;
+}
+function mergeLandmarkStaticMeshes(root) {
+  root.updateMatrixWorld(true);
+  const buckets = new Map();
+  const keep = [];
+  root.traverse((obj) => {
+    if (!obj.isMesh || !obj.geometry || !obj.material) return;
+    const mat = obj.material;
+    if (mat.map) {
+      keep.push(obj);
+      return;
+    }
+    const isEmissive = !!(mat.emissiveIntensity && mat.emissiveIntensity > 0.25);
+    const kind = mat.transparent
+      ? 'glass'
+      : isEmissive
+        ? 'emissive'
+        : ((mat.metalness ?? 0) >= 0.5 ? 'metal' : 'matte');
+    const key = `${kind}|${obj.castShadow ? 1 : 0}|${obj.receiveShadow ? 1 : 0}`;
+    let entry = buckets.get(key);
+    if (!entry) {
+      entry = { kind, cast: obj.castShadow, receive: obj.receiveShadow, geos: [] };
+      buckets.set(key, entry);
+    }
+    const bakeCol = isEmissive && mat.emissive ? mat.emissive : (mat.color || new THREE.Color('#ffffff'));
+    entry.geos.push(bakeColorGeo(obj.geometry, obj.matrixWorld, bakeCol));
+  });
+  const merged = new THREE.Group();
+  merged.name = root.name;
+  const getLmMat = (kind) => {
+    const mk = `lm_vcol|${kind}`;
+    if (!matCache.has(mk)) {
+      if (kind === 'glass') {
+        matCache.set(mk, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.1, transparent: true, opacity: 0.55 }));
+      } else if (kind === 'emissive') {
+        matCache.set(mk, new THREE.MeshBasicMaterial({ vertexColors: true }));
+      } else if (kind === 'metal') {
+        matCache.set(mk, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.28, metalness: 0.72 }));
+      } else {
+        matCache.set(mk, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.74, metalness: 0.04 }));
+      }
+    }
+    return matCache.get(mk);
+  };
+  for (const entry of buckets.values()) {
+    const geo = mergeGeometries(entry.geos, false);
+    for (const g of entry.geos) g.dispose();
+    if (!geo) continue;
+    extraBackdropGeos.push(geo);
+    const m = new THREE.Mesh(geo, getLmMat(entry.kind));
+    m.castShadow = entry.cast;
+    m.receiveShadow = entry.receive;
+    merged.add(m);
+  }
+  for (const obj of keep) {
+    obj.updateMatrixWorld(true);
+    const clone = new THREE.Mesh(obj.geometry, obj.material);
+    clone.applyMatrix4(obj.matrixWorld);
+    clone.castShadow = obj.castShadow;
+    clone.receiveShadow = obj.receiveShadow;
+    merged.add(clone);
+  }
+  return merged;
+}
+
+function mergeVehicleStaticMeshes(root) {
+  root.updateMatrixWorld(true);
+  const dynamicKeep = [];
+  const buckets = new Map();
+  const isRuntimeNode = (obj) => {
+    let cur = obj;
+    while (cur && cur !== root) {
+      const n = (cur.name || '').toLowerCase();
+      if (n.startsWith('wheel_') || n.startsWith('indicator_') || n.startsWith('brake_') || n.startsWith('headlight_')) return true;
+      cur = cur.parent;
+    }
+    return false;
+  };
+  for (const ch of root.children) {
+    const n = (ch.name || '').toLowerCase();
+    if (n.startsWith('wheel_') || n.startsWith('indicator_') || n.startsWith('brake_') || n.startsWith('headlight_')) {
+      dynamicKeep.push(ch);
+    }
+  }
+  root.traverse((obj) => {
+    if (!obj.isMesh || !obj.geometry || !obj.material) return;
+    if (isRuntimeNode(obj)) return;
+    const mat = obj.material;
+    if (mat.transparent || mat.map || (mat.emissiveIntensity && mat.emissiveIntensity > 0.25)) {
+      if (!dynamicKeep.includes(obj)) {
+        obj.updateMatrixWorld(true);
+        const cl = new THREE.Mesh(obj.geometry, mat);
+        cl.applyMatrix4(obj.matrixWorld);
+        cl.castShadow = obj.castShadow;
+        cl.receiveShadow = obj.receiveShadow;
+        cl.name = obj.name;
+        dynamicKeep.push(cl);
+      }
+      return;
+    }
+    const kind = (mat.metalness ?? 0) >= 0.6
+      ? 'chrome'
+      : ((mat.clearcoat ?? 0) > 0.2 || (mat.roughness ?? 0.6) <= 0.35) ? 'gloss' : 'matte';
+    const key = `${kind}|${obj.castShadow ? 1 : 0}|${obj.receiveShadow ? 1 : 0}`;
+    let entry = buckets.get(key);
+    if (!entry) {
+      entry = { kind, cast: obj.castShadow, receive: obj.receiveShadow, geos: [] };
+      buckets.set(key, entry);
+    }
+    entry.geos.push(bakeColorGeo(obj.geometry, obj.matrixWorld, mat.color || new THREE.Color('#ffffff')));
+  });
+
+  const merged = new THREE.Group();
+  merged.name = root.name;
+  for (const ch of dynamicKeep) merged.add(ch);
+
+  const getBucketMat = (kind) => {
+    const mk = `veh_vcol|${kind}`;
+    if (!matCache.has(mk)) {
+      if (kind === 'chrome') {
+        matCache.set(mk, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.14, metalness: 0.85 }));
+      } else if (kind === 'gloss') {
+        matCache.set(mk, new THREE.MeshPhysicalMaterial({
+          vertexColors: true, roughness: 0.20, metalness: 0.12, clearcoat: 0.72, clearcoatRoughness: 0.16,
+        }));
+      } else {
+        matCache.set(mk, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.56, metalness: 0.08 }));
+      }
+    }
+    return matCache.get(mk);
+  };
+
+  for (const entry of buckets.values()) {
+    const geo = mergeGeometries(entry.geos, false);
+    for (const g of entry.geos) g.dispose();
+    if (!geo) continue;
+    extraBackdropGeos.push(geo);
+    const m = new THREE.Mesh(geo, getBucketMat(entry.kind));
+    m.castShadow = entry.cast;
+    m.receiveShadow = entry.receive;
+    merged.add(m);
+  }
+  return merged;
 }
 
 /* ==================== Normalisasi & pivot (dipakai GLB & prosedural) ==================== */
@@ -610,49 +814,46 @@ function buildKoperasi(def) {
   const g = new THREE.Group(); g.name = 'koperasi_merah_putih';
   const C = def.colors;
   // Plinth & halaman
-  add(g, rbox(12.2, 0.42, 10.6, 0.16, P.concrete, 0.8), 0, 0.21, 0, { receive: true });
-  add(g, rbox(11.4, 0.18, 9.8, 0.08, P.stone, 0.78), 0, 0.46, 0, { receive: true });
+  add(g, lrbox(12.2, 0.42, 10.6, 0.14, P.concrete, 0.8), 0, 0.21, 0, { receive: true });
+  add(g, lbox(11.4, 0.18, 9.8, P.stone, 0.78), 0, 0.46, 0, { receive: true });
 
   // Badan bangunan utama + sabuk merah bawah + lis atap
-  add(g, rbox(9.2, 3.8, 6.8, 0.2, C.wall, 0.65), 0, 2.45, 0.2, { receive: true });
-  add(g, rbox(9.35, 0.55, 6.95, 0.08, C.accent, 0.58), 0, 0.82, 0.2);
-  add(g, rbox(9.45, 0.22, 7.05, 0.06, P.stone, 0.65), 0, 4.35, 0.2);
+  add(g, lrbox(9.2, 3.8, 6.8, 0.16, C.wall, 0.65), 0, 2.45, 0.2, { receive: true });
+  add(g, lbox(9.35, 0.55, 6.95, C.accent, 0.58), 0, 0.82, 0.2);
+  add(g, lbox(9.45, 0.22, 7.05, P.stone, 0.65), 0, 4.35, 0.2);
 
-  // Atap pelana bertingkat dengan bevel + nok + kubah kecil
-  add(g, rbox(5.6, 0.32, 7.9, 0.11, C.roof, 0.52), -2.2, 5.2, 0.2, { rz: 0.42 });
-  add(g, rbox(5.6, 0.32, 7.9, 0.11, C.roof, 0.52), 2.2, 5.2, 0.2, { rz: -0.42 });
-  add(g, rbox(0.8, 0.32, 8.0, 0.09, P.gold, 0.42, { metal: 0.35 }), 0, 6.22, 0.2);
-  add(g, rbox(8.8, 1.65, 0.25, 0.06, C.wall, 0.65), 0, 4.95, -3.1);
-  add(g, rbox(8.8, 1.65, 0.25, 0.06, C.wall, 0.65), 0, 4.95, 3.5);
-  // Menara lonceng/kubah kecil atap
-  add(g, rbox(1.5, 0.9, 1.5, 0.08, C.wall, 0.6), 0, 6.65, 0.2);
-  add(g, rbox(1.75, 0.22, 1.75, 0.06, C.roof, 0.5), 0, 7.15, 0.2);
+  // Atap pelana bertingkat + nok + kubah kecil
+  add(g, lrbox(5.6, 0.32, 7.9, 0.1, C.roof, 0.52), -2.2, 5.2, 0.2, { rz: 0.42 });
+  add(g, lrbox(5.6, 0.32, 7.9, 0.1, C.roof, 0.52), 2.2, 5.2, 0.2, { rz: -0.42 });
+  add(g, lbox(0.8, 0.32, 8.0, P.gold, 0.42, { metal: 0.35 }), 0, 6.22, 0.2);
+  add(g, lbox(8.8, 1.65, 0.25, C.wall, 0.65), 0, 4.95, -3.1);
+  add(g, lbox(8.8, 1.65, 0.25, C.wall, 0.65), 0, 4.95, 3.5);
+  add(g, lbox(1.5, 0.9, 1.5, C.wall, 0.6), 0, 6.65, 0.2);
+  add(g, lbox(1.75, 0.22, 1.75, C.roof, 0.5), 0, 7.15, 0.2);
   add(g, cyl(0.08, 0.65, 0.75, C.roof, 0.5, 4), 0, 7.6, 0.2, { ry: Math.PI / 4 });
 
   // Serambi depan + pilar + tangga + kanopi belang merah-putih
-  add(g, rbox(5.4, 0.26, 1.6, 0.06, P.concrete, 0.8), 0, 0.64, -3.7, { receive: true });
-  add(g, rbox(3.0, 0.18, 0.8, 0.05, P.stone, 0.75), 0, 0.48, -4.45, { receive: true });
+  add(g, lbox(5.4, 0.26, 1.6, P.concrete, 0.8), 0, 0.64, -3.7, { receive: true });
+  add(g, lbox(3.0, 0.18, 0.8, P.stone, 0.75), 0, 0.48, -4.45, { receive: true });
   for (const px of [-2.3, -1.1, 1.1, 2.3]) {
-    add(g, rbox(0.32, 0.25, 0.32, 0.05, C.accent, 0.6), px, 0.88, -4.25);
-    add(g, cyl(0.12, 0.14, 2.4, P.warmWhite, 0.55, 12), px, 2.15, -4.25);
+    add(g, lbox(0.32, 0.25, 0.32, C.accent, 0.6), px, 0.88, -4.25);
+    add(g, cyl(0.12, 0.14, 2.4, P.warmWhite, 0.55, 6), px, 2.15, -4.25);
   }
-  add(g, rbox(1.8, 2.4, 0.16, 0.05, P.woodDark, 0.55), 0, 1.8, -3.22);
-  add(g, rbox(1.4, 0.45, 0.1, 0.03, P.glass, 0.4, { mat: glassMat(), cast: false }), 0, 2.55, -3.24);
+  add(g, lbox(1.8, 2.4, 0.16, P.woodDark, 0.55), 0, 1.8, -3.22);
+  add(g, lbox(1.4, 0.45, 0.1, P.glass, 0.4, { mat: glassMat(), cast: false }), 0, 2.55, -3.24);
   for (let i = 0; i < 9; i++) {
-    add(g, rbox(0.56, 0.14, 1.45, 0.04, i % 2 ? P.warmWhite : C.accent, 0.5), -2.24 + i * 0.56, 3.35, -3.95, { rx: 0.28 });
+    add(g, lbox(0.56, 0.14, 1.45, i % 2 ? P.warmWhite : C.accent, 0.5), -2.24 + i * 0.56, 3.35, -3.95, { rx: 0.28 });
   }
-  // Plang besar dengan bingkai emas
-  add(g, rbox(6.6, 1.45, 0.22, 0.08, P.gold, 0.4, { metal: 0.45 }), 0, 4.35, -3.42);
+  add(g, lbox(6.6, 1.45, 0.22, P.gold, 0.4, { metal: 0.45 }), 0, 4.35, -3.42);
   add(g, label('KOPERASI DESA\nMERAH PUTIH', 6.3, 1.28, { bg: C.accent, fg: P.warmWhite, h: 240, glow: 0.35, border: P.warmWhite }), 0, 4.35, -3.55);
 
-  // Jendela berbingkai & daun jendela
   const addWindow = (x, y, z, ry = 0) => {
     const wg = new THREE.Group();
-    add(wg, rbox(1.36, 1.36, 0.12, 0.04, P.warmWhite, 0.55), 0, 0, 0);
-    add(wg, rbox(1.1, 1.1, 0.14, 0.03, P.glass, 0.35, { mat: glassMat(), cast: false }), 0, 0, 0.02);
-    add(wg, rbox(1.48, 0.14, 0.24, 0.03, C.accent, 0.55), 0, -0.7, 0.05);
-    add(wg, rbox(0.28, 1.24, 0.08, 0.02, P.toyGreen, 0.6), -0.82, 0, 0.03);
-    add(wg, rbox(0.28, 1.24, 0.08, 0.02, P.toyGreen, 0.6), 0.82, 0, 0.03);
+    add(wg, lbox(1.36, 1.36, 0.12, P.warmWhite, 0.55), 0, 0, 0);
+    add(wg, lbox(1.1, 1.1, 0.14, P.glass, 0.35, { mat: glassMat(), cast: false }), 0, 0, 0.02);
+    add(wg, lbox(1.48, 0.14, 0.24, C.accent, 0.55), 0, -0.7, 0.05);
+    add(wg, lbox(0.28, 1.24, 0.08, P.toyGreen, 0.6), -0.82, 0, 0.03);
+    add(wg, lbox(0.28, 1.24, 0.08, P.toyGreen, 0.6), 0.82, 0, 0.03);
     wg.position.set(x, y, z);
     wg.rotation.y = ry;
     g.add(wg);
@@ -661,187 +862,164 @@ function buildKoperasi(def) {
   for (const sx of [-4.62, 4.62]) for (const wz of [-1.7, 0.2, 2.1]) {
     addWindow(sx, 2.35, wz, sx < 0 ? -Math.PI / 2 : Math.PI / 2);
   }
-  for (const lx of [-1.25, 1.25]) add(g, sphere(0.14, P.headlight, 0.35, { emissive: P.headlight, ei: 1.5 }), lx, 2.95, -3.55);
+  for (const lx of [-1.25, 1.25]) add(g, lsphere(0.14, P.headlight, 0.35, { emissive: P.headlight, ei: 1.5 }), lx, 2.95, -3.55);
 
-  add(g, flagPole(6.2), 5.0, 0.55, -3.8);
-  add(g, bush(0.6), -3.5, 0.72, -4.3);
-  add(g, bush(0.6), 3.5, 0.72, -4.3);
-  add(g, tree(1.05), -5.0, 0.55, 3.8);
-  return g;
+  add(g, lflagPole(6.2), 5.0, 0.55, -3.8);
+  add(g, lbush(0.6), -3.5, 0.72, -4.3);
+  add(g, lbush(0.6), 3.5, 0.72, -4.3);
+  add(g, ltree(1.05), -5.0, 0.55, 3.8);
+  return mergeLandmarkStaticMeshes(g);
 }
 
 function buildPasarRaya(def) {
   const g = new THREE.Group(); g.name = 'pasar_raya_salatiga';
   const C = def.colors;
-  // Plinth bertingkat & trotoar
-  add(g, rbox(16.8, 0.42, 12.6, 0.16, P.concrete, 0.8), 0, 0.21, 0, { receive: true });
-  add(g, rbox(16.0, 0.2, 11.8, 0.08, P.stone, 0.78), 0, 0.5, 0, { receive: true });
+  add(g, lrbox(16.8, 0.42, 12.6, 0.14, P.concrete, 0.8), 0, 0.21, 0, { receive: true });
+  add(g, lbox(16.0, 0.2, 11.8, P.stone, 0.78), 0, 0.5, 0, { receive: true });
 
-  // Hall utama dua tingkat + jendela atas (clerestory)
-  add(g, rbox(13.6, 3.8, 8.0, 0.2, C.wall, 0.65), 0, 2.5, 1.0, { receive: true });
-  add(g, rbox(13.8, 0.45, 8.2, 0.08, P.terracotta, 0.65), 0, 0.82, 1.0);
-  add(g, rbox(9.6, 1.45, 5.2, 0.14, P.warmWhite, 0.65), 0, 5.2, 1.0);
+  add(g, lrbox(13.6, 3.8, 8.0, 0.16, C.wall, 0.65), 0, 2.5, 1.0, { receive: true });
+  add(g, lbox(13.8, 0.45, 8.2, P.terracotta, 0.65), 0, 0.82, 1.0);
+  add(g, lbox(9.6, 1.45, 5.2, P.warmWhite, 0.65), 0, 5.2, 1.0);
 
-  // Atap utama bertingkat hijau bevel + atap mahkota atas
-  add(g, rbox(7.8, 0.34, 9.5, 0.12, C.roof, 0.5), -3.3, 4.95, 1.0, { rz: 0.34 });
-  add(g, rbox(7.8, 0.34, 9.5, 0.12, C.roof, 0.5), 3.3, 4.95, 1.0, { rz: -0.34 });
-  add(g, rbox(5.6, 0.28, 6.2, 0.1, C.roof, 0.5), -2.3, 6.25, 1.0, { rz: 0.36 });
-  add(g, rbox(5.6, 0.28, 6.2, 0.1, C.roof, 0.5), 2.3, 6.25, 1.0, { rz: -0.36 });
-  add(g, rbox(0.85, 0.32, 6.4, 0.09, P.toyYellow, 0.45), 0, 7.12, 1.0);
+  add(g, lrbox(7.8, 0.34, 9.5, 0.1, C.roof, 0.5), -3.3, 4.95, 1.0, { rz: 0.34 });
+  add(g, lrbox(7.8, 0.34, 9.5, 0.1, C.roof, 0.5), 3.3, 4.95, 1.0, { rz: -0.34 });
+  add(g, lrbox(5.6, 0.28, 6.2, 0.08, C.roof, 0.5), -2.3, 6.25, 1.0, { rz: 0.36 });
+  add(g, lrbox(5.6, 0.28, 6.2, 0.08, C.roof, 0.5), 2.3, 6.25, 1.0, { rz: -0.36 });
+  add(g, lbox(0.85, 0.32, 6.4, P.toyYellow, 0.45), 0, 7.12, 1.0);
 
-  // Jendela clerestory di lantai 2
   for (const cx of [-3.2, -1.6, 0, 1.6, 3.2]) {
-    add(g, rbox(1.1, 0.75, 0.12, 0.03, P.glass, 0.35, { mat: glassMat(), cast: false }), cx, 5.2, -1.62);
+    add(g, lbox(1.1, 0.75, 0.12, P.glass, 0.35, { mat: glassMat(), cast: false }), cx, 5.2, -1.62);
   }
-  // Jendela samping gedung
   for (const sx of [-6.82, 6.82]) for (const wz of [-1.2, 1.0, 3.2]) {
-    add(g, rbox(0.14, 1.4, 1.5, 0.04, P.warmWhite, 0.55), sx, 2.75, wz);
-    add(g, rbox(0.16, 1.1, 1.2, 0.03, P.glass, 0.35, { mat: glassMat(), cast: false }), sx, 2.75, wz);
+    add(g, lbox(0.14, 1.4, 1.5, P.warmWhite, 0.55), sx, 2.75, wz);
+    add(g, lbox(0.16, 1.1, 1.2, P.glass, 0.35, { mat: glassMat(), cast: false }), sx, 2.75, wz);
   }
 
-  // Arkade depan dengan 6 pilar + balok + plang megah
   for (let i = 0; i < 6; i++) {
     const px = -5.75 + i * 2.3;
-    add(g, rbox(0.55, 0.3, 0.55, 0.06, P.stone, 0.7), px, 0.75, -3.7);
-    add(g, cyl(0.2, 0.24, 2.8, C.column, 0.55, 12), px, 2.25, -3.7);
-    add(g, rbox(0.5, 0.22, 0.5, 0.05, C.column, 0.55), px, 3.7, -3.7);
+    add(g, lbox(0.55, 0.3, 0.55, P.stone, 0.7), px, 0.75, -3.7);
+    add(g, cyl(0.2, 0.24, 2.8, C.column, 0.55, 6), px, 2.25, -3.7);
+    add(g, lbox(0.5, 0.22, 0.5, C.column, 0.55), px, 3.7, -3.7);
   }
-  add(g, rbox(14.2, 0.34, 3.0, 0.1, C.roof, 0.52), 0, 3.92, -3.75, { rx: -0.08 });
-  add(g, rbox(9.6, 1.55, 0.26, 0.08, P.toyYellow, 0.42), 0, 3.9, -5.18);
+  add(g, lbox(14.2, 0.34, 3.0, C.roof, 0.52), 0, 3.92, -3.75, { rx: -0.08 });
+  add(g, lbox(9.6, 1.55, 0.26, P.toyYellow, 0.42), 0, 3.9, -5.18);
   add(g, label('GEDUNG PASAR RAYA II', 9.2, 1.32, { bg: P.angkotGreenDark, fg: P.cream, h: 170, glow: 0.38, border: P.toyYellow }), 0, 3.9, -5.33);
   add(g, label('KOTA SALATIGA', 4.4, 0.62, { bg: P.warmWhite, fg: P.ink, h: 90, glow: 0.2, border: P.angkotGreenDark }), 0, 2.9, -5.3);
 
-  // Empat lapak buah & sayur di bawah arkade dengan lampu gantung
   const stallColors = [[P.merahPutih, P.warmWhite], [P.toyGreen, P.warmWhite], [P.toyOrange, P.warmWhite], [P.toyBlue, P.warmWhite]];
   const produce = [P.toyOrange, P.toyRed, P.toyGreen, P.toyYellow];
   for (let s = 0; s < 4; s++) {
     const sx = -4.6 + s * 3.05;
-    add(g, rbox(2.0, 0.65, 1.1, 0.07, P.wood, 0.7), sx, 0.88, -3.55, { receive: true });
+    add(g, lbox(2.0, 0.65, 1.1, P.wood, 0.7), sx, 0.88, -3.55, { receive: true });
     for (let i = 0; i < 5; i++) {
-      add(g, rbox(0.46, 0.12, 1.45, 0.03, stallColors[s][i % 2], 0.55), sx - 0.92 + i * 0.46, 2.6, -3.6, { rx: 0.26 });
+      add(g, lbox(0.46, 0.12, 1.45, stallColors[s][i % 2], 0.55), sx - 0.92 + i * 0.46, 2.6, -3.6, { rx: 0.26 });
     }
-    for (let f = 0; f < 6; f++) {
-      add(g, sphere(0.14, produce[s], 0.52), sx - 0.6 + (f % 3) * 0.45, 1.28, -3.75 + Math.floor(f / 3) * 0.38);
+    for (let f = 0; f < 3; f++) {
+      add(g, lsphere(0.16, produce[s], 0.52, { ws: 5, hs: 4 }), sx - 0.48 + f * 0.48, 1.3, -3.65);
     }
-    add(g, sphere(0.13, P.headlight, 0.35, { emissive: P.headlight, ei: 1.5 }), sx, 3.35, -3.6);
+    add(g, lsphere(0.13, P.headlight, 0.35, { emissive: P.headlight, ei: 1.5 }), sx, 3.35, -3.6);
   }
 
-  // Gerobak kayu parkir di sisi hall
   const cart = new THREE.Group();
-  add(cart, rbox(1.5, 0.65, 0.95, 0.06, P.wood, 0.7), 0, 0.9, 0);
-  add(cart, wheel(0.32, 0.11, 'wheel_cart_L'), -0.65, 0.32, 0);
-  add(cart, wheel(0.32, 0.11, 'wheel_cart_R'), 0.65, 0.32, 0);
-  add(cart, cyl(0.04, 0.04, 1.0, P.woodDark, 0.7, 8), 0, 1.0, -0.95, { rx: 1.1 });
-  add(cart, rbox(1.65, 0.1, 1.05, 0.04, P.merahPutih, 0.55), 0, 1.72, 0);
-  add(cart, cyl(0.04, 0.04, 0.55, P.woodDark, 0.7, 8), -0.65, 1.42, 0.42);
-  add(cart, cyl(0.04, 0.04, 0.55, P.woodDark, 0.7, 8), 0.65, 1.42, 0.42);
+  add(cart, lbox(1.5, 0.65, 0.95, P.wood, 0.7), 0, 0.9, 0);
+  add(cart, cyl(0.32, 0.32, 0.11, P.tire, 0.8, 8), -0.65, 0.32, 0, { rz: Math.PI / 2 });
+  add(cart, cyl(0.32, 0.32, 0.11, P.tire, 0.8, 8), 0.65, 0.32, 0, { rz: Math.PI / 2 });
+  add(cart, cyl(0.04, 0.04, 1.0, P.woodDark, 0.7, 6), 0, 1.0, -0.95, { rx: 1.1 });
+  add(cart, lbox(1.65, 0.1, 1.05, P.merahPutih, 0.55), 0, 1.72, 0);
+  add(cart, cyl(0.04, 0.04, 0.55, P.woodDark, 0.7, 6), -0.65, 1.42, 0.42);
+  add(cart, cyl(0.04, 0.04, 0.55, P.woodDark, 0.7, 6), 0.65, 1.42, 0.42);
   cart.position.set(7.2, 0.5, -4.1); cart.rotation.y = 0.45;
   g.add(cart);
-  return g;
+  return mergeLandmarkStaticMeshes(g);
 }
 
 function buildRumdin(def) {
   const g = new THREE.Group(); g.name = 'rumah_dinas_walikota';
   const C = def.colors;
-  // Taman & teras bertingkat + pagar rendah keliling
-  add(g, rbox(14.8, 0.42, 11.8, 0.16, P.grass, 0.8), 0, 0.21, 0, { receive: true });
-  add(g, rbox(13.8, 0.2, 10.6, 0.08, P.stone, 0.78), 0, 0.48, 0, { receive: true });
+  add(g, lrbox(14.8, 0.42, 11.8, 0.14, P.grass, 0.8), 0, 0.21, 0, { receive: true });
+  add(g, lbox(13.8, 0.2, 10.6, P.stone, 0.78), 0, 0.48, 0, { receive: true });
 
-  // Bangunan utama kolonial megah + sayap samping
-  add(g, rbox(9.6, 3.8, 7.0, 0.2, C.wall, 0.62), 0, 2.45, 0.9, { receive: true });
-  add(g, rbox(9.8, 0.38, 7.2, 0.08, P.stone, 0.7), 0, 0.75, 0.9);
-  add(g, rbox(9.9, 0.24, 7.3, 0.06, P.warmWhite, 0.55), 0, 4.38, 0.9);
+  add(g, lrbox(9.6, 3.8, 7.0, 0.16, C.wall, 0.62), 0, 2.45, 0.9, { receive: true });
+  add(g, lbox(9.8, 0.38, 7.2, P.stone, 0.7), 0, 0.75, 0.9);
+  add(g, lbox(9.9, 0.24, 7.3, P.warmWhite, 0.55), 0, 4.38, 0.9);
 
-  // Atap limasan bertingkat terakota + ornamen mahkota atap
-  add(g, rbox(10.5, 0.3, 4.3, 0.1, C.roof, 0.55), 0, 5.15, -0.9, { rx: -0.48 });
-  add(g, rbox(10.5, 0.3, 4.3, 0.1, C.roof, 0.55), 0, 5.15, 2.7, { rx: 0.48 });
-  add(g, rbox(4.0, 0.3, 7.9, 0.1, C.roof, 0.55), -3.45, 5.15, 0.9, { rz: 0.48 });
-  add(g, rbox(4.0, 0.3, 7.9, 0.1, C.roof, 0.55), 3.45, 5.15, 0.9, { rz: -0.48 });
-  add(g, rbox(4.8, 0.42, 2.2, 0.1, C.roof, 0.52), 0, 6.25, 0.9);
-  add(g, rbox(5.0, 0.34, 0.55, 0.09, P.gold, 0.42, { metal: 0.4 }), 0, 6.58, 0.9);
+  add(g, lrbox(10.5, 0.3, 4.3, 0.08, C.roof, 0.55), 0, 5.15, -0.9, { rx: -0.48 });
+  add(g, lrbox(10.5, 0.3, 4.3, 0.08, C.roof, 0.55), 0, 5.15, 2.7, { rx: 0.48 });
+  add(g, lrbox(4.0, 0.3, 7.9, 0.08, C.roof, 0.55), -3.45, 5.15, 0.9, { rz: 0.48 });
+  add(g, lrbox(4.0, 0.3, 7.9, 0.08, C.roof, 0.55), 3.45, 5.15, 0.9, { rz: -0.48 });
+  add(g, lbox(4.8, 0.42, 2.2, C.roof, 0.52), 0, 6.25, 0.9);
+  add(g, lbox(5.0, 0.34, 0.55, P.gold, 0.42, { metal: 0.4 }), 0, 6.58, 0.9);
 
-  // Pendopo depan megah: 6 pilar klasik putih + tangga seremonial
-  add(g, rbox(7.8, 0.42, 2.8, 0.08, C.column, 0.65), 0, 0.72, -3.45, { receive: true });
+  add(g, lbox(7.8, 0.42, 2.8, C.column, 0.65), 0, 0.72, -3.45, { receive: true });
   for (const cx of [-3.3, -1.98, -0.66, 0.66, 1.98, 3.3]) {
-    add(g, rbox(0.42, 0.26, 0.42, 0.05, P.stone, 0.7), cx, 1.02, -4.45);
-    add(g, cyl(0.16, 0.2, 2.7, C.column, 0.52, 14), cx, 2.45, -4.45);
-    add(g, rbox(0.42, 0.2, 0.42, 0.05, C.column, 0.55), cx, 3.85, -4.45);
+    add(g, lbox(0.42, 0.26, 0.42, P.stone, 0.7), cx, 1.02, -4.45);
+    add(g, cyl(0.16, 0.2, 2.7, C.column, 0.52, 6), cx, 2.45, -4.45);
+    add(g, lbox(0.42, 0.2, 0.42, C.column, 0.55), cx, 3.85, -4.45);
   }
-  add(g, rbox(8.3, 0.3, 3.3, 0.1, C.roof, 0.55), 0, 4.08, -3.65, { rx: -0.12 });
-  add(g, rbox(3.6, 0.18, 0.8, 0.05, P.concrete, 0.8), 0, 0.54, -5.05, { receive: true });
-  add(g, rbox(2.8, 0.18, 0.55, 0.05, P.concrete, 0.8), 0, 0.72, -4.75, { receive: true });
+  add(g, lbox(8.3, 0.3, 3.3, C.roof, 0.55), 0, 4.08, -3.65, { rx: -0.12 });
+  add(g, lbox(3.6, 0.18, 0.8, P.concrete, 0.8), 0, 0.54, -5.05, { receive: true });
+  add(g, lbox(2.8, 0.18, 0.55, P.concrete, 0.8), 0, 0.72, -4.75, { receive: true });
 
-  // Pintu kayu ganda + plang emas Walikota
-  add(g, rbox(1.8, 2.55, 0.14, 0.05, P.woodDark, 0.58), 0, 2.15, -2.56);
-  add(g, rbox(5.4, 1.05, 0.2, 0.07, P.gold, 0.42, { metal: 0.45 }), 0, 3.68, -2.62);
+  add(g, lbox(1.8, 2.55, 0.14, P.woodDark, 0.58), 0, 2.15, -2.56);
+  add(g, lbox(5.4, 1.05, 0.2, P.gold, 0.42, { metal: 0.45 }), 0, 3.68, -2.62);
   add(g, label('RUMAH DINAS WALIKOTA\nSALATIGA', 5.1, 0.9, { bg: P.ink, fg: P.gold, h: 150, glow: 0.32, border: P.gold }), 0, 3.68, -2.74);
 
-  // Jendela kolonial dengan daun jendela hijau
   for (const wx of [-3.1, 3.1]) {
-    add(g, rbox(1.45, 1.45, 0.12, 0.04, P.warmWhite, 0.55), wx, 2.35, -2.56);
-    add(g, rbox(1.2, 1.2, 0.14, 0.03, P.glass, 0.35, { mat: glassMat(), cast: false }), wx, 2.35, -2.57);
-    for (const sx of [-0.85, 0.85]) add(g, rbox(0.3, 1.32, 0.08, 0.02, P.toyGreen, 0.6), wx + sx, 2.35, -2.59);
+    add(g, lbox(1.45, 1.45, 0.12, P.warmWhite, 0.55), wx, 2.35, -2.56);
+    add(g, lbox(1.2, 1.2, 0.14, P.glass, 0.35, { mat: glassMat(), cast: false }), wx, 2.35, -2.57);
+    for (const sx of [-0.85, 0.85]) add(g, lbox(0.3, 1.32, 0.08, P.toyGreen, 0.6), wx + sx, 2.35, -2.59);
   }
   for (const sx of [-4.82, 4.82]) for (const wz of [-0.8, 1.2, 3.0]) {
-    add(g, rbox(0.12, 1.4, 1.36, 0.04, P.warmWhite, 0.55), sx, 2.35, wz);
-    add(g, rbox(0.14, 1.15, 1.15, 0.03, P.glass, 0.35, { mat: glassMat(), cast: false }), sx, 2.35, wz);
+    add(g, lbox(0.12, 1.4, 1.36, P.warmWhite, 0.55), sx, 2.35, wz);
+    add(g, lbox(0.14, 1.15, 1.15, P.glass, 0.35, { mat: glassMat(), cast: false }), sx, 2.35, wz);
   }
 
-  add(g, flagPole(6.4), -5.8, 0.55, -4.0);
-  add(g, rbox(2.4, 0.08, 3.6, 0.03, P.concrete, 0.8), 0, 0.54, -4.3, { receive: true });
+  add(g, lflagPole(6.4), -5.8, 0.55, -4.0);
+  add(g, lbox(2.4, 0.08, 3.6, P.concrete, 0.8), 0, 0.54, -4.3, { receive: true });
   for (const bx of [-2.3, 2.3]) {
-    add(g, cyl(0.24, 0.3, 0.45, P.terracotta, 0.7, 12), bx, 0.72, -5.0);
-    add(g, bush(0.5), bx, 1.2, -5.0);
-    add(g, sphere(0.13, P.headlight, 0.35, { emissive: P.headlight, ei: 1.4 }), bx, 3.65, -4.55);
+    add(g, cyl(0.24, 0.3, 0.45, P.terracotta, 0.7, 6), bx, 0.72, -5.0);
+    add(g, lbush(0.5), bx, 1.2, -5.0);
+    add(g, lsphere(0.13, P.headlight, 0.35, { emissive: P.headlight, ei: 1.4 }), bx, 3.65, -4.55);
   }
-  add(g, tree(1.25), -6.2, 0.55, 3.9);
-  add(g, tree(1.1), 6.2, 0.55, 3.6);
-  return g;
+  add(g, ltree(1.25), -6.2, 0.55, 3.9);
+  add(g, ltree(1.1), 6.2, 0.55, 3.6);
+  return mergeLandmarkStaticMeshes(g);
 }
 
 function buildMonas(def) {
   const g = new THREE.Group(); g.name = 'monas';
   const C = def.colors;
-  // Pelataran plaza bertingkat & rumput
-  add(g, rbox(7.8, 0.42, 7.8, 0.16, P.concrete, 0.8), 0, 0.21, 0, { receive: true });
-  add(g, rbox(6.4, 0.22, 6.4, 0.08, C.lawn, 0.78), 0, 0.52, 0, { receive: true });
+  add(g, lrbox(7.8, 0.42, 7.8, 0.14, P.concrete, 0.8), 0, 0.21, 0, { receive: true });
+  add(g, lbox(6.4, 0.22, 6.4, C.lawn, 0.78), 0, 0.52, 0, { receive: true });
 
-  // Cawan pedestal bertingkat dengan bevel halus
-  add(g, rbox(4.6, 0.9, 4.6, 0.14, C.stone, 0.62), 0, 1.05, 0, { receive: true });
-  add(g, rbox(3.4, 0.85, 3.4, 0.12, C.stone, 0.62), 0, 1.85, 0);
-  add(g, rbox(2.5, 0.7, 2.5, 0.1, C.stone, 0.6), 0, 2.55, 0);
-  // Pagar pelataran cawan
-  add(g, rbox(3.55, 0.14, 3.55, 0.04, P.gold, 0.42, { metal: 0.45 }), 0, 2.3, 0);
+  add(g, lrbox(4.6, 0.9, 4.6, 0.12, C.stone, 0.62), 0, 1.05, 0, { receive: true });
+  add(g, lrbox(3.4, 0.85, 3.4, 0.1, C.stone, 0.62), 0, 1.85, 0);
+  add(g, lrbox(2.5, 0.7, 2.5, 0.08, C.stone, 0.6), 0, 2.55, 0);
+  add(g, lbox(3.55, 0.14, 3.55, P.gold, 0.42, { metal: 0.45 }), 0, 2.3, 0);
 
-  // Tugu obelisk bertingkat
-  add(g, rbox(1.45, 6.2, 1.45, 0.12, C.stone, 0.58), 0, 5.95, 0);
-  add(g, rbox(1.65, 0.42, 1.65, 0.08, C.stone, 0.58), 0, 9.15, 0);
-  add(g, rbox(1.08, 5.2, 1.08, 0.1, C.stone, 0.58), 0, 11.85, 0);
+  add(g, lrbox(1.45, 6.2, 1.45, 0.1, C.stone, 0.58), 0, 5.95, 0);
+  add(g, lbox(1.65, 0.42, 1.65, C.stone, 0.58), 0, 9.15, 0);
+  add(g, lrbox(1.08, 5.2, 1.08, 0.08, C.stone, 0.58), 0, 11.85, 0);
 
-  // Pelataran puncak emas + mahkota
-  add(g, rbox(2.1, 0.58, 2.1, 0.1, C.stone, 0.56), 0, 14.7, 0);
-  add(g, rbox(2.26, 0.14, 2.26, 0.05, C.gold, 0.35, { metal: 0.6 }), 0, 15.05, 0);
-  add(g, rbox(1.55, 0.7, 1.55, 0.08, C.stone, 0.56), 0, 15.42, 0);
+  add(g, lbox(2.1, 0.58, 2.1, C.stone, 0.56), 0, 14.7, 0);
+  add(g, lbox(2.26, 0.14, 2.26, C.gold, 0.35, { metal: 0.6 }), 0, 15.05, 0);
+  add(g, lbox(1.55, 0.7, 1.55, C.stone, 0.56), 0, 15.42, 0);
 
-  /* Lidah api emas multi-part — suar kota saat golden hour */
-  const goldMat = getMat(C.gold, 0.32, { metal: 0.75, emissive: C.gold, ei: 0.62 });
-  add(g, cyl(0.52, 0.38, 0.42, C.gold, 0.32, 16, { mat: goldMat }), 0, 15.95, 0);
-  add(g, sphere(0.42, C.gold, 0.32, { mat: goldMat }), 0, 16.32, 0);
-  const flame = new THREE.Mesh(new THREE.ConeGeometry(0.55, 1.65, 14), goldMat);
-  flame.castShadow = true;
-  add(g, flame, 0, 17.25, 0);
+  /* Puncak mahkota emas bersih (tanpa lidah api) */
+  const goldMat = getMat(C.gold, 0.32, { metal: 0.75, emissive: C.gold, ei: 0.55 });
+  add(g, cyl(0.5, 0.38, 0.42, C.gold, 0.32, 8, { mat: goldMat }), 0, 15.95, 0);
+  add(g, cyl(0.06, 0.42, 1.45, C.gold, 0.32, 8, { mat: goldMat }), 0, 16.88, 0);
 
-  /* Pagar keliling + 4 lampu taman + plang emas */
   for (const [px, pz] of [[-2.9,-2.9],[2.9,-2.9],[-2.9,2.9],[2.9,2.9],[0,-2.9],[0,2.9],[-2.9,0],[2.9,0]]) {
-    add(g, cyl(0.06, 0.07, 0.65, P.warmWhite, 0.58, 8), px, 0.92, pz);
+    add(g, cyl(0.06, 0.07, 0.65, P.warmWhite, 0.58, 6), px, 0.92, pz);
   }
-  for (const rz of [-2.9, 2.9]) add(g, rbox(5.9, 0.08, 0.08, 0.02, P.warmWhite, 0.58), 0, 1.2, rz);
-  for (const rx of [-2.9, 2.9]) add(g, rbox(0.08, 0.08, 5.9, 0.02, P.warmWhite, 0.58), rx, 1.2, 0);
+  for (const rz of [-2.9, 2.9]) add(g, lbox(5.9, 0.08, 0.08, P.warmWhite, 0.58), 0, 1.2, rz);
+  for (const rx of [-2.9, 2.9]) add(g, lbox(0.08, 0.08, 5.9, P.warmWhite, 0.58), rx, 1.2, 0);
   for (const [lx, lz] of [[-3.4,-3.4],[3.4,-3.4],[-3.4,3.4],[3.4,3.4]]) {
-    add(g, sphere(0.16, P.headlight, 0.35, { emissive: P.headlight, ei: 1.45 }), lx, 0.72, lz);
+    add(g, lsphere(0.16, P.headlight, 0.35, { emissive: P.headlight, ei: 1.45 }), lx, 0.72, lz);
   }
   add(g, label('MONAS SALATIGA', 3.4, 0.65, { bg: P.ink, fg: P.gold, h: 110, glow: 0.35, border: P.gold }), 0, 1.15, -2.36);
-  return g;
+  return mergeLandmarkStaticMeshes(g);
 }
 
 /* =====================================================================
@@ -887,144 +1065,165 @@ function getFruitGeo(key, factory) {
   return geoCache.get(key);
 }
 
+const fruitProtoCache = new Map();
+
 export function buildToyFruit(type = 'strawberry') {
-  const g = new THREE.Group();
-  g.name = `fruit_${type}`;
+  if (!fruitProtoCache.has(type)) {
+    const raw = new THREE.Group();
+    raw.name = `fruit_${type}`;
 
-  if (type === 'strawberry') {
-    const bodyGeo = getFruitGeo('fr|straw_body', () => {
-      const pts = [
-        new THREE.Vector2(0.01, -0.62),
-        new THREE.Vector2(0.24, -0.52),
-        new THREE.Vector2(0.46, -0.22),
-        new THREE.Vector2(0.58, 0.14),
-        new THREE.Vector2(0.50, 0.42),
-        new THREE.Vector2(0.26, 0.54),
-        new THREE.Vector2(0.01, 0.55),
+    if (type === 'strawberry') {
+      const bodyGeo = getFruitGeo('fr|straw_body', () => {
+        const pts = [
+          new THREE.Vector2(0.01, -0.62),
+          new THREE.Vector2(0.24, -0.52),
+          new THREE.Vector2(0.46, -0.22),
+          new THREE.Vector2(0.58, 0.14),
+          new THREE.Vector2(0.50, 0.42),
+          new THREE.Vector2(0.26, 0.54),
+          new THREE.Vector2(0.01, 0.55),
+        ];
+        return new THREE.LatheGeometry(pts, 18);
+      });
+      const berry = new THREE.Mesh(bodyGeo, getGlossMat('#e63946', { emissive: '#a4161a', ei: 0.18 }));
+      raw.add(berry);
+
+      const seedGeo = getFruitGeo('fr|straw_seed', () => new THREE.SphereGeometry(0.042, 5, 4));
+      const seedMat = getGlossMat('#ffbe0b', { emissive: '#ffbe0b', ei: 0.25 });
+      const rings = [
+        { y: 0.24, r: 0.55, count: 7, off: 0 },
+        { y: -0.05, r: 0.49, count: 6, off: 0.45 },
+        { y: -0.32, r: 0.36, count: 5, off: 0.2 },
       ];
-      return new THREE.LatheGeometry(pts, 20);
-    });
-    const berry = new THREE.Mesh(bodyGeo, getGlossMat('#e63946', { emissive: '#a4161a', ei: 0.18 }));
-    berry.castShadow = true;
-    g.add(berry);
-
-    const seedGeo = getFruitGeo('fr|straw_seed', () => new THREE.SphereGeometry(0.042, 6, 5));
-    const seedMat = getGlossMat('#ffbe0b', { emissive: '#ffbe0b', ei: 0.25 });
-    const rings = [
-      { y: 0.24, r: 0.55, count: 7, off: 0 },
-      { y: -0.05, r: 0.49, count: 6, off: 0.45 },
-      { y: -0.32, r: 0.36, count: 5, off: 0.2 },
-    ];
-    for (const rg of rings) {
-      for (let k = 0; k < rg.count; k++) {
-        const ang = (k / rg.count) * Math.PI * 2 + rg.off;
-        const seed = new THREE.Mesh(seedGeo, seedMat);
-        seed.position.set(Math.cos(ang) * rg.r, rg.y, Math.sin(ang) * rg.r);
-        seed.scale.set(0.85, 1.35, 0.85);
-        g.add(seed);
-      }
-    }
-
-    const leafGeo = getFruitGeo('fr|leaf', () => {
-      const lg = new THREE.ConeGeometry(0.18, 0.44, 5);
-      lg.scale(1.0, 1.0, 0.35);
-      return lg;
-    });
-    const leafMat = getGlossMat('#38b000', { rough: 0.28 });
-    for (let k = 0; k < 5; k++) {
-      const ang = (k / 5) * Math.PI * 2;
-      const leaf = new THREE.Mesh(leafGeo, leafMat);
-      leaf.position.set(Math.cos(ang) * 0.22, 0.52, Math.sin(ang) * 0.22);
-      leaf.rotation.y = -ang;
-      leaf.rotation.z = -1.25;
-      g.add(leaf);
-    }
-    const stem = cyl(0.05, 0.07, 0.24, '#2b9348', 0.35, 8);
-    stem.position.y = 0.65;
-    g.add(stem);
-    g.scale.setScalar(1.22);
-  } else if (type === 'melon') {
-    const melonGeo = getFruitGeo('fr|melon_body', () => new THREE.SphereGeometry(0.64, 22, 18));
-    const melonMat = getGlossMat('#ffffff', {
-      map: makeMelonTexture(), mapKey: 'melon',
-      emissive: '#1b4332', ei: 0.14,
-    });
-    const body = new THREE.Mesh(melonGeo, melonMat);
-    body.scale.set(1.06, 0.94, 1.06);
-    body.castShadow = true;
-    g.add(body);
-    const stem = cyl(0.055, 0.08, 0.24, '#4d7c0f', 0.35, 8);
-    stem.position.set(0.03, 0.65, 0);
-    stem.rotation.z = -0.25;
-    g.add(stem);
-    g.scale.setScalar(1.16);
-  } else if (type === 'banana') {
-    const bananaGeo = getFruitGeo('fr|banana_body', () => {
-      const curve = new THREE.CatmullRomCurve3([
-        new THREE.Vector3(-0.56, -0.34, 0),
-        new THREE.Vector3(-0.22, -0.48, 0),
-        new THREE.Vector3(0.22, -0.32, 0),
-        new THREE.Vector3(0.50, 0.08, 0),
-        new THREE.Vector3(0.54, 0.50, 0),
-      ]);
-      const segU = 22, segV = 12;
-      const tg = new THREE.TubeGeometry(curve, segU, 0.22, segV, false);
-      const pos = tg.attributes.position;
-      for (let u = 0; u <= segU; u++) {
-        const t = u / segU;
-        const center = curve.getPointAt(t);
-        const taper = Math.max(0.22, Math.pow(Math.sin(t * Math.PI), 0.55));
-        for (let v = 0; v <= segV; v++) {
-          const idx = u * (segV + 1) + v;
-          const vx = pos.getX(idx) - center.x;
-          const vy = pos.getY(idx) - center.y;
-          const vz = pos.getZ(idx) - center.z;
-          pos.setXYZ(idx, center.x + vx * taper, center.y + vy * taper, center.z + vz * taper);
+      for (const rg of rings) {
+        for (let k = 0; k < rg.count; k++) {
+          const ang = (k / rg.count) * Math.PI * 2 + rg.off;
+          const seed = new THREE.Mesh(seedGeo, seedMat);
+          seed.position.set(Math.cos(ang) * rg.r, rg.y, Math.sin(ang) * rg.r);
+          seed.scale.set(0.85, 1.35, 0.85);
+          raw.add(seed);
         }
       }
-      tg.computeVertexNormals();
-      return tg;
-    });
-    const body = new THREE.Mesh(bananaGeo, getGlossMat('#ffe135', { emissive: '#ffbe0b', ei: 0.16 }));
-    body.castShadow = true;
-    g.add(body);
 
-    const tipMat = getGlossMat('#6b4423', { rough: 0.45 });
-    const tipGeo = getFruitGeo('fr|banana_tip', () => new THREE.SphereGeometry(0.065, 8, 8));
-    const t1 = new THREE.Mesh(tipGeo, tipMat); t1.position.set(-0.56, -0.34, 0);
-    const t2 = new THREE.Mesh(tipGeo, tipMat); t2.position.set(0.54, 0.52, 0);
-    g.add(t1, t2);
-    g.rotation.z = 0.22;
-    g.scale.setScalar(1.26);
-  } else {
-    // Orange
-    const orangeGeo = getFruitGeo('fr|orange_body', () => new THREE.SphereGeometry(0.58, 22, 16));
-    const body = new THREE.Mesh(orangeGeo, getGlossMat('#fb5607', { emissive: '#e85d04', ei: 0.18 }));
-    body.scale.set(1.04, 0.96, 1.04);
-    body.castShadow = true;
-    g.add(body);
+      const leafGeo = getFruitGeo('fr|leaf', () => {
+        const lg = new THREE.ConeGeometry(0.18, 0.44, 5);
+        lg.scale(1.0, 1.0, 0.35);
+        return lg;
+      });
+      const leafMat = getGlossMat('#38b000', { rough: 0.28 });
+      for (let k = 0; k < 5; k++) {
+        const ang = (k / 5) * Math.PI * 2;
+        const leaf = new THREE.Mesh(leafGeo, leafMat);
+        leaf.position.set(Math.cos(ang) * 0.22, 0.52, Math.sin(ang) * 0.22);
+        leaf.rotation.y = -ang;
+        leaf.rotation.z = -1.25;
+        raw.add(leaf);
+      }
+      const stem = cyl(0.05, 0.07, 0.24, '#2b9348', 0.35, 8);
+      stem.position.y = 0.65;
+      raw.add(stem);
+      raw.scale.setScalar(1.22);
+    } else if (type === 'melon') {
+      const melonGeo = getFruitGeo('fr|melon_body', () => new THREE.SphereGeometry(0.64, 18, 14));
+      const melonMat = getGlossMat('#ffffff', {
+        map: makeMelonTexture(), mapKey: 'melon',
+        emissive: '#1b4332', ei: 0.14,
+      });
+      const body = new THREE.Mesh(melonGeo, melonMat);
+      body.scale.set(1.06, 0.94, 1.06);
+      body.castShadow = true;
+      raw.add(body);
+      const stem = cyl(0.055, 0.08, 0.24, '#4d7c0f', 0.35, 8);
+      stem.position.set(0.03, 0.65, 0);
+      stem.rotation.z = -0.25;
+      raw.add(stem);
+      raw.scale.setScalar(1.16);
+      fruitProtoCache.set(type, raw);
+    } else if (type === 'banana') {
+      const bananaGeo = getFruitGeo('fr|banana_body', () => {
+        const curve = new THREE.CatmullRomCurve3([
+          new THREE.Vector3(-0.56, -0.34, 0),
+          new THREE.Vector3(-0.22, -0.48, 0),
+          new THREE.Vector3(0.22, -0.32, 0),
+          new THREE.Vector3(0.50, 0.08, 0),
+          new THREE.Vector3(0.54, 0.50, 0),
+        ]);
+        const segU = 18, segV = 10;
+        const tg = new THREE.TubeGeometry(curve, segU, 0.22, segV, false);
+        const pos = tg.attributes.position;
+        for (let u = 0; u <= segU; u++) {
+          const t = u / segU;
+          const center = curve.getPointAt(t);
+          const taper = Math.max(0.22, Math.pow(Math.sin(t * Math.PI), 0.55));
+          for (let v = 0; v <= segV; v++) {
+            const idx = u * (segV + 1) + v;
+            const vx = pos.getX(idx) - center.x;
+            const vy = pos.getY(idx) - center.y;
+            const vz = pos.getZ(idx) - center.z;
+            pos.setXYZ(idx, center.x + vx * taper, center.y + vy * taper, center.z + vz * taper);
+          }
+        }
+        tg.computeVertexNormals();
+        return tg;
+      });
+      const body = new THREE.Mesh(bananaGeo, getGlossMat('#ffe135', { emissive: '#ffbe0b', ei: 0.16 }));
+      raw.add(body);
+      const tipMat = getGlossMat('#6b4423', { rough: 0.45 });
+      const tipGeo = getFruitGeo('fr|banana_tip', () => new THREE.SphereGeometry(0.065, 6, 6));
+      const t1 = new THREE.Mesh(tipGeo, tipMat); t1.position.set(-0.56, -0.34, 0);
+      const t2 = new THREE.Mesh(tipGeo, tipMat); t2.position.set(0.54, 0.52, 0);
+      raw.add(t1, t2);
+      raw.rotation.z = 0.22;
+      raw.scale.setScalar(1.26);
+    } else {
+      const orangeGeo = getFruitGeo('fr|orange_body', () => new THREE.SphereGeometry(0.58, 18, 14));
+      const body = new THREE.Mesh(orangeGeo, getGlossMat('#fb5607', { emissive: '#e85d04', ei: 0.18 }));
+      body.scale.set(1.04, 0.96, 1.04);
+      raw.add(body);
+      const stem = cyl(0.05, 0.065, 0.22, '#2b9348', 0.35, 8);
+      stem.position.y = 0.60;
+      raw.add(stem);
+      const leafGeo = getFruitGeo('fr|orange_leaf', () => {
+        const lg = new THREE.SphereGeometry(0.22, 8, 6);
+        lg.scale(1.4, 0.25, 0.65);
+        return lg;
+      });
+      const leafMat = getGlossMat('#38b000', { rough: 0.26 });
+      const l1 = new THREE.Mesh(leafGeo, leafMat);
+      l1.position.set(0.24, 0.62, 0.06);
+      l1.rotation.set(0.2, 0.3, 0.35);
+      const l2 = new THREE.Mesh(leafGeo, leafMat);
+      l2.position.set(-0.20, 0.60, -0.05);
+      l2.rotation.set(-0.15, -0.4, -0.32);
+      raw.add(l1, l2);
+      raw.scale.setScalar(1.2);
+    }
 
-    const stem = cyl(0.05, 0.065, 0.22, '#2b9348', 0.35, 8);
-    stem.position.y = 0.60;
-    g.add(stem);
-
-    const leafGeo = getFruitGeo('fr|orange_leaf', () => {
-      const lg = new THREE.SphereGeometry(0.22, 10, 8);
-      lg.scale(1.4, 0.25, 0.65);
-      return lg;
-    });
-    const leafMat = getGlossMat('#38b000', { rough: 0.26 });
-    const l1 = new THREE.Mesh(leafGeo, leafMat);
-    l1.position.set(0.24, 0.62, 0.06);
-    l1.rotation.set(0.2, 0.3, 0.35);
-    const l2 = new THREE.Mesh(leafGeo, leafMat);
-    l2.position.set(-0.20, 0.60, -0.05);
-    l2.rotation.set(-0.15, -0.4, -0.32);
-    g.add(l1, l2);
-    g.scale.setScalar(1.2);
+    if (!fruitProtoCache.has(type)) {
+      raw.updateMatrixWorld(true);
+      const parts = [];
+      raw.traverse((o) => {
+        if (o.isMesh && o.geometry) {
+          parts.push(bakeColorGeo(o.geometry, o.matrixWorld, o.material?.color || new THREE.Color('#ffffff')));
+        }
+      });
+      const mergedGeo = mergeGeometries(parts, false);
+      parts.forEach((p) => p.dispose());
+      extraBackdropGeos.push(mergedGeo);
+      const fMat = new THREE.MeshPhysicalMaterial({
+        vertexColors: true, roughness: 0.20, metalness: 0.04,
+        clearcoat: 0.88, clearcoatRoughness: 0.12,
+      });
+      extraBackdropMats.push(fMat);
+      const m = new THREE.Mesh(mergedGeo, fMat);
+      m.castShadow = true;
+      const proto = new THREE.Group();
+      proto.name = `fruit_${type}`;
+      proto.add(m);
+      fruitProtoCache.set(type, proto);
+    }
   }
-
-  return g;
+  return fruitProtoCache.get(type).clone();
 }
 
 /* ==================== Registry & API publik ==================== */
@@ -1058,10 +1257,11 @@ function getPrototype(kind, type) {
       let wrapper = null;
       try {
         wrapper = await tryLoadGLB(def.glbName, def.targetSize);
-      } catch {
-        console.info(`[assetFactory] ${def.glbName}.glb belum tersedia — memakai model prosedural ${def.label}.`);
+      } catch (err) {
+        console.warn(`[assetFactory] ${def.glbName}.glb gagal dimuat — memakai model prosedural ${def.label}.`, err?.message || err);
         const builder = isV ? VEHICLE_BUILDERS[type] : LANDMARK_BUILDERS[type];
-        const built = (builder || (isV ? buildAngkot : buildKoperasi))(def);
+        let built = (builder || (isV ? buildAngkot : buildKoperasi))(def);
+        if (isV) built = mergeVehicleStaticMeshes(built);
         wrapper = normalizeToTarget(built, def.targetSize);
         wrapper.userData.source = 'procedural';
       }
@@ -1113,10 +1313,11 @@ export async function preloadAll(onProgress) {
 /** Lepaskan seluruh cache (dipanggil saat teardown penuh). */
 export function disposeAssetCache() {
   for (const g of geoCache.values()) g.dispose();
+  for (const g of extraBackdropGeos) g.dispose();
   for (const m of matCache.values()) m.dispose();
   for (const m of extraBackdropMats) m.dispose();
   for (const t of texCache.values()) t.dispose();
-  geoCache.clear(); matCache.clear(); extraBackdropMats.length = 0; texCache.clear(); protoCache.clear();
+  geoCache.clear(); extraBackdropGeos.length = 0; matCache.clear(); extraBackdropMats.length = 0; texCache.clear(); protoCache.clear();
   if (dracoLoader) { dracoLoader.dispose(); dracoLoader = null; gltfLoader = null; }
 }
 

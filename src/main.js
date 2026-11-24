@@ -12,11 +12,12 @@ import { createTrafficManager } from './entities/trafficManager.js';
 import { createTrackGenerator } from './world/trackGenerator.js';
 import { createFantasyTrack } from './world/fantasyTrack.js';
 import { createMandalikaTrack } from './world/mandalikaFantasyTrack.js';
-import { setActiveArena } from './world/activeTrack.js';
+import { setActiveArena, getTrackSurfaceAt, getTrackHeight, getTrackSlope } from './world/activeTrack.js';
 import { createLandmarkManager } from './world/salatigaLandmark.js';
 import { createHUD } from './ui/hudManager.js';
+import { initHowToPlay } from './ui/howToPlay.js';
 import { createMultiplayerHook } from './network/multiplayerHook.js';
-import { GAME, VEHICLES, ARENAS, SLOT_COLORS } from './config/gameConfig.js';
+import { GAME, VEHICLES, ARENAS, SLOT_COLORS, STATES } from './config/gameConfig.js';
 
 const LOAD_LINES = [
   'Merakit angkot…', 'Memanaskan bemo…', 'Mengisi bak L300…', 'Memarkir ojol…',
@@ -26,8 +27,9 @@ const LOAD_LINES = [
 
 let hud = null, ctx = null, track = null, skywayTrack = null, mandalikaTrack = null, landmarks = null;
 let salatigaRoot = null, skywayRoot = null, mandalikaRoot = null;
-let player = null, traffic = null, network = null, loop = null;
+let player = null, traffic = null, network = null, loop = null, howto = null;
 let vehicleSwapToken = 0;
+let resumeAfterHowto = false;
 
 init().catch((err) => {
   console.error('[Juragan] Gagal memulai:', err);
@@ -59,7 +61,34 @@ async function init() {
       const saved = network?.setName(name);
       if (saved) hud.toast(`Nama Juragan: ${saved} ✨`, 'good');
     },
-    onQuality: (high) => ctx?.setQuality(high),
+    onQuality: (high) => {
+      ctx?.setQuality(high);
+      track?.setQuality?.(high);
+      skywayTrack?.setQuality?.(high);
+      mandalikaTrack?.setQuality?.(high);
+    },
+    onKidModeChange: ({ noGameOver }) => loop?.setNoGameOver?.(noGameOver),
+    onHelp: () => howto?.open(),
+  });
+  howto = initHowToPlay({
+    autoShow: false,
+    showFab: false,
+    onOpen: () => {
+      if (loop?.state === STATES.PLAYING) {
+        resumeAfterHowto = true;
+        loop.pause();
+      } else {
+        resumeAfterHowto = false;
+      }
+      hud?.sfx?.ui?.();
+    },
+    onClose: () => {
+      hud?.sfx?.ui?.();
+      if (resumeAfterHowto && loop?.state === STATES.PAUSED) {
+        loop.resume();
+      }
+      resumeAfterHowto = false;
+    },
   });
   hud.setLoading(0.02, 'Menyalakan golden hour…');
 
@@ -68,6 +97,7 @@ async function init() {
   if (!canvas) throw new Error('Canvas #scene-canvas tidak ditemukan');
   ctx = createSceneContext(canvas);
   ctx.contactShadow.visible = false;
+  hud.setQualityUI?.(ctx.isHighQuality);
 
   canvas.addEventListener('webglcontextlost', (e) => {
     e.preventDefault();
@@ -88,16 +118,17 @@ async function init() {
   mandalikaRoot = new THREE.Group();
   ctx.scene.add(salatigaRoot, skywayRoot, mandalikaRoot);
 
+  const initEco = !ctx.isHighQuality;
   hud.setLoading(0.73, 'Menggelar Sirkuit Kota Salatiga…');
-  track = createTrackGenerator(salatigaRoot, { maxAnisotropy: ctx.maxAnisotropy });
+  track = createTrackGenerator(salatigaRoot, { maxAnisotropy: ctx.maxAnisotropy, eco: initEco });
   hud.setLoading(0.79, 'Menanam landmark Salatiga…');
   landmarks = await createLandmarkManager(salatigaRoot);
 
   hud.setLoading(0.84, 'Merakit Nusantara Skyway & Garuda Emas…');
-  skywayTrack = createFantasyTrack(skywayRoot, { maxAnisotropy: ctx.maxAnisotropy });
+  skywayTrack = createFantasyTrack(skywayRoot, { maxAnisotropy: ctx.maxAnisotropy, eco: initEco });
 
   hud.setLoading(0.89, 'Membentuk 17 Tikungan Mandalika Sky Circuit…');
-  mandalikaTrack = createMandalikaTrack(mandalikaRoot, { maxAnisotropy: ctx.maxAnisotropy });
+  mandalikaTrack = createMandalikaTrack(mandalikaRoot, { maxAnisotropy: ctx.maxAnisotropy, eco: initEco });
 
   /* ---------- 5. Player ---------- */
   hud.setLoading(0.92, 'Menyiapkan armada juragan…');
@@ -157,11 +188,15 @@ async function init() {
     network,
     difficulty: hud.difficulty,
     arena: hud.arena,
+    noGameOver: hud.noGameOver,
   });
   loop.init();
 
   hud.setLoading(1, 'Siap ngebut, Juragan! 🏁');
-  setTimeout(() => hud.hideLoading(), 320);
+  setTimeout(() => {
+    hud.hideLoading();
+    howto?.openIfUnseen();
+  }, 320);
 
   /* ---------- 8. Ganti armada dari menu (async, aman dari race) ---------- */
   async function swapVehicle(key) {
@@ -183,6 +218,7 @@ async function init() {
   /* ---------- 9. Teardown bersih ---------- */
   window.addEventListener('pagehide', () => {
     try {
+      howto?.dispose();
       loop?.dispose(); network?.dispose(); traffic?.dispose();
       landmarks?.dispose(); track?.dispose(); skywayTrack?.dispose(); mandalikaTrack?.dispose();
       player?.dispose(); ctx?.dispose(); hud?.dispose();
@@ -199,6 +235,79 @@ async function init() {
       hud.setNetworkStatus(network.status, network.room, network.onlineCount);
       return s;
     },
-    modules: { ctx, track, skywayTrack, mandalikaTrack, landmarks, player, traffic, network, loop, hud },
+    ...(import.meta.env.PROD ? {} : {
+      modules: { ctx, track, skywayTrack, mandalikaTrack, landmarks, player, traffic, network, loop, hud, howto },
+    }),
   };
+
+  if (!import.meta.env.PROD && typeof window !== 'undefined' && window.location?.search?.includes('debug=track')) {
+    runDevTrackAudit();
+  }
+}
+
+function runDevTrackAudit() {
+  const prevArena = loop?.arena || 'salatiga';
+  const arenas = [
+    { id: 'salatiga', mod: track, spline: false },
+    { id: 'skyway', mod: skywayTrack, spline: false },
+    { id: 'mandalika', mod: mandalikaTrack, spline: true },
+  ];
+  const report = [];
+  let hasViolation = false;
+
+  for (const a of arenas) {
+    setActiveArena(a.id);
+    if (salatigaRoot) salatigaRoot.visible = (a.id === 'salatiga');
+    if (skywayRoot) skywayRoot.visible = (a.id === 'skyway');
+    if (mandalikaRoot) mandalikaRoot.visible = (a.id === 'mandalika');
+
+    let maxSlope = 0;
+    let flatZoneMaxSlope = 0;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    const flatTypes = new Set(['start', 'finish', 'boost', 'ramp', 'loop', 'arch', 'portal', 'tunnel']);
+
+    for (let s = 0; s <= 1500; s += 2) {
+      const coord = a.spline ? s : -s;
+      const y = getTrackHeight(coord);
+      const sl = Math.abs(getTrackSlope(coord));
+      const surf = getTrackSurfaceAt(a.spline ? s : 0, a.spline ? 0 : -s);
+      const surfSl = Math.abs(surf?.slope ?? sl);
+      const peakSl = Math.max(sl, surfSl);
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      if (peakSl > maxSlope) maxSlope = peakSl;
+      if (flatTypes.has(surf?.type) && peakSl > flatZoneMaxSlope) flatZoneMaxSlope = peakSl;
+    }
+
+    let seamDiff = 0;
+    if (a.spline) {
+      seamDiff = Math.abs(getTrackHeight(0) - getTrackHeight(1500));
+    }
+
+    a.mod?.updateTrack(a.spline ? 14 : -18, 0);
+    if (a.id === 'salatiga') landmarks?.update(-18);
+    ctx?.setAnchor(0, getTrackHeight(a.spline ? 0 : -18), a.spline ? 0 : -18);
+    ctx?.renderer?.render(ctx.scene, ctx.camera);
+    const info = ctx?.renderer?.info?.render;
+
+    if (maxSlope > 0.12) {
+      hasViolation = true;
+      console.error(`[TrackAudit] ${a.id} maxSlope=${maxSlope.toFixed(4)} > 0.12!`);
+    }
+    report.push({
+      arena: a.id,
+      maxSlope: +maxSlope.toFixed(4),
+      flatZoneMaxSlope: +flatZoneMaxSlope.toFixed(4),
+      minY: +minY.toFixed(2),
+      maxY: +maxY.toFixed(2),
+      seamDiff: +seamDiff.toFixed(5),
+      drawCalls: info?.calls ?? 0,
+      triangles: info?.triangles ?? 0,
+    });
+  }
+
+  console.table(report);
+  if (hasViolation) console.error('[TrackAudit] Terdapat arena dengan kemiringan > 12%!');
+  loop?.setArena?.(prevArena);
 }

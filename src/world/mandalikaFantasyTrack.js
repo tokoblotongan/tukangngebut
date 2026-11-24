@@ -14,6 +14,11 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { PHYSICS, PALETTE as P } from '../config/gameConfig.js';
 import { FRUIT_TYPES, buildToyFruit } from '../entities/assetFactory.js';
+import {
+  createCleanOrangeTrackMaterial,
+  createWarningSignTexture,
+  whenFontsReady,
+} from './trackMaterial.js';
 
 export const TOTAL_LEN = 1500;
 const LUT_N = 750; // resolusi 2 m per titik
@@ -25,12 +30,12 @@ const W_BANK = 20.0;
 export const MANDALIKA_OCEAN_Y = -12.0;
 const START_Y = 5.5;
 
-// Split-Level Upper Shortcut (Turns 4-6: s = 270..432)
-const SPLIT_S0 = 270;
-const SPLIT_CLIMB_END = 300;
-const SPLIT_DESC_START = 402;
-const SPLIT_S1 = 432;
-const SPLIT_HEIGHT = 5.2;
+// Split-Level Upper Shortcut (Turns 4-6: s = 250..442)
+const SPLIT_S0 = 250;
+const SPLIT_CLIMB_END = 325;
+const SPLIT_DESC_START = 345;
+const SPLIT_S1 = 442;
+const SPLIT_HEIGHT = 4.6;
 const SPLIT_UP_CX = -4.4;
 const SPLIT_UP_HW = 3.5;
 const SPLIT_LO_CX = 4.2;
@@ -82,37 +87,120 @@ export function wrapS(s) {
   return r < 0 ? r + TOTAL_LEN : r;
 }
 
+// Profil elevasi periodik tertutup 16 titik (flat-tangent monotone cubic Hermite, total slope <= 12%)
+const ELEV_KEYS = [
+  [0, 0.0],
+  [140, 0.0],
+  [260, 4.5],
+  [340, 6.0],
+  [440, 3.0],
+  [495, 3.0],
+  [600, -1.5],
+  [690, 0.0],
+  [790, 0.0],
+  [960, 7.0],
+  [1000, 7.0],
+  [1100, 7.0],
+  [1185, 1.0],
+  [1300, 1.0],
+  [1420, 0.0],
+  [1500, 0.0],
+];
+
+const ELEV_TANGENTS = (() => {
+  const n = ELEV_KEYS.length;
+  const slopes = new Array(n - 1);
+  for (let i = 0; i < n - 1; i++) {
+    const ds = ELEV_KEYS[i + 1][0] - ELEV_KEYS[i][0];
+    const dy = ELEV_KEYS[i + 1][1] - ELEV_KEYS[i][1];
+    slopes[i] = ds > 0 ? dy / ds : 0;
+  }
+  const m = new Array(n).fill(0);
+  for (let i = 1; i < n - 1; i++) {
+    const d0 = slopes[i - 1];
+    const d1 = slopes[i];
+    if (d0 === 0 || d1 === 0 || (d0 > 0) !== (d1 > 0)) {
+      m[i] = 0;
+    } else {
+      m[i] = (2 * d0 * d1) / (d0 + d1);
+    }
+  }
+  return m;
+})();
+
+function evalCircuitElev(s) {
+  const ws = wrapS(s);
+  const n = ELEV_KEYS.length;
+  let seg = 0;
+  for (let i = 0; i < n - 1; i++) {
+    if (ws <= ELEV_KEYS[i + 1][0]) {
+      seg = i;
+      break;
+    }
+  }
+  const s0 = ELEV_KEYS[seg][0];
+  const s1 = ELEV_KEYS[seg + 1][0];
+  const y0 = ELEV_KEYS[seg][1];
+  const y1 = ELEV_KEYS[seg + 1][1];
+  const h = s1 - s0;
+  if (h <= 0) return { dy: y0, slope: 0 };
+  const t = (ws - s0) / h;
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const h00 = 2 * t3 - 3 * t2 + 1;
+  const h10 = t3 - 2 * t2 + t;
+  const h01 = -2 * t3 + 3 * t2;
+  const h11 = t3 - t2;
+  const m0 = ELEV_TANGENTS[seg];
+  const m1 = ELEV_TANGENTS[seg + 1];
+  const dy = h00 * y0 + h10 * h * m0 + h01 * y1 + h11 * h * m1;
+
+  const dh00 = 6 * t2 - 6 * t;
+  const dh10 = 3 * t2 - 4 * t + 1;
+  const dh01 = -6 * t2 + 6 * t;
+  const dh11 = 3 * t2 - 2 * t;
+  const slope = (dh00 * y0 + dh01 * y1) / h + dh10 * m0 + dh11 * m1;
+  return { dy, slope };
+}
+
+function getCircuitDy(s) {
+  return evalCircuitElev(s).dy;
+}
+
+function getCircuitSlope(s) {
+  return evalCircuitElev(s).slope;
+}
+
 /* ==================== Pembentuk Spline 17 Tikungan Mandalika ==================== */
 function buildMandalikaLUT() {
-  // Titik kontrol searah jarum jam mengikuti siluet Sirkuit Pertamina Mandalika (17 tikungan):
-  // Start/Finish menghadap -Z di (0, START_Y, 0), lalu Turn 1 kanan, T2-T6 pesisir timur,
-  // T7-T9 teknis, Back Straight (Loop 360°), T10 hairpin, T11-T15 S-Curves selatan, T16-T17 kembali ke Start.
+  // Titik kontrol datar (y = START_Y) searah jarum jam mengikuti siluet Sirkuit Pertamina Mandalika;
+  // elevasi halus diterapkan melalui getCircuitDy(s) setelah normalisasi panjang 1500m.
   const rawPts = [
-    new THREE.Vector3(0, START_Y, 44),       // T17 exit menuju garis start
-    new THREE.Vector3(0, START_Y, 0),        // Garis Start/Finish (u=0 arah -Z)
-    new THREE.Vector3(0, START_Y, -68),      // Tengah lintasan utama
-    new THREE.Vector3(2, START_Y + 0.4, -138),  // Masuk Turn 1
-    new THREE.Vector3(24, START_Y + 0.8, -172), // Apex Turn 1 (kanan tajam)
-    new THREE.Vector3(64, START_Y + 1.0, -166), // Keluar T1
-    new THREE.Vector3(108, START_Y + 0.2, -142),// Turn 2 (pesisir)
-    new THREE.Vector3(154, START_Y - 0.6, -158),// Turn 3
-    new THREE.Vector3(204, START_Y - 0.8, -148),// Turn 4 (awal jembatan buah bertingkat)
-    new THREE.Vector3(246, START_Y - 0.2, -114),// Turn 5
-    new THREE.Vector3(256, START_Y + 0.8, -64), // Turn 6 (akhir jembatan buah)
-    new THREE.Vector3(222, START_Y + 1.4, -22), // Turn 7 (kink kanan)
-    new THREE.Vector3(184, START_Y + 1.8, -6),  // Turn 8 (kink kiri)
-    new THREE.Vector3(182, START_Y + 2.2, 34),  // Turn 9 masuk back straight
-    new THREE.Vector3(212, START_Y + 2.6, 76),  // Back straight (Dual-Choice 360° Loop)
-    new THREE.Vector3(236, START_Y + 2.8, 126), // Masuk Turn 10 hairpin
-    new THREE.Vector3(224, START_Y + 2.2, 168), // Apex Turn 10 hairpin
-    new THREE.Vector3(178, START_Y + 1.6, 166), // Keluar Turn 10
-    new THREE.Vector3(134, START_Y + 1.0, 128), // Turn 11 (S-Curve 1)
-    new THREE.Vector3(88, START_Y + 0.8, 156),  // Turn 12 (S-Curve 2)
-    new THREE.Vector3(44, START_Y + 1.0, 124),  // Turn 13 (S-Curve 3 + Garuda Tunnel)
-    new THREE.Vector3(8, START_Y + 0.6, 152),   // Turn 14 (S-Curve 4)
-    new THREE.Vector3(-24, START_Y + 0.2, 134), // Turn 15
-    new THREE.Vector3(-28, START_Y, 92),        // Turn 16
-    new THREE.Vector3(-6, START_Y, 64),         // Turn 17 menuju lintasan start
+    new THREE.Vector3(0, START_Y, 44),
+    new THREE.Vector3(0, START_Y, 0),
+    new THREE.Vector3(0, START_Y, -68),
+    new THREE.Vector3(2, START_Y, -138),
+    new THREE.Vector3(24, START_Y, -172),
+    new THREE.Vector3(64, START_Y, -166),
+    new THREE.Vector3(108, START_Y, -142),
+    new THREE.Vector3(154, START_Y, -158),
+    new THREE.Vector3(204, START_Y, -148),
+    new THREE.Vector3(246, START_Y, -114),
+    new THREE.Vector3(256, START_Y, -64),
+    new THREE.Vector3(222, START_Y, -22),
+    new THREE.Vector3(184, START_Y, -6),
+    new THREE.Vector3(182, START_Y, 34),
+    new THREE.Vector3(212, START_Y, 76),
+    new THREE.Vector3(236, START_Y, 126),
+    new THREE.Vector3(224, START_Y, 168),
+    new THREE.Vector3(178, START_Y, 166),
+    new THREE.Vector3(134, START_Y, 128),
+    new THREE.Vector3(88, START_Y, 156),
+    new THREE.Vector3(44, START_Y, 124),
+    new THREE.Vector3(8, START_Y, 152),
+    new THREE.Vector3(-24, START_Y, 134),
+    new THREE.Vector3(-28, START_Y, 92),
+    new THREE.Vector3(-6, START_Y, 64),
   ];
 
   // Ukur panjang mentah & skala bidang XZ agar keliling total TEPAT 1500.0 m
@@ -175,10 +263,13 @@ function buildMandalikaLUT() {
   let minX = 1e9, maxX = -1e9, minZ = 1e9, maxZ = -1e9;
 
   for (let i = 0; i < LUT_N; i++) {
+    const s = i * DS;
     const u = (u0 + i / LUT_N) % 1;
     curve.getPointAt(u, tmpP);
     curve.getTangentAt(u, tmpT);
-    tmpT.normalize();
+    const { dy, slope } = evalCircuitElev(s);
+    const hLen = Math.hypot(tmpT.x, tmpT.z) || 1;
+    tmpT.set(tmpT.x / hLen, slope, tmpT.z / hLen).normalize();
     tmpRight.crossVectors(tmpT, worldUp).normalize();
     if (tmpP.x < minX) minX = tmpP.x;
     if (tmpP.x > maxX) maxX = tmpP.x;
@@ -186,9 +277,9 @@ function buildMandalikaLUT() {
     if (tmpP.z > maxZ) maxZ = tmpP.z;
 
     lut[i] = {
-      s: i * DS,
+      s,
       px: tmpP.x,
-      py: tmpP.y,
+      py: START_Y + dy,
       pz: tmpP.z,
       fx: tmpT.x,
       fy: tmpT.y,
@@ -240,7 +331,7 @@ function buildMandalikaLUT() {
     ) {
       zone = 'ramp';
       flatMask = 0;
-    } else if ((s >= 150 && s <= 262) || (s >= 820 && s <= 1172)) {
+    } else if ((s >= 150 && s <= 246) || (s >= 820 && s <= 1172)) {
       zone = 'banked';
       halfW = W_BANK * 0.5;
       flatMask = 1.45;
@@ -347,7 +438,8 @@ export function getCircuitSurfaceAt(s, latX = 0) {
   const baseY = _sPos.y;
   const bank = meta.bank;
   const hw = meta.halfW;
-  const slope = _sFwd.y;
+  const horizFwd = Math.hypot(_sFwd.x, _sFwd.z) || 1;
+  const slope = _sFwd.y / horizFwd;
 
   // 1) Upper/Lower Split-Level Shortcut (Turns 4-6)
   if (ws >= SPLIT_S0 && ws <= SPLIT_S1) {
@@ -561,8 +653,14 @@ export const isSplineCircuit = true;
 export const getTrackSurfaceAt = getCircuitSurfaceAt;
 export const checkRampCollision = checkCircuitRampCollision;
 export const checkBoostCollision = checkCircuitBoostCollision;
-export function getTrackHeight() { return LUT[0]?.py ?? START_Y; }
-export function getTrackSlope() { return 0; }
+const _hPos = new THREE.Vector3();
+export function getTrackHeight(s = 0) {
+  sampleCenterline(s, _hPos);
+  return _hPos.y;
+}
+export function getTrackSlope(s = 0) {
+  return getCircuitSlope(s);
+}
 export function getTrackCenterX() { return 0; }
 export function getTrackYaw() { return 0; }
 export function getTrackBank() { return 0; }
@@ -573,30 +671,6 @@ export function evalLoopPose(sStart, sEnd, _y0, _y1, u, latX, outPos, outQuat, o
 }
 
 /* ==================== Pembantu Tekstur Prosedural ==================== */
-function makeOrangeTrackTex() {
-  const size = 512;
-  const c = document.createElement('canvas'); c.width = c.height = size;
-  const g = c.getContext('2d');
-  const grad = g.createLinearGradient(0, 0, size, 0);
-  grad.addColorStop(0, '#e85d04');
-  grad.addColorStop(0.06, '#ff6b00');
-  grad.addColorStop(0.5, '#ff7b1c');
-  grad.addColorStop(0.94, '#ff6b00');
-  grad.addColorStop(1, '#e85d04');
-  g.fillStyle = grad; g.fillRect(0, 0, size, size);
-  // Center speed stripe & longitudinal Hot Wheels track grooves
-  g.fillStyle = 'rgba(255, 245, 220, 0.24)';
-  g.fillRect(size * 0.486, 0, size * 0.028, size);
-  for (const gx of [0.18, 0.30, 0.42, 0.58, 0.70, 0.82]) {
-    g.fillStyle = 'rgba(154, 48, 0, 0.24)';
-    g.fillRect(size * gx, 0, 4, size);
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.wrapS = THREE.ClampToEdgeWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  return tex;
-}
 
 function makeYellowBankTex() {
   const size = 512;
@@ -675,28 +749,33 @@ function makeOceanTex() {
 function makeBannerTex(text, c0, c1, border = '#ffd100', checkered = false) {
   const c = document.createElement('canvas'); c.width = 1024; c.height = 192;
   const g = c.getContext('2d');
-  const grad = g.createLinearGradient(0, 0, 1024, 0);
-  grad.addColorStop(0, c0); grad.addColorStop(0.5, c1); grad.addColorStop(1, c0);
-  g.fillStyle = grad;
-  g.beginPath(); g.roundRect(6, 6, 1012, 180, 26); g.fill();
-  if (checkered) {
-    const sq = 22;
-    for (let x = 22; x < 120; x += sq) {
-      for (let y = 22; y < 170; y += sq) {
-        g.fillStyle = ((Math.floor(x / sq) + Math.floor(y / sq)) % 2 === 0) ? '#ffffff' : '#18181b';
-        g.fillRect(x, y, sq, sq);
-        g.fillRect(1024 - x - sq, y, sq, sq);
+  const draw = () => {
+    g.clearRect(0, 0, 1024, 192);
+    const grad = g.createLinearGradient(0, 0, 1024, 0);
+    grad.addColorStop(0, c0); grad.addColorStop(0.5, c1); grad.addColorStop(1, c0);
+    g.fillStyle = grad;
+    g.beginPath(); g.roundRect(6, 6, 1012, 180, 26); g.fill();
+    if (checkered) {
+      const sq = 22;
+      for (let x = 22; x < 120; x += sq) {
+        for (let y = 22; y < 170; y += sq) {
+          g.fillStyle = ((Math.floor(x / sq) + Math.floor(y / sq)) % 2 === 0) ? '#ffffff' : '#18181b';
+          g.fillRect(x, y, sq, sq);
+          g.fillRect(1024 - x - sq, y, sq, sq);
+        }
       }
     }
-  }
-  g.strokeStyle = border; g.lineWidth = 12;
-  g.beginPath(); g.roundRect(14, 14, 996, 164, 20); g.stroke();
-  g.fillStyle = '#fff8eb';
-  g.font = '700 46px Fredoka, "Plus Jakarta Sans", sans-serif';
-  g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText(text, 512, 98);
+    g.strokeStyle = border; g.lineWidth = 12;
+    g.beginPath(); g.roundRect(14, 14, 996, 164, 20); g.stroke();
+    g.fillStyle = '#fff8eb';
+    g.font = '700 42px Fredoka, "Plus Jakarta Sans", sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(text, 512, 98);
+  };
+  draw();
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
+  whenFontsReady(() => { draw(); tex.needsUpdate = true; });
   return tex;
 }
 
@@ -707,22 +786,6 @@ function makeChevronSignTex() {
   g.strokeStyle = '#18181b'; g.lineWidth = 26; g.lineCap = 'round'; g.lineJoin = 'round';
   g.beginPath(); g.moveTo(64, 48); g.lineTo(188, 128); g.lineTo(64, 208); g.stroke();
   g.strokeStyle = '#ff6b00'; g.lineWidth = 12; g.strokeRect(8, 8, 240, 240);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
-function makeWarnTriangleTex() {
-  const c = document.createElement('canvas'); c.width = 256; c.height = 256;
-  const g = c.getContext('2d');
-  g.fillStyle = '#e11d48'; g.strokeStyle = '#ffffff'; g.lineWidth = 16; g.lineJoin = 'round';
-  g.beginPath(); g.moveTo(128, 22); g.lineTo(234, 218); g.lineTo(22, 218); g.closePath(); g.fill(); g.stroke();
-  g.fillStyle = '#b91c1c';
-  g.beginPath(); g.moveTo(128, 56); g.lineTo(198, 192); g.lineTo(58, 192); g.closePath(); g.fill();
-  g.fillStyle = '#ffffff';
-  g.font = '700 108px Fredoka, "Plus Jakarta Sans", sans-serif';
-  g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText('!', 128, 145);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
@@ -863,7 +926,8 @@ function buildRailSplineMesh(slices, material, evalSlice) {
 /* =====================================================================
    createMandalikaTrack(scene, opts)
    ===================================================================== */
-export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
+export function createMandalikaTrack(scene, { maxAnisotropy = 8, eco = false } = {}) {
+  let isEco = !!eco;
   const root = new THREE.Group();
   scene.add(root);
 
@@ -877,21 +941,20 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
     return tex;
   };
 
-  const texOrange = tuneTex(makeOrangeTrackTex());
   const texYellow = tuneTex(makeYellowBankTex());
   const texBlue = tuneTex(makeBlueBoostTrackTex());
   const texOcean = tuneTex(makeOceanTex());
-  const texStartBanner = tuneTex(makeBannerTex('🏝️ MANDALIKA SKY CIRCUIT • GRAND PRIX 🏁', '#0055cc', '#ff6b00', '#ffd100', true));
-  const texSector500 = tuneTex(makeBannerTex('⚡ SEKTOR PESISIR • JEMBATAN BUAH 500M ⚡', '#1e3a8a', '#0ea5e9', '#ffd100', false));
-  const texSector1000 = tuneTex(makeBannerTex('🐉 S-CURVE MANDALIKA • TEROWONGAN GARUDA 1000M 🔥', '#9a3412', '#ff6b00', '#ffbe0b', false));
+  const texStartBanner = tuneTex(makeBannerTex('MANDALIKA SKY CIRCUIT • GRAND PRIX', '#0055cc', '#ff6b00', '#ffd100', true));
+  const texSector500 = tuneTex(makeBannerTex('SEKTOR PESISIR • JEMBATAN BUAH 500M', '#1e3a8a', '#0ea5e9', '#ffd100', false));
+  const texSector1000 = tuneTex(makeBannerTex('S-CURVE MANDALIKA • PORTAL 1000M', '#9a3412', '#ff6b00', '#ffbe0b', false));
   const texChevronSign = tuneTex(makeChevronSignTex());
-  const texWarn = tuneTex(makeWarnTriangleTex());
+  const texWarn = tuneTex(createWarningSignTexture());
   const texCheckered = tuneTex(makeCheckeredStripeTex());
   const texRampChev = tuneTex(makeRampChevronTex());
   const texGlowRing = tuneTex(makeGlowRingTex());
   const texHazard = tuneTex(makeHazardStripeTex());
 
-  const matSkyOrange = new THREE.MeshStandardMaterial({ color: '#ffffff', map: texOrange, roughness: 0.34, metalness: 0.08, side: THREE.DoubleSide });
+  const matSkyOrange = createCleanOrangeTrackMaterial({ maxAnisotropy, side: THREE.DoubleSide, repeatX: 1, repeatY: 1 });
   const matBankYellow = new THREE.MeshStandardMaterial({ color: '#ffffff', map: texYellow, roughness: 0.34, metalness: 0.08, side: THREE.DoubleSide });
   const matBoostBlue = new THREE.MeshStandardMaterial({ color: '#ffffff', map: texBlue, roughness: 0.34, metalness: 0.08, side: THREE.DoubleSide });
   const matRailBlue = new THREE.MeshStandardMaterial({ color: '#0077ff', roughness: 0.34, metalness: 0.08, side: THREE.DoubleSide });
@@ -907,20 +970,17 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
   const matArchBlue = new THREE.MeshStandardMaterial({ color: '#0077ff', roughness: 0.36, metalness: 0.08 });
   const matArchRed = new THREE.MeshStandardMaterial({ color: '#e63946', roughness: 0.36, metalness: 0.08 });
   const matArchOrange = new THREE.MeshStandardMaterial({ color: '#ff6b00', roughness: 0.36, metalness: 0.08 });
-  const matFlameTorch = new THREE.MeshStandardMaterial({ color: '#ffbe0b', emissive: '#ff5400', emissiveIntensity: 1.4, roughness: 0.2 });
+  const matTunnelWhite = new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.32, metalness: 0.08 });
 
-  const matGarudaGold = new THREE.MeshStandardMaterial({ color: '#fbbf24', metalness: 0.72, roughness: 0.24, emissive: '#b45309', emissiveIntensity: 0.16 });
-  const matGarudaBronze = new THREE.MeshStandardMaterial({ color: '#92400e', metalness: 0.65, roughness: 0.35 });
-  const matGarudaEye = new THREE.MeshStandardMaterial({ color: '#ff2a4b', emissive: '#ff0033', emissiveIntensity: 1.8, roughness: 0.18 });
   const matEnergyOrb = new THREE.MeshStandardMaterial({ color: '#ff2a4b', emissive: '#ef4444', emissiveIntensity: 1.65, roughness: 0.15, metalness: 0.2 });
   const matEnergyRing = new THREE.MeshBasicMaterial({ color: '#fca5a5', transparent: true, opacity: 0.85 });
   const matWarnSign = new THREE.MeshStandardMaterial({ map: texWarn, transparent: true, alphaTest: 0.15, side: THREE.DoubleSide, emissive: '#ff2a4b', emissiveMap: texWarn, emissiveIntensity: 0.6, roughness: 0.28 });
 
   const matCoinGold = new THREE.MeshPhysicalMaterial({ color: P.coinGold, metalness: 0.86, roughness: 0.16, clearcoat: 0.85, emissive: '#fb8500', emissiveIntensity: 0.24 });
   const matCoinRim = new THREE.MeshPhysicalMaterial({ color: P.coinGoldRim, metalness: 0.88, roughness: 0.2, clearcoat: 0.85, emissive: '#f77f00', emissiveIntensity: 0.18 });
+  const matGemShared = new THREE.MeshPhysicalMaterial({ color: '#ff2a4b', emissive: '#ffbe0b', emissiveIntensity: 0.45, roughness: 0.14, metalness: 0.25, clearcoat: 1.0 });
   const matGemHalo = new THREE.MeshStandardMaterial({ color: '#ffffff', metalness: 0.5, roughness: 0.2, emissive: '#ffbe0b', emissiveIntensity: 0.55 });
-  const matFireRing = new THREE.MeshPhysicalMaterial({ color: '#ffbe0b', roughness: 0.14, metalness: 0.65, clearcoat: 1.0, emissive: '#ff5400', emissiveIntensity: 0.88 });
-  const matFireFlame = new THREE.MeshStandardMaterial({ color: '#ff6b00', roughness: 0.3, emissive: '#ff9500', emissiveIntensity: 1.15 });
+  const matStarRing = new THREE.MeshPhysicalMaterial({ color: '#ffbe0b', roughness: 0.16, metalness: 0.65, clearcoat: 1.0, emissive: '#ff9f1c', emissiveIntensity: 0.72 });
   const ringMats = {
     strawberry: new THREE.MeshBasicMaterial({ map: texGlowRing, color: '#ff4d6d', transparent: true, opacity: 0.82, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
     melon: new THREE.MeshBasicMaterial({ map: texGlowRing, color: '#2ec4b6', transparent: true, opacity: 0.82, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
@@ -945,13 +1005,13 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
   const disposablesMat = [
     matSkyOrange, matBankYellow, matBoostBlue, matRailBlue, matRailOrange, matDeckSide, matConnectorBlue,
     matOcean, matGreenBoost, matBoosterWheel, matRamp, matHazardStripe, matCheckered, matArchBlue, matArchRed,
-    matArchOrange, matFlameTorch, matGarudaGold, matGarudaBronze, matGarudaEye, matEnergyOrb, matEnergyRing,
-    matWarnSign, matCoinGold, matCoinRim, matGemHalo, matFireRing, matFireFlame, matTrussSteel, matChevronSign,
+    matArchOrange, matTunnelWhite, matEnergyOrb, matEnergyRing,
+    matWarnSign, matCoinGold, matCoinRim, matGemShared, matGemHalo, matStarRing, matTrussSteel, matChevronSign,
     matIslandSand, matIslandLush, matCoastHill, matPalmTrunk, matPalmCrown, matPostBlue, matPostOrange,
     matPropBarrelRed, matPropBarrelYellow, ...Object.values(ringMats),
   ];
   const disposablesTex = [
-    texOrange, texYellow, texBlue, texOcean, texStartBanner, texSector500, texSector1000,
+    matSkyOrange.map, texYellow, texBlue, texOcean, texStartBanner, texSector500, texSector1000,
     texChevronSign, texWarn, texCheckered, texRampChev, texGlowRing, texHazard,
   ];
 
@@ -1017,49 +1077,121 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
     };
   }
 
-  // Klasifikasi tiap langkah 2m di sepanjang 1500m lintasan
+  // Klasifikasi tiap langkah di sepanjang 1500m lintasan
   function zoneMatKind(s) {
     const ws = wrapS(s);
     if ((ws >= 96 && ws <= 138) || (ws >= 690 && ws <= 730) || (ws >= 1178 && ws <= 1218)) return 'blue';
-    if ((ws >= 146 && ws <= 268) || (ws >= 816 && ws <= 1174)) return 'yellow';
+    if ((ws >= 146 && ws <= 248) || (ws >= 816 && ws <= 1174)) return 'yellow';
     return 'orange';
   }
 
-  // Bangun potongan pita berurutan per jenis material agar draw call minim
-  const sectorSlices = { orange: [], yellow: [], blue: [] };
-  const stepS = 2.0;
-  for (let s = 0; s < TOTAL_LEN; s += stepS) {
-    const sNext = s + stepS;
-    const midS = s + stepS * 0.5;
-    // Lewati bagian khusus (split bridge, loop, ramp chasm) yg digambar terpisah
-    const inSplit = midS > SPLIT_S0 + 2 && midS < SPLIT_S1 - 2;
-    const inLoop = midS > LOOP_S0 + 1 && midS < LOOP_S1 - 1;
-    const inRampGap = RAMPS.some((rp) => midS > rp.gapStart && midS < rp.gapEnd);
-    if (inSplit || inLoop || inRampGap) continue;
+  const deckGeoRefs = {
+    orange: null, yellow: null, blue: null,
+    upperBridge: null, lowerCoast: null, upperRailL: null, upperRailR: null, loopBypass: null,
+  };
 
-    const kind = zoneMatKind(midS);
-    const arr = sectorSlices[kind];
-    const prevS = arr.length ? arr[arr.length - 1].sEnd : -999;
-    const breakBefore = Math.abs(prevS - s) > 0.2;
-    if (breakBefore || arr.length === 0) {
-      arr.push({ s, sEnd: s, breakBefore: true });
+  function buildRoadGeometries(stepVal) {
+    const sectorSlices = { orange: [], yellow: [], blue: [] };
+    for (let s = 0; s < TOTAL_LEN; s += stepVal) {
+      const sNext = Math.min(TOTAL_LEN, s + stepVal);
+      const midS = (s + sNext) * 0.5;
+      const inSplit = midS > SPLIT_S0 + 2 && midS < SPLIT_S1 - 2;
+      const inLoop = midS > LOOP_S0 + 1 && midS < LOOP_S1 - 1;
+      const inRampGap = RAMPS.some((rp) => midS > rp.gapStart && midS < rp.gapEnd);
+      if (inSplit || inLoop || inRampGap) continue;
+
+      const kind = zoneMatKind(midS);
+      const arr = sectorSlices[kind];
+      const prevS = arr.length ? arr[arr.length - 1].sEnd : -999;
+      const breakBefore = Math.abs(prevS - s) > 0.2;
+      if (breakBefore || arr.length === 0) {
+        arr.push({ s, sEnd: s, breakBefore: true });
+      }
+      arr.push({ s: sNext, sEnd: sNext, breakBefore: false });
     }
-    arr.push({ s: sNext, sEnd: sNext, breakBefore: false });
+
+    const buildZonedDeck = (list, mat, existingMesh) => {
+      if (!list.length) return null;
+      const built = buildBeveledSplineMesh(list, mat, (sl) => {
+        const meta = sampleCenterline(sl.s);
+        return buildDeckSlice(sl.s, -meta.halfW, meta.halfW, 0);
+      });
+      if (existingMesh) {
+        existingMesh.geometry.dispose();
+        existingMesh.geometry = built.geometry;
+        return existingMesh;
+      }
+      root.add(built);
+      return built;
+    };
+
+    deckGeoRefs.orange = buildZonedDeck(sectorSlices.orange, matSkyOrange, deckGeoRefs.orange);
+    deckGeoRefs.yellow = buildZonedDeck(sectorSlices.yellow, matBankYellow, deckGeoRefs.yellow);
+    deckGeoRefs.blue = buildZonedDeck(sectorSlices.blue, matBoostBlue, deckGeoRefs.blue);
+
+    const splitSlices = [];
+    for (let s = SPLIT_S0; s <= SPLIT_S1; s += stepVal) {
+      splitSlices.push({ s, breakBefore: splitSlices.length === 0 });
+    }
+    if (splitSlices[splitSlices.length - 1].s < SPLIT_S1) {
+      splitSlices.push({ s: SPLIT_S1, breakBefore: false });
+    }
+
+    const upperBridgeBuilt = buildBeveledSplineMesh(splitSlices, matSkyOrange, (sl) => {
+      const blend = smoothstep(SPLIT_S0, SPLIT_S0 + 10, sl.s) * (1 - smoothstep(SPLIT_S1 - 10, SPLIT_S1, sl.s));
+      const hw = THREE.MathUtils.lerp(9.0, SPLIT_UP_HW, blend);
+      const cx = THREE.MathUtils.lerp(0, SPLIT_UP_CX, blend);
+      return buildDeckSlice(sl.s, cx - hw, cx + hw, getSplitBridgeOffset(sl.s));
+    });
+    const lowerCoastBuilt = buildBeveledSplineMesh(splitSlices, matBankYellow, (sl) => {
+      const blend = smoothstep(SPLIT_S0, SPLIT_S0 + 10, sl.s) * (1 - smoothstep(SPLIT_S1 - 10, SPLIT_S1, sl.s));
+      const hw = THREE.MathUtils.lerp(9.0, SPLIT_LO_HW, blend);
+      const cx = THREE.MathUtils.lerp(0, SPLIT_LO_CX, blend);
+      return buildDeckSlice(sl.s, cx - hw, cx + hw, 0);
+    });
+    const upperRailLBuilt = buildRailSplineMesh(splitSlices, matRailBlue, (sl) => {
+      const blend = smoothstep(SPLIT_S0, SPLIT_S0 + 10, sl.s) * (1 - smoothstep(SPLIT_S1 - 10, SPLIT_S1, sl.s));
+      const cx = THREE.MathUtils.lerp(0, SPLIT_UP_CX, blend) - THREE.MathUtils.lerp(9.0, SPLIT_UP_HW, blend);
+      sampleCenterline(sl.s, _p, _f, _r, _u);
+      const yOff = getSplitBridgeOffset(sl.s);
+      const bot = _p.clone().addScaledVector(_r, cx); bot.y += yOff;
+      const top = bot.clone(); top.y += 0.62;
+      return { bot, top };
+    });
+    const upperRailRBuilt = buildRailSplineMesh(splitSlices, matRailBlue, (sl) => {
+      const blend = smoothstep(SPLIT_S0, SPLIT_S0 + 10, sl.s) * (1 - smoothstep(SPLIT_S1 - 10, SPLIT_S1, sl.s));
+      const cx = THREE.MathUtils.lerp(0, SPLIT_UP_CX, blend) + THREE.MathUtils.lerp(9.0, SPLIT_UP_HW, blend);
+      sampleCenterline(sl.s, _p, _f, _r, _u);
+      const yOff = getSplitBridgeOffset(sl.s);
+      const bot = _p.clone().addScaledVector(_r, cx); bot.y += yOff;
+      const top = bot.clone(); top.y += 0.62;
+      return { bot, top };
+    });
+
+    const bypassSlices = [];
+    for (let s = LOOP_S0; s <= LOOP_S1; s += stepVal) bypassSlices.push({ s, breakBefore: bypassSlices.length === 0 });
+    if (bypassSlices[bypassSlices.length - 1].s < LOOP_S1) bypassSlices.push({ s: LOOP_S1, breakBefore: false });
+    const bypassBuilt = buildBeveledSplineMesh(bypassSlices, matBankYellow, (sl) =>
+      buildDeckSlice(sl.s, BYPASS_CENTER_X - BYPASS_HALF_W, BYPASS_CENTER_X + BYPASS_HALF_W, 0)
+    );
+
+    const swapOrAdd = (key, built) => {
+      if (deckGeoRefs[key]) {
+        deckGeoRefs[key].geometry.dispose();
+        deckGeoRefs[key].geometry = built.geometry;
+      } else {
+        deckGeoRefs[key] = built;
+        root.add(built);
+      }
+    };
+    swapOrAdd('upperBridge', upperBridgeBuilt);
+    swapOrAdd('lowerCoast', lowerCoastBuilt);
+    swapOrAdd('upperRailL', upperRailLBuilt);
+    swapOrAdd('upperRailR', upperRailRBuilt);
+    swapOrAdd('loopBypass', bypassBuilt);
   }
 
-  // Filter agar pasangan berurutan bersih
-  function buildZonedDeck(list, mat) {
-    if (!list.length) return;
-    const mesh = buildBeveledSplineMesh(list, mat, (sl) => {
-      const meta = sampleCenterline(sl.s);
-      return buildDeckSlice(sl.s, -meta.halfW, meta.halfW, 0);
-    });
-    disposablesGeo.push(mesh.geometry);
-    root.add(mesh);
-  }
-  buildZonedDeck(sectorSlices.orange, matSkyOrange);
-  buildZonedDeck(sectorSlices.yellow, matBankYellow);
-  buildZonedDeck(sectorSlices.blue, matBoostBlue);
+  buildRoadGeometries(isEco ? 4.0 : 2.0);
 
   // Jalur Aman saat Jump Ramp (sisi seberang jurang)
   for (const rp of RAMPS) {
@@ -1074,44 +1206,6 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
     disposablesGeo.push(safeMesh.geometry);
     root.add(safeMesh);
   }
-
-  /* ---------- 3) Upper/Lower Split-Level Shortcut (Turns 4-6: Jembatan Buah Bertingkat) ---------- */
-  const splitSlices = [];
-  for (let s = SPLIT_S0; s <= SPLIT_S1; s += 2.0) {
-    splitSlices.push({ s, breakBefore: splitSlices.length === 0 });
-  }
-  const upperBridgeMesh = buildBeveledSplineMesh(splitSlices, matSkyOrange, (sl) => {
-    const blend = smoothstep(SPLIT_S0, SPLIT_S0 + 10, sl.s) * (1 - smoothstep(SPLIT_S1 - 10, SPLIT_S1, sl.s));
-    const hw = THREE.MathUtils.lerp(9.0, SPLIT_UP_HW, blend);
-    const cx = THREE.MathUtils.lerp(0, SPLIT_UP_CX, blend);
-    return buildDeckSlice(sl.s, cx - hw, cx + hw, getSplitBridgeOffset(sl.s));
-  });
-  const lowerCoastMesh = buildBeveledSplineMesh(splitSlices, matBankYellow, (sl) => {
-    const blend = smoothstep(SPLIT_S0, SPLIT_S0 + 10, sl.s) * (1 - smoothstep(SPLIT_S1 - 10, SPLIT_S1, sl.s));
-    const hw = THREE.MathUtils.lerp(9.0, SPLIT_LO_HW, blend);
-    const cx = THREE.MathUtils.lerp(0, SPLIT_LO_CX, blend);
-    return buildDeckSlice(sl.s, cx - hw, cx + hw, 0);
-  });
-  const upperRailL = buildRailSplineMesh(splitSlices, matRailBlue, (sl) => {
-    const blend = smoothstep(SPLIT_S0, SPLIT_S0 + 10, sl.s) * (1 - smoothstep(SPLIT_S1 - 10, SPLIT_S1, sl.s));
-    const cx = THREE.MathUtils.lerp(0, SPLIT_UP_CX, blend) - THREE.MathUtils.lerp(9.0, SPLIT_UP_HW, blend);
-    sampleCenterline(sl.s, _p, _f, _r, _u);
-    const yOff = getSplitBridgeOffset(sl.s);
-    const bot = _p.clone().addScaledVector(_r, cx); bot.y += yOff;
-    const top = bot.clone(); top.y += 0.62;
-    return { bot, top };
-  });
-  const upperRailR = buildRailSplineMesh(splitSlices, matRailBlue, (sl) => {
-    const blend = smoothstep(SPLIT_S0, SPLIT_S0 + 10, sl.s) * (1 - smoothstep(SPLIT_S1 - 10, SPLIT_S1, sl.s));
-    const cx = THREE.MathUtils.lerp(0, SPLIT_UP_CX, blend) + THREE.MathUtils.lerp(9.0, SPLIT_UP_HW, blend);
-    sampleCenterline(sl.s, _p, _f, _r, _u);
-    const yOff = getSplitBridgeOffset(sl.s);
-    const bot = _p.clone().addScaledVector(_r, cx); bot.y += yOff;
-    const top = bot.clone(); top.y += 0.62;
-    return { bot, top };
-  });
-  disposablesGeo.push(upperBridgeMesh.geometry, lowerCoastMesh.geometry, upperRailL.geometry, upperRailR.geometry);
-  root.add(upperBridgeMesh, lowerCoastMesh, upperRailL, upperRailR);
 
   /* ---------- 4) Dual-Choice 360° Vertical Loop (Back straight sebelum Turn 10) ---------- */
   const loopSlices = [];
@@ -1153,13 +1247,8 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
     evalLoopPoseAtS(LOOP_S0, LOOP_S1, sl.u, LOOP_HALF_W + 0.1, _lpR1);
     return { bot: _lpR1.clone(), top: _lpR1.clone().addScaledVector(inward, 0.72) };
   });
-  const bypassSlices = [];
-  for (let s = LOOP_S0; s <= LOOP_S1; s += 2) bypassSlices.push({ s, breakBefore: bypassSlices.length === 0 });
-  const loopBypassMesh = buildBeveledSplineMesh(bypassSlices, matBankYellow, (sl) =>
-    buildDeckSlice(sl.s, BYPASS_CENTER_X - BYPASS_HALF_W, BYPASS_CENTER_X + BYPASS_HALF_W, 0)
-  );
-  disposablesGeo.push(loopDeck.geometry, loopRailL.geometry, loopRailR.geometry, loopBypassMesh.geometry);
-  root.add(loopDeck, loopRailL, loopRailR, loopBypassMesh);
+  disposablesGeo.push(loopDeck.geometry, loopRailL.geometry, loopRailR.geometry);
+  root.add(loopDeck, loopRailL, loopRailR);
 
   /* ---------- 5) Ramp Lompat, Booster Pad & Connector Biru ---------- */
   const geoRamp = (() => {
@@ -1176,25 +1265,30 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
   const geoBoosterWheel = new THREE.CylinderGeometry(1.02, 1.02, 0.46, 14); geoBoosterWheel.rotateZ(Math.PI / 2);
   disposablesGeo.push(geoRamp, geoRampLip, geoBoostPad, geoGreenChev, geoBoosterHousing, geoBoosterWheel);
 
+  const rampGroups = [];
   for (const rp of RAMPS) {
+    const rGrp = new THREE.Group();
     evalCircuitPose(rp.sCenter, rp.side * rp.offset, _p, _f, _r, _u);
     const rg = new THREE.Mesh(geoRamp, matRamp);
     rg.position.copy(_p);
     rg.position.y += rp.rise * 0.5 - 0.05;
     rg.quaternion.copy(makeBasisQuat(rp.sCenter));
     rg.castShadow = true;
-    root.add(rg);
+    rGrp.add(rg);
 
     for (const edgeS of [rp.gapStart, rp.gapEnd]) {
       evalCircuitPose(edgeS, rp.side * rp.offset, _p);
       const lip = new THREE.Mesh(geoRampLip, matHazardStripe);
       lip.position.copy(_p); lip.position.y -= 0.16;
       lip.quaternion.copy(makeBasisQuat(edgeS));
-      root.add(lip);
+      rGrp.add(lip);
     }
+    root.add(rGrp);
+    rampGroups.push({ group: rGrp, s: rp.sCenter });
   }
 
   const boosterWheels = [];
+  const boostGroups = [];
   for (const bp of BOOSTS) {
     const bg = new THREE.Group();
     evalCircuitPose(bp.sCenter, 0, _p);
@@ -1219,17 +1313,17 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
       }
     }
     root.add(bg);
+    boostGroups.push({ group: bg, s: bp.sCenter });
   }
 
-  /* ---------- 6) Gerbang Start/Finish & Milestone 500m / 1000m ---------- */
-  const geoArchPillar = new RoundedBoxGeometry(1.5, 14.5, 1.5, 3, 0.18);
-  const geoArchBeam = new RoundedBoxGeometry(W_START + 4.0, 1.9, 1.6, 3, 0.24);
+  /* ---------- 6) Gerbang Start/Finish & Milestone 500m / 1000m (tanpa api/emoji) ---------- */
+  const geoArchPillar = new RoundedBoxGeometry(1.5, 14.5, 1.5, 2, 0.18);
+  const geoArchBeam = new RoundedBoxGeometry(W_START + 4.0, 1.9, 1.6, 2, 0.24);
   const geoArchBanner = new THREE.PlaneGeometry(W_START + 1.6, 2.6);
-  const geoFlameJet = new THREE.ConeGeometry(0.62, 2.1, 8);
   const geoCheckStripe = new THREE.PlaneGeometry(W_START - 0.8, 3.2); geoCheckStripe.rotateX(-Math.PI / 2);
-  disposablesGeo.push(geoArchPillar, geoArchBeam, geoArchBanner, geoFlameJet, geoCheckStripe);
+  disposablesGeo.push(geoArchPillar, geoArchBeam, geoArchBanner, geoCheckStripe);
 
-  const torchFlames = [];
+  const archGroups = [];
   function placeArch(sPos, bannerTex, spanW, withCheckered = false) {
     const matBanner = new THREE.MeshStandardMaterial({ map: bannerTex, emissive: '#ffffff', emissiveMap: bannerTex, emissiveIntensity: 0.25, roughness: 0.4 });
     disposablesMat.push(matBanner);
@@ -1242,64 +1336,46 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
     const beam = new THREE.Mesh(geoArchBeam, matArchOrange); beam.position.set(0, 13.8, 0);
     const bF = new THREE.Mesh(geoArchBanner, matBanner); bF.position.set(0, 13.8, 0.85);
     const bB = new THREE.Mesh(geoArchBanner, matBanner); bB.position.set(0, 13.8, -0.85); bB.rotation.y = Math.PI;
-    const fL = new THREE.Mesh(geoFlameJet, matFlameTorch); fL.position.set(-spanW * 0.5, 15.6, 0);
-    const fR = new THREE.Mesh(geoFlameJet, matFlameTorch); fR.position.set(spanW * 0.5, 15.6, 0);
-    g.add(pL, pR, beam, bF, bB, fL, fR);
-    torchFlames.push(fL, fR);
+    g.add(pL, pR, beam, bF, bB);
     if (withCheckered) {
       const ch = new THREE.Mesh(geoCheckStripe, matCheckered);
       ch.position.set(0, 0.05, 0);
       g.add(ch);
     }
     root.add(g);
+    archGroups.push({ group: g, s: sPos });
   }
   placeArch(1.5, texStartBanner, W_START + 2.8, true);
   placeArch(500, texSector500, W + 2.8, false);
   placeArch(1000, texSector1000, W_BANK + 2.8, false);
 
-  /* ---------- 7) Terowongan Garuda Emas Mekanik + 3 Bola Energi Merah + Rambu `!` ---------- */
-  const geoSkullCrown = new THREE.ConeGeometry(3.8, 5.2, 5);
-  const geoSkullJaw = new RoundedBoxGeometry(W_BANK + 3.2, 3.4, 4.4, 2, 0.4);
-  const geoSkullBeak = new THREE.ConeGeometry(2.2, 5.4, 4);
-  const geoSkullHorn = new THREE.ConeGeometry(0.95, 5.2, 6);
-  const geoSkullEye = new THREE.SphereGeometry(0.95, 10, 8);
-  const geoSkullGear = new THREE.CylinderGeometry(1.85, 1.85, 0.6, 10); geoSkullGear.rotateZ(Math.PI / 2);
-  const geoRibArch = new THREE.TorusGeometry(W_BANK * 0.5 + 1.6, 0.72, 8, 24, Math.PI);
-  const geoOrb = new THREE.SphereGeometry(1.02, 16, 12);
-  const geoOrbRing = new THREE.TorusGeometry(1.32, 0.11, 8, 24);
+  /* ---------- 7) Portal Terowongan Biru-Putih Bersih + 3 Bola Energi Merah + Rambu `!` ---------- */
+  const geoRibArch = new THREE.TorusGeometry(W_BANK * 0.5 + 1.6, 0.68, 8, 22, Math.PI);
+  const geoPortalPier = new RoundedBoxGeometry(1.2, 8.2, 1.2, 1, 0.14);
+  const geoOrb = new THREE.SphereGeometry(1.02, 14, 10);
+  const geoOrbRing = new THREE.TorusGeometry(1.32, 0.11, 8, 20);
   const geoWarnPost = new THREE.CylinderGeometry(0.08, 0.11, 2.2, 8);
   const geoWarnBoard = new THREE.PlaneGeometry(2.15, 2.15);
-  disposablesGeo.push(geoSkullCrown, geoSkullJaw, geoSkullBeak, geoSkullHorn, geoSkullEye, geoSkullGear, geoRibArch, geoOrb, geoOrbRing, geoWarnPost, geoWarnBoard);
+  disposablesGeo.push(geoRibArch, geoPortalPier, geoOrb, geoOrbRing, geoWarnPost, geoWarnBoard);
 
-  const garudaGroup = new THREE.Group();
+  const portalGroup = new THREE.Group();
   evalCircuitPose(GARUDA_S, 0, _p);
-  garudaGroup.position.copy(_p);
-  garudaGroup.quaternion.copy(makeBasisQuat(GARUDA_S));
-  {
-    const pillarL = new THREE.Mesh(geoSkullJaw, matGarudaGold);
-    pillarL.scale.set(0.24, 2.4, 1.0);
-    pillarL.position.set(-(W_BANK * 0.5 + 1.8), 4.0, 0);
-    const pillarR = pillarL.clone(); pillarR.position.x = (W_BANK * 0.5 + 1.8);
-    const brow = new THREE.Mesh(geoSkullJaw, matGarudaGold); brow.position.set(0, 8.2, 0);
-    const crest = new THREE.Mesh(geoSkullCrown, matGarudaGold); crest.position.set(0, 11.4, -0.2);
-    const beak = new THREE.Mesh(geoSkullBeak, matGarudaBronze); beak.rotation.x = Math.PI * 0.85; beak.position.set(0, 6.2, 2.2);
-    garudaGroup.add(pillarL, pillarR, brow, crest, beak);
-    for (const s of [-1, 1]) {
-      const horn = new THREE.Mesh(geoSkullHorn, matGarudaGold);
-      horn.position.set(s * 6.4, 10.6, -0.5); horn.rotation.z = -s * 0.52; horn.rotation.x = -0.2;
-      const eye = new THREE.Mesh(geoSkullEye, matGarudaEye); eye.position.set(s * 4.2, 7.8, 2.1);
-      const gear = new THREE.Mesh(geoSkullGear, matGarudaBronze); gear.position.set(s * (W_BANK * 0.5 + 2.4), 5.6, 0);
-      garudaGroup.add(horn, eye, gear);
-    }
-    for (let r = 0; r < 4; r++) {
-      const rib = new THREE.Mesh(geoRibArch, r % 2 === 0 ? matGarudaGold : matGarudaBronze);
-      rib.position.set(0, 0.2, -5.0 - r * 7.2);
-      garudaGroup.add(rib);
+  portalGroup.position.copy(_p);
+  portalGroup.quaternion.copy(makeBasisQuat(GARUDA_S));
+  for (let r = 0; r < 3; r++) {
+    const z = -r * 6.8;
+    const rib = new THREE.Mesh(geoRibArch, r % 2 === 0 ? matArchBlue : matTunnelWhite);
+    rib.position.set(0, 0.2, z);
+    portalGroup.add(rib);
+    for (const sx of [-1, 1]) {
+      const pier = new THREE.Mesh(geoPortalPier, matArchBlue);
+      pier.position.set(sx * (W_BANK * 0.5 + 1.6), 4.0, z);
+      portalGroup.add(pier);
     }
   }
-  root.add(garudaGroup);
+  root.add(portalGroup);
 
-  // Rambu peringatan `!` merah menjelang Terowongan Garuda
+  // Rambu peringatan `!` merah menjelang Terowongan Portal
   const warnGroup = new THREE.Group();
   evalCircuitPose(GARUDA_WARN_S, -(W_BANK * 0.5 + 1.15), _p);
   const warnBaseY = _p.y;
@@ -1310,7 +1386,7 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
   warnGroup.add(wPost, wBoard);
   root.add(warnGroup);
 
-  // 3 Bola Energi Merah berguling bolak-balik di S-Curve Terowongan Garuda
+  // 3 Bola Energi Merah berguling bolak-balik di S-Curve Portal
   const orbs = [];
   for (let k = 0; k < 3; k++) {
     const orbS = GARUDA_S + 8 + k * 10;
@@ -1327,63 +1403,22 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
     });
   }
 
-  /* ---------- 8) InstancedMesh: Pilar Truss di Bawah Deck (±0.85 * halfW), Guardrail, Rambu Chevron, Bukit Pesisir, Pulau & Palem ---------- */
+  /* ---------- 8) InstancedMesh: Pilar Tersembunyi, Guardrail, Rambu Chevron, Bukit Pesisir, Pulau & Palem ---------- */
   const geoInstTruss = new THREE.CylinderGeometry(0.66, 0.90, 1.0, 8);
-  const geoInstPost = new RoundedBoxGeometry(0.32, 0.95, 3.6, 2, 0.06);
-  const geoInstConn = new RoundedBoxGeometry(W + 1.5, 0.38, 1.2, 2, 0.08);
+  const geoInstPost = new RoundedBoxGeometry(0.32, 0.95, 3.6, 1, 0.06);
+  const geoInstConn = new RoundedBoxGeometry(W + 1.5, 0.38, 1.2, 1, 0.08);
   const geoInstChevron = new THREE.BoxGeometry(1.4, 1.4, 0.24);
-  const geoInstIsland = new THREE.CylinderGeometry(7.0, 10.5, 2.8, 12);
-  const geoInstIslandTop = new THREE.CylinderGeometry(6.6, 7.2, 0.75, 12);
-  const geoInstHill = new THREE.ConeGeometry(16, 18, 11);
+  const geoInstIsland = new THREE.CylinderGeometry(7.0, 10.5, 2.8, 10);
+  const geoInstIslandTop = new THREE.CylinderGeometry(6.6, 7.2, 0.75, 10);
+  const geoInstHill = new THREE.ConeGeometry(16, 18, 10);
   const geoInstPalmTrunk = new THREE.CylinderGeometry(0.28, 0.48, 5.2, 7);
   const geoInstPalmCrown = new THREE.ConeGeometry(2.6, 2.4, 7);
   disposablesGeo.push(geoInstTruss, geoInstPost, geoInstConn, geoInstChevron, geoInstIsland, geoInstIslandTop, geoInstHill, geoInstPalmTrunk, geoInstPalmCrown);
 
-  // Pilar truss biru murni DI BAWAH bagian terbawah dek (pillarTopY = trackBottomY - 0.1) di sisi luar (±halfW * 0.85)
-  const trussList = [];
-  for (let s = 12; s < TOTAL_LEN - 10; s += 26) {
-    if (s >= LOOP_S0 - 6 && s <= LOOP_S1 + 6) continue;
-    const meta = sampleCenterline(s, _p, _f, _r);
-
-    if (s >= SPLIT_S0 - 4 && s <= SPLIT_S1 + 4) {
-      // Di sektor jembatan bertingkat: dukung sisi luar jalur bawah & sisi paling kiri jalur atas agar tidak menembus dek mana pun
-      const loOff = SPLIT_LO_CX + SPLIT_LO_HW * 0.85;
-      const loTrackBottomY = _p.y + loOff * meta.bank - DECK_THICK;
-      const loTopY = loTrackBottomY - 0.1;
-      const loH = Math.max(1.0, loTopY - MANDALIKA_OCEAN_Y);
-      trussList.push({ x: _p.x + _r.x * loOff, y: MANDALIKA_OCEAN_Y + loH * 0.5, z: _p.z + _r.z * loOff, h: loH });
-
-      const upOff = SPLIT_UP_CX - SPLIT_UP_HW * 0.85;
-      const upTrackBottomY = _p.y + getSplitBridgeOffset(s) + upOff * meta.bank - DECK_THICK;
-      const upTopY = upTrackBottomY - 0.1;
-      const upH = Math.max(1.0, upTopY - MANDALIKA_OCEAN_Y);
-      trussList.push({ x: _p.x + _r.x * upOff, y: MANDALIKA_OCEAN_Y + upH * 0.5, z: _p.z + _r.z * upOff, h: upH });
-      continue;
-    }
-
-    for (const side of [-1, 1]) {
-      const off = side * (meta.halfW * 0.85);
-      const trackBottomY = _p.y + off * meta.bank - DECK_THICK;
-      const pillarTopY = trackBottomY - 0.1;
-      const h = Math.max(1.0, pillarTopY - MANDALIKA_OCEAN_Y);
-      trussList.push({
-        x: _p.x + _r.x * off,
-        y: MANDALIKA_OCEAN_Y + h * 0.5,
-        z: _p.z + _r.z * off,
-        h,
-      });
-    }
-  }
-  const instTrusses = new THREE.InstancedMesh(geoInstTruss, matTrussSteel, trussList.length);
-  for (let i = 0; i < trussList.length; i++) {
-    const t = trussList[i];
-    _dummy.position.set(t.x, t.y, t.z);
-    _dummy.rotation.set(0, 0, 0);
-    _dummy.scale.set(1, t.h, 1);
-    _dummy.updateMatrix();
-    instTrusses.setMatrixAt(i, _dummy.matrix);
-  }
-  instTrusses.instanceMatrix.needsUpdate = true;
+  // Trek melayang bersih tanpa pilar penyangga bawah air
+  const instTrusses = new THREE.InstancedMesh(geoInstTruss, matTrussSteel, 1);
+  instTrusses.visible = false;
+  instTrusses.count = 0;
   root.add(instTrusses);
 
   // Guardrail posts (orange & blue alternating) + connectors
@@ -1420,106 +1455,135 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
     }
   }
 
-  function makeInst(geo, mat, items) {
-    const im = new THREE.InstancedMesh(geo, mat, Math.max(1, items.length));
-    for (let i = 0; i < items.length; i++) {
+  const islands = [];
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2 + 0.35;
+    const rx = CIRCUIT_BOUNDS.spanX * 0.56 + 44 + (i % 3) * 28;
+    const rz = CIRCUIT_BOUNDS.spanZ * 0.56 + 44 + ((i + 1) % 3) * 28;
+    islands.push({
+      ix: CIRCUIT_BOUNDS.centerX + Math.cos(a) * rx,
+      iz: CIRCUIT_BOUNDS.centerZ + Math.sin(a) * rz,
+      sc: 1.0 + (i % 3) * 0.45,
+      ry: i * 0.85,
+    });
+  }
+  const hills = islands.slice(0, 6).map((it, i) => ({
+    ix: it.ix + ((i % 2) ? 6 : -6),
+    iz: it.iz + ((i % 3) ? -5 : 5),
+    sc: 0.9 + (i % 2) * 0.35,
+  }));
+  const palms = [];
+  for (let i = 0; i < islands.length; i++) {
+    const it = islands[i];
+    for (let k = 0; k < 2; k++) {
+      const ang = i * 1.4 + k * 2.4;
+      const rad = 3.2 * it.sc;
+      palms.push({
+        px: it.ix + Math.cos(ang) * rad,
+        py: MANDALIKA_OCEAN_Y + 2.4 * it.sc,
+        pz: it.iz + Math.sin(ang) * rad,
+        pSc: 0.85 + ((i + k) % 3) * 0.2,
+        rx: (k % 2 ? 0.08 : -0.06),
+        ry: ang,
+        rz: (i % 2 ? 0.06 : -0.08),
+      });
+    }
+  }
+
+  const instBluePosts = new THREE.InstancedMesh(geoInstPost, matPostBlue, Math.max(1, bluePosts.length));
+  const instOrangePosts = new THREE.InstancedMesh(geoInstPost, matPostOrange, Math.max(1, orangePosts.length));
+  const instConnectors = new THREE.InstancedMesh(geoInstConn, matConnectorBlue, Math.max(1, connectors.length));
+  const instChevrons = new THREE.InstancedMesh(geoInstChevron, matChevronSign, Math.max(1, chevrons.length));
+  const instIslBase = new THREE.InstancedMesh(geoInstIsland, matIslandSand, Math.max(1, islands.length));
+  const instIslTop = new THREE.InstancedMesh(geoInstIslandTop, matIslandLush, Math.max(1, islands.length));
+  const instHills = new THREE.InstancedMesh(geoInstHill, matCoastHill, Math.max(1, hills.length));
+  const instPalmTrunks = new THREE.InstancedMesh(geoInstPalmTrunk, matPalmTrunk, Math.max(1, palms.length));
+  const instPalmCrowns = new THREE.InstancedMesh(geoInstPalmCrown, matPalmCrown, Math.max(1, palms.length));
+  for (const im of [instBluePosts, instOrangePosts, instConnectors, instChevrons, instIslBase, instIslTop, instHills, instPalmTrunks, instPalmCrowns]) {
+    im.frustumCulled = false;
+    root.add(im);
+  }
+
+  function applyInst(im, items, maxCount, sxOverride = null) {
+    const n = Math.min(items.length, maxCount);
+    for (let i = 0; i < n; i++) {
       const it = items[i];
       _dummy.position.set(it.px, it.py, it.pz);
       _dummy.quaternion.copy(it.q);
-      _dummy.scale.set(it.sx ?? 1, 1, 1);
+      _dummy.scale.set(it.sx ?? 1, 1, sxOverride ?? 1);
       _dummy.updateMatrix();
       im.setMatrixAt(i, _dummy.matrix);
     }
+    im.count = n;
     im.instanceMatrix.needsUpdate = true;
-    root.add(im);
-    return im;
   }
-  const instBluePosts = makeInst(geoInstPost, matPostBlue, bluePosts);
-  const instOrangePosts = makeInst(geoInstPost, matPostOrange, orangePosts);
-  const instConnectors = makeInst(geoInstConn, matConnectorBlue, connectors);
-  const instChevrons = makeInst(geoInstChevron, matChevronSign, chevrons);
 
-  // Pulau Tropis, Bukit Pesisir Mandalika & Pohon Palem
-  const islands = [], hills = [], palms = [];
-  for (let s = 35; s < TOTAL_LEN; s += 44) {
-    const meta = sampleCenterline(s, _p, _f, _r);
-    for (const side of [-1, 1]) {
-      if (hash(s * 1.7 + side * 9) < 0.32) continue;
-      const distOut = meta.halfW + 26 + hash(s * 2.3 + side) * 28;
-      const ix = _p.x + _r.x * side * distOut;
-      const iz = _p.z + _r.z * side * distOut;
-      // Hindari tumpang tindih dengan bagian trek lain
-      let tooClose = false;
-      for (let k = 0; k < LUT_N; k += 8) {
-        const dx = LUT[k].px - ix;
-        const dz = LUT[k].pz - iz;
-        if (dx * dx + dz * dz < 23 * 23) { tooClose = true; break; }
-      }
-      if (tooClose) continue;
-      const sc = 0.9 + hash(s * 3.1 + side) * 0.95;
-      islands.push({ ix, iz, sc, ry: hash(s + side) * Math.PI });
-      if (hash(s * 5.7 + side) > 0.58) {
-        hills.push({ ix, iz, sc: sc * 1.15 });
-      }
-      const pCount = 2 + (Math.floor(s) % 2);
-      for (let p = 0; p < pCount; p++) {
-        const px = ix + (hash(s * 4.1 + p * 7 + side) - 0.5) * 6.5 * sc;
-        const pz = iz + (hash(s * 6.3 + p * 11 + side) - 0.5) * 6.5 * sc;
-        const py = MANDALIKA_OCEAN_Y + 2.5 * sc;
-        const pSc = 0.8 + hash(s * 7.1 + p) * 0.5;
-        palms.push({ px, py, pz, pSc, rx: 0.08 * (p - 1), rz: 0.1 * side, ry: hash(p * 17 + s) * 3 });
-      }
+  function applyEcoToStaticInstances() {
+    const stepMul = isEco ? 2 : 1;
+    const postScaleZ = isEco ? 2.0 : 1.0;
+
+    const bSel = isEco ? bluePosts.filter((_, idx) => idx % 2 === 0) : bluePosts;
+    const oSel = isEco ? orangePosts.filter((_, idx) => idx % 2 === 0) : orangePosts;
+    const cSel = isEco ? connectors.filter((_, idx) => idx % 2 === 0) : connectors;
+    const chSel = isEco ? chevrons.filter((_, idx) => idx % 2 === 0) : chevrons;
+
+    applyInst(instBluePosts, bSel, bluePosts.length, postScaleZ);
+    applyInst(instOrangePosts, oSel, orangePosts.length, postScaleZ);
+    applyInst(instConnectors, cSel, connectors.length);
+    applyInst(instChevrons, chSel, chevrons.length);
+
+    let islN = 0;
+    for (let i = 0; i < islands.length; i++) {
+      if (isEco && i % stepMul !== 0) continue;
+      const it = islands[i];
+      _dummy.position.set(it.ix, MANDALIKA_OCEAN_Y + 0.9, it.iz);
+      _dummy.rotation.set(0, it.ry, 0); _dummy.scale.set(it.sc, it.sc, it.sc);
+      _dummy.updateMatrix();
+      instIslBase.setMatrixAt(islN, _dummy.matrix);
+      _dummy.position.set(it.ix, MANDALIKA_OCEAN_Y + 2.2 * it.sc, it.iz);
+      _dummy.updateMatrix();
+      instIslTop.setMatrixAt(islN, _dummy.matrix);
+      islN++;
     }
-  }
-  const instIslBase = new THREE.InstancedMesh(geoInstIsland, matIslandSand, Math.max(1, islands.length));
-  const instIslTop = new THREE.InstancedMesh(geoInstIslandTop, matIslandLush, Math.max(1, islands.length));
-  for (let i = 0; i < islands.length; i++) {
-    const it = islands[i];
-    _dummy.position.set(it.ix, MANDALIKA_OCEAN_Y + 0.9, it.iz);
-    _dummy.rotation.set(0, it.ry, 0); _dummy.scale.set(it.sc, it.sc, it.sc);
-    _dummy.updateMatrix();
-    instIslBase.setMatrixAt(i, _dummy.matrix);
-    _dummy.position.set(it.ix, MANDALIKA_OCEAN_Y + 2.2 * it.sc, it.iz);
-    _dummy.updateMatrix();
-    instIslTop.setMatrixAt(i, _dummy.matrix);
-  }
-  instIslBase.instanceMatrix.needsUpdate = true;
-  instIslTop.instanceMatrix.needsUpdate = true;
-  root.add(instIslBase, instIslTop);
+    instIslBase.count = islN; instIslBase.instanceMatrix.needsUpdate = true;
+    instIslTop.count = islN; instIslTop.instanceMatrix.needsUpdate = true;
 
-  const instHills = new THREE.InstancedMesh(geoInstHill, matCoastHill, Math.max(1, hills.length));
-  for (let i = 0; i < hills.length; i++) {
-    const h = hills[i];
-    _dummy.position.set(h.ix, MANDALIKA_OCEAN_Y + 8.0 * h.sc, h.iz);
-    _dummy.rotation.set(0, i * 0.9, 0);
-    _dummy.scale.set(h.sc, h.sc * 0.85, h.sc);
-    _dummy.updateMatrix();
-    instHills.setMatrixAt(i, _dummy.matrix);
-  }
-  instHills.instanceMatrix.needsUpdate = true;
-  if (hills.length > 0) root.add(instHills);
+    let hillN = 0;
+    for (let i = 0; i < hills.length; i++) {
+      if (isEco && i % 2 !== 0) continue;
+      const h = hills[i];
+      _dummy.position.set(h.ix, MANDALIKA_OCEAN_Y + 8.0 * h.sc, h.iz);
+      _dummy.rotation.set(0, i * 0.9, 0);
+      _dummy.scale.set(h.sc, h.sc * 0.85, h.sc);
+      _dummy.updateMatrix();
+      instHills.setMatrixAt(hillN++, _dummy.matrix);
+    }
+    instHills.count = hillN; instHills.instanceMatrix.needsUpdate = true;
 
-  const instPalmTrunks = new THREE.InstancedMesh(geoInstPalmTrunk, matPalmTrunk, Math.max(1, palms.length));
-  const instPalmCrowns = new THREE.InstancedMesh(geoInstPalmCrown, matPalmCrown, Math.max(1, palms.length));
-  for (let i = 0; i < palms.length; i++) {
-    const p = palms[i];
-    _dummy.position.set(p.px, p.py + 2.4 * p.pSc, p.pz);
-    _dummy.rotation.set(p.rx, p.ry, p.rz);
-    _dummy.scale.set(p.pSc, p.pSc, p.pSc);
-    _dummy.updateMatrix();
-    instPalmTrunks.setMatrixAt(i, _dummy.matrix);
-    _dummy.position.set(p.px, p.py + 5.1 * p.pSc, p.pz);
-    _dummy.rotation.set(0, p.ry, 0);
-    _dummy.updateMatrix();
-    instPalmCrowns.setMatrixAt(i, _dummy.matrix);
+    let palmN = 0;
+    for (let i = 0; i < palms.length; i++) {
+      if (isEco && i % 2 !== 0) continue;
+      const p = palms[i];
+      _dummy.position.set(p.px, p.py + 2.4 * p.pSc, p.pz);
+      _dummy.rotation.set(p.rx, p.ry, p.rz);
+      _dummy.scale.set(p.pSc, p.pSc, p.pSc);
+      _dummy.updateMatrix();
+      instPalmTrunks.setMatrixAt(palmN, _dummy.matrix);
+      _dummy.position.set(p.px, p.py + 5.1 * p.pSc, p.pz);
+      _dummy.rotation.set(0, p.ry, 0);
+      _dummy.updateMatrix();
+      instPalmCrowns.setMatrixAt(palmN, _dummy.matrix);
+      palmN++;
+    }
+    instPalmTrunks.count = palmN; instPalmTrunks.instanceMatrix.needsUpdate = true;
+    instPalmCrowns.count = palmN; instPalmCrowns.instanceMatrix.needsUpdate = true;
   }
-  instPalmTrunks.instanceMatrix.needsUpdate = true;
-  instPalmCrowns.instanceMatrix.needsUpdate = true;
-  if (palms.length > 0) root.add(instPalmTrunks, instPalmCrowns);
+
+  applyEcoToStaticInstances();
 
   /* ---------- 9) Tong Mainan yang Bisa Ditabrak ---------- */
-  const geoBarrelBody = new THREE.CylinderGeometry(0.54, 0.54, 1.25, 12);
-  const geoBarrelBand = new THREE.CylinderGeometry(0.56, 0.56, 0.32, 12);
+  const geoBarrelBody = new THREE.CylinderGeometry(0.54, 0.54, 1.25, 10);
+  const geoBarrelBand = new THREE.CylinderGeometry(0.56, 0.56, 0.32, 10);
   disposablesGeo.push(geoBarrelBody, geoBarrelBand);
   const smashProps = [];
   for (const bs of [190, 560, 880, 1140, 1380]) {
@@ -1544,44 +1608,40 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
     }
   }
 
-  /* ---------- 10) Koleksi: Koin Emas, Permata, Buah 3D (Stroberi, Melon, Pisang, Jeruk) & Cincin Api ---------- */
-  const geoCoinBody = new THREE.CylinderGeometry(0.56, 0.56, 0.16, 18); geoCoinBody.rotateX(Math.PI / 2);
-  const geoCoinRim = new THREE.TorusGeometry(0.55, 0.09, 10, 22);
+  /* ---------- 10) Koleksi: Koin Emas, Permata, Buah 3D (Stroberi, Melon, Pisang, Jeruk) & Cincin Bintang Emas ---------- */
+  const geoCoinBody = new THREE.CylinderGeometry(0.56, 0.56, 0.16, 16); geoCoinBody.rotateX(Math.PI / 2);
+  const geoCoinRim = new THREE.TorusGeometry(0.55, 0.09, 8, 20);
   const geoGemStar = new THREE.OctahedronGeometry(0.68, 0);
-  const geoGemRing = new THREE.TorusGeometry(0.92, 0.055, 8, 22);
+  const geoGemRing = new THREE.TorusGeometry(0.92, 0.055, 8, 20);
   const geoGlowRing = new THREE.PlaneGeometry(2.35, 2.35);
-  const geoFireRingTorus = new THREE.TorusGeometry(1.82, 0.19, 10, 24);
-  const geoFireFlame = new THREE.ConeGeometry(0.22, 0.68, 5);
-  disposablesGeo.push(geoCoinBody, geoCoinRim, geoGemStar, geoGemRing, geoGlowRing, geoFireRingTorus, geoFireFlame);
+  const geoStarRingTorus = new THREE.TorusGeometry(1.82, 0.19, 8, 22);
+  const geoStarPoint = new THREE.OctahedronGeometry(0.24, 0);
+  disposablesGeo.push(geoCoinBody, geoCoinRim, geoGemStar, geoGemRing, geoGlowRing, geoStarRingTorus, geoStarPoint);
 
   const collectibles = [];
   function addCollectible({ kind, fruitType = 'orange', s, latX, wx, wy, wz, groundY = null, quat = null }) {
     const obj = new THREE.Group();
-    let coinMesh = null, gemMesh = null, fruitMesh = null, fireRingMesh = null, groundRing = null;
+    let coinMesh = null, gemMesh = null, fruitMesh = null, starRingMesh = null, groundRing = null;
     if (kind === 'coin') {
       coinMesh = new THREE.Group();
       coinMesh.add(new THREE.Mesh(geoCoinBody, matCoinGold), new THREE.Mesh(geoCoinRim, matCoinRim));
       obj.add(coinMesh);
     } else if (kind === 'gem') {
       gemMesh = new THREE.Group();
-      const gemMat = new THREE.MeshPhysicalMaterial({ color: '#ff2a4b', emissive: '#ffbe0b', emissiveIntensity: 0.45, roughness: 0.14, metalness: 0.25, clearcoat: 1.0 });
-      disposablesMat.push(gemMat);
-      const star = new THREE.Mesh(geoGemStar, gemMat);
+      const star = new THREE.Mesh(geoGemStar, matGemShared);
       const halo = new THREE.Mesh(geoGemRing, matGemHalo); halo.rotation.x = Math.PI / 2;
       gemMesh.add(star, halo);
-      gemMesh.userData.gemMat = gemMat;
       obj.add(gemMesh);
     } else if (kind === 'ring') {
-      fireRingMesh = new THREE.Group();
-      fireRingMesh.add(new THREE.Mesh(geoFireRingTorus, matFireRing));
-      for (let f = 0; f < 6; f++) {
-        const a = (f / 6) * Math.PI * 2;
-        const fl = new THREE.Mesh(geoFireFlame, matFireFlame);
-        fl.position.set(Math.cos(a) * 1.98, Math.sin(a) * 1.98, 0);
-        fl.rotation.z = a - Math.PI * 0.5;
-        fireRingMesh.add(fl);
+      starRingMesh = new THREE.Group();
+      starRingMesh.add(new THREE.Mesh(geoStarRingTorus, matStarRing));
+      for (let f = 0; f < 5; f++) {
+        const a = (f / 5) * Math.PI * 2 + Math.PI / 2;
+        const star = new THREE.Mesh(geoStarPoint, matStarRing);
+        star.position.set(Math.cos(a) * 2.08, Math.sin(a) * 2.08, 0);
+        starRingMesh.add(star);
       }
-      obj.add(fireRingMesh);
+      obj.add(starRingMesh);
     } else {
       fruitMesh = buildToyFruit(fruitType);
       fruitMesh.scale.setScalar(1.12);
@@ -1589,23 +1649,25 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
     }
     obj.position.set(wx, wy, wz);
     if (quat) obj.quaternion.copy(quat);
+    obj.visible = false;
     root.add(obj);
 
     if (groundY !== null && (kind === 'fruit' || kind === 'gem')) {
       groundRing = new THREE.Mesh(geoGlowRing, ringMats[kind === 'gem' ? 'gem' : fruitType]);
       groundRing.rotation.x = -Math.PI / 2;
       groundRing.position.set(wx, groundY + 0.08, wz);
+      groundRing.visible = false;
       root.add(groundRing);
     }
 
     collectibles.push({
-      obj, coinMesh, gemMesh, fruitMesh, fireRingMesh, groundRing,
+      obj, coinMesh, gemMesh, fruitMesh, starRingMesh, groundRing,
       kind, fruitType, s, latX, wx, baseY: wy, wz,
       collected: false, phase: collectibles.length * 0.65,
     });
   }
 
-  // A) Buah 3D (Stroberi, Melon, Pisang) & 2 Cincin Api Emas di Jembatan Atas (Turns 4-6)
+  // A) Buah 3D (Stroberi, Melon, Pisang) & 2 Cincin Bintang Emas di Jembatan Atas (Turns 4-6)
   const upperFruits = ['strawberry', 'melon', 'banana', 'strawberry', 'melon', 'banana'];
   for (let k = 0; k < upperFruits.length; k++) {
     const s = 306 + k * 16;
@@ -1625,7 +1687,7 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
     });
   }
 
-  // B) Cincin Api Emas di atas 2 Jump Ramp
+  // B) Cincin Bintang Emas di atas 2 Jump Ramp
   for (const rp of RAMPS) {
     const sRing = rp.sCenter + 7.0;
     const lx = rp.side * rp.offset;
@@ -1651,7 +1713,6 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
   // D) Koin, Buah Segar 3D & Permata sepanjang 1500m
   for (let s = 48; s < TOTAL_LEN - 20; s += 26) {
     if (s >= SPLIT_S0 && s <= SPLIT_S1) {
-      // Tambah koin di jalur bawah pesisir juga
       evalCircuitPose(s, SPLIT_LO_CX, _p);
       addCollectible({ kind: 'coin', s, latX: SPLIT_LO_CX, wx: _p.x, wy: _p.y + 0.95, wz: _p.z });
       continue;
@@ -1675,19 +1736,53 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
     });
   }
 
+  function setQuality(high) {
+    const nextEco = !high;
+    if (nextEco === isEco) return;
+    isEco = nextEco;
+    buildRoadGeometries(isEco ? 4.0 : 2.0);
+    applyEcoToStaticInstances();
+  }
+
   /* ==================== Update & Interaksi Per-Frame (Zero-GC) ==================== */
   let prevT = null;
-  function updateTrack(_playerPosOrS, t = 0) {
+  function wrapDistAhead(fromS, targetS) {
+    let ds = wrapS(targetS) - wrapS(fromS);
+    if (ds < -TOTAL_LEN * 0.5) ds += TOTAL_LEN;
+    if (ds > TOTAL_LEN * 0.5) ds -= TOTAL_LEN;
+    return ds;
+  }
+
+  function updateTrack(playerPosOrS = 0, t = 0) {
     const dt = prevT === null ? 0.016 : Math.min(0.05, Math.max(0, t - prevT));
     prevT = t;
+    const curS = typeof playerPosOrS === 'number' ? playerPosOrS : 0;
+    const propVisDist = isEco ? 210 : 280;
+    const maxColVis = isEco ? 6 : 10;
+    const aheadColMax = isEco ? 130 : 185;
+
+    for (let i = 0; i < rampGroups.length; i++) {
+      const rg = rampGroups[i];
+      rg.group.visible = Math.abs(wrapDistAhead(curS, rg.s)) <= propVisDist;
+    }
+    for (let i = 0; i < boostGroups.length; i++) {
+      const bg = boostGroups[i];
+      bg.group.visible = Math.abs(wrapDistAhead(curS, bg.s)) <= propVisDist;
+    }
+    for (let i = 0; i < archGroups.length; i++) {
+      const ag = archGroups[i];
+      ag.group.visible = Math.abs(wrapDistAhead(curS, ag.s)) <= propVisDist;
+    }
+    const nearPortal = Math.abs(wrapDistAhead(curS, GARUDA_S)) <= propVisDist;
+    portalGroup.visible = nearPortal;
+    warnGroup.visible = Math.abs(wrapDistAhead(curS, GARUDA_WARN_S)) <= propVisDist;
 
     for (let i = 0; i < boosterWheels.length; i++) {
       boosterWheels[i].rotation.x = -t * 22;
     }
-    for (let i = 0; i < torchFlames.length; i++) {
-      torchFlames[i].scale.set(1, 0.88 + 0.32 * Math.sin(t * 14 + i), 1);
+    if (warnGroup.visible) {
+      warnGroup.position.y = warnBaseY + Math.sin(t * 5.2) * 0.18;
     }
-    warnGroup.position.y = warnBaseY + Math.sin(t * 5.2) * 0.18;
 
     for (let i = 0; i < orbs.length; i++) {
       const ob = orbs[i];
@@ -1696,13 +1791,21 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
       evalCircuitPose(ob.s, swing, _p);
       ob.wx = _p.x; ob.wy = _p.y + 1.05; ob.wz = _p.z;
       ob.group.position.set(ob.wx, ob.wy, ob.wz);
-      ob.ring.rotation.y = t * 4.2 + ob.phase;
-      ob.sphere.rotation.z = -Math.cos(t * ob.spd + ob.phase) * 2.5;
+      ob.group.visible = nearPortal;
+      if (nearPortal) {
+        ob.ring.rotation.y = t * 4.2 + ob.phase;
+        ob.sphere.rotation.z = -Math.cos(t * ob.spd + ob.phase) * 2.5;
+      }
     }
 
     for (let i = 0; i < smashProps.length; i++) {
       const p = smashProps[i];
-      if (!p.hit || !p.mesh.visible) continue;
+      if (!p.hit) {
+        const ds = wrapDistAhead(curS, p.s);
+        p.mesh.visible = ds >= -24 && ds <= propVisDist;
+        continue;
+      }
+      if (!p.mesh.visible) continue;
       p.mesh.position.x += p.vx * dt;
       p.mesh.position.y += p.vy * dt;
       p.mesh.position.z += p.vz * dt;
@@ -1712,22 +1815,25 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
       if (p.mesh.position.y < MANDALIKA_OCEAN_Y - 6) p.mesh.visible = false;
     }
 
+    const gemHue = (t * 0.55) % 1;
+    matGemShared.color.setHSL(gemHue, 0.92, 0.62);
+    matGemShared.emissive.setHSL(gemHue, 0.95, 0.52);
+
+    let shownCols = 0;
     for (let i = 0; i < collectibles.length; i++) {
       const item = collectibles[i];
       if (item.collected) continue;
+      const ds = wrapDistAhead(curS, item.s);
+      const inWin = ds >= -22 && ds <= aheadColMax && shownCols < maxColVis;
+      item.obj.visible = inWin;
+      if (item.groundRing) item.groundRing.visible = inWin;
+      if (!inWin) continue;
+      shownCols++;
       item.obj.position.y = item.baseY + Math.sin(t * 3.6 + item.phase) * 0.16;
       if (item.coinMesh) item.coinMesh.rotation.y = t * 3.4 + item.phase;
-      else if (item.gemMesh) {
-        item.gemMesh.rotation.y = t * 2.8 + item.phase;
-        const gm = item.gemMesh.userData.gemMat;
-        const hue = (t * 0.55 + item.phase * 0.15) % 1;
-        gm.color.setHSL(hue, 0.92, 0.62);
-        gm.emissive.setHSL(hue, 0.95, 0.52);
-      } else if (item.fireRingMesh) {
-        item.fireRingMesh.rotation.z = t * 3.2 + item.phase;
-      } else if (item.fruitMesh) {
-        item.fruitMesh.rotation.y = t * 2.4 + item.phase;
-      }
+      else if (item.gemMesh) item.gemMesh.rotation.y = t * 2.8 + item.phase;
+      else if (item.starRingMesh) item.starRingMesh.rotation.z = t * 3.2 + item.phase;
+      else if (item.fruitMesh) item.fruitMesh.rotation.y = t * 2.4 + item.phase;
     }
 
     matGreenBoost.emissiveIntensity = 0.72 + Math.sin(t * 5.2) * 0.35;
@@ -1850,9 +1956,10 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
       instTrusses, instBluePosts, instOrangePosts, instConnectors, instChevrons,
       instIslBase, instIslTop, instHills, instPalmTrunks, instPalmCrowns,
     ].forEach((im) => im.dispose());
+    Object.values(deckGeoRefs).forEach((m) => m?.geometry?.dispose());
     disposablesGeo.forEach((g) => g.dispose());
     disposablesMat.forEach((m) => m.dispose());
-    disposablesTex.forEach((t) => t.dispose());
+    disposablesTex.forEach((t) => t?.dispose());
     collectibles.length = 0;
     smashProps.length = 0;
     orbs.length = 0;
@@ -1872,6 +1979,7 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
     getUpcomingHazards,
     getCollectibleTargets,
     resetCollectibles,
+    setQuality,
     dispose,
     evalCircuitPose,
     getTrackSurfaceAt: getCircuitSurfaceAt,
@@ -1880,8 +1988,8 @@ export function createMandalikaTrack(scene, { maxAnisotropy = 8 } = {}) {
     checkRampCollision: checkCircuitRampCollision,
     checkBoostCollision: checkCircuitBoostCollision,
     getCircuitPreviewPoints,
-    getTrackHeight: () => START_Y,
-    getTrackSlope: () => 0,
+    getTrackHeight,
+    getTrackSlope,
     getTrackCenterX: () => 0,
     getTrackYaw: () => 0,
     getTrackBank: () => 0,

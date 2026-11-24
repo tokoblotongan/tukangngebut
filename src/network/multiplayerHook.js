@@ -8,7 +8,7 @@
 import * as THREE from 'three';
 import { createClient } from '@supabase/supabase-js';
 import { loadVehicle, setVehicleUnderglow, createNeonRibbonTrail } from '../entities/assetFactory.js';
-import { getTrackYaw, getTrackBank, isSplineCircuit } from '../world/activeTrack.js';
+import { getTrackYaw, getTrackBank, getTrackSurfaceAt, isSplineCircuit } from '../world/activeTrack.js';
 import { VEHICLES, SLOT_COLORS, getVehicleDef } from '../config/gameConfig.js';
 
 export const PUBLIC_ROOMS = Object.freeze([
@@ -203,6 +203,7 @@ export function createMultiplayerHook({
       y: +payload.y || 0,
       z: +payload.z || 0,
       s: +payload.s || 0,
+      latX: +payload.latX || 0,
       yaw: Number.isFinite(+payload.yaw) ? +payload.yaw : null,
       rollAngle: +payload.rollAngle || 0,
       speed: +payload.speed || 0,
@@ -315,7 +316,7 @@ export function createMultiplayerHook({
                 name: meta.name || 'Juragan',
                 vehicleType: vType,
                 vehicle: vType,
-                x: 0, y: 0, z: 0, s: 0, yaw: null, rollAngle: 0, speed: 0, score: 0, coins: 0,
+                x: 0, y: 0, z: 0, s: 0, latX: 0, yaw: null, rollAngle: 0, speed: 0, score: 0, coins: 0,
                 state: 'MENU',
                 seen: performance.now() / 1000,
               });
@@ -421,9 +422,9 @@ export function createMultiplayerHook({
       name: identity.name,
       vehicleType: VEHICLES[vType] ? vType : 'angkot',
       x: round(playerState?.x),
-      y: round(playerState?.y),
       z: round(playerState?.z),
       s: round(playerState?.s),
+      latX: round(playerState?.latX),
       yaw: (playerState?.yaw !== undefined && playerState?.yaw !== null) ? round(playerState.yaw) : null,
       rollAngle: round(playerState?.rollAngle),
       speed: round(playerState?.speed),
@@ -435,7 +436,8 @@ export function createMultiplayerHook({
   }
 
   /* ---------- Daftar pemain remote ---------- */
-  function getRemotePlayers() {
+  const _remoteUpdateBuf = [];
+  function getRemotePlayers(out = null) {
     const now = performance.now() / 1000;
     let removed = false;
     for (const [pid, p] of peers) {
@@ -446,6 +448,11 @@ export function createMultiplayerHook({
       }
     }
     if (removed) recomputeOnlineCount();
+    if (out) {
+      out.length = 0;
+      for (const p of peers.values()) out.push(p);
+      return out;
+    }
     return [...peers.values()];
   }
 
@@ -492,16 +499,26 @@ export function createMultiplayerHook({
     }
   }
 
+  function resolveGhostY(p) {
+    const splineMode = isSplineCircuit();
+    const surf = splineMode
+      ? getTrackSurfaceAt(p.s ?? 0, p.latX ?? 0)
+      : getTrackSurfaceAt(p.x ?? 0, p.z ?? 0);
+    if (surf && Number.isFinite(surf.groundY)) return surf.groundY;
+    return p.y || 0;
+  }
+
   function ensureGhost(peer) {
     if (!scene || ghosts.has(peer.id)) return;
+    const gy = resolveGhostY(peer);
     const root = new THREE.Group();
-    root.position.set(peer.x, peer.y, peer.z);
+    root.position.set(peer.x, gy, peer.z);
     root.visible = peer.state === 'PLAYING' || peer.state === 'PAUSED';
     scene.add(root);
 
     const color = getSlotGlowColor(peer.id);
     const ribbon = createNeonRibbonTrail(scene, color, 0.50);
-    ribbon.reset(peer.x, peer.y + 0.34, peer.z + 1.3);
+    ribbon.reset(peer.x, gy + 0.34, peer.z + 1.3);
     ribbon.setVisible(root.visible);
 
     const entry = {
@@ -510,7 +527,7 @@ export function createMultiplayerHook({
       nameplate: null,
       ribbon,
       plateName: peer.name,
-      target: new THREE.Vector3(peer.x, peer.y, peer.z),
+      target: new THREE.Vector3(peer.x, gy, peer.z),
       roll: peer.rollAngle || 0,
       type: peer.vehicleType,
       loading: false,
@@ -539,7 +556,7 @@ export function createMultiplayerHook({
       }
     }
 
-    const list = getRemotePlayers();
+    const list = getRemotePlayers(_remoteUpdateBuf);
     const alpha = Math.min(1, 1 - Math.exp(-16 * dt));
 
     for (const p of list) {
@@ -557,7 +574,8 @@ export function createMultiplayerHook({
       const showVehicle = p.state === 'PLAYING' || p.state === 'PAUSED';
       entry.root.visible = showVehicle;
       entry.ribbon?.setVisible(showVehicle);
-      entry.target.set(p.x, p.y, p.z);
+      const gy = resolveGhostY(p);
+      entry.target.set(p.x, gy, p.z);
 
       if (!showVehicle) {
         entry.root.position.copy(entry.target);

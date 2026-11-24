@@ -10,12 +10,20 @@
    ===================================================================== */
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { TRACK, PHYSICS, PALETTE as P } from '../config/gameConfig.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { TRACK, TRACK_PROFILE, PHYSICS, PALETTE as P } from '../config/gameConfig.js';
 import { FRUIT_TYPES, buildToyFruit } from '../entities/assetFactory.js';
+import {
+  createCleanOrangeTrackMaterial,
+  createWarningSignTexture,
+  whenFontsReady,
+} from './trackMaterial.js';
 
 const L = TRACK.segmentLength;
 const W = TRACK.width;
-const BRIDGE_H = 4.6;
+const HILL_OFFSET = TRACK_PROFILE.salatigaHillOffset ?? 2.5;
+const BRIDGE_H = TRACK_PROFILE.salatigaBridgeHeight ?? 0.5;
+const BRIDGE_SPAN = TRACK_PROFILE.salatigaBridgeSpan ?? 27;
 export const FLOOR_Y = -5.8;
 const RAMP_W = 7.2, RAMP_LEN = 5.2, RAMP_RISE = 1.65, RAMP_OFFSET = 4.0, RAMP_SAFE_W = 8.0;
 const RAMP_GAP_START = -3.3; // lz (ramp ends around -2.6)
@@ -32,10 +40,12 @@ const LOOP_STEPS = 44;
 const NARROW_HALF_W = (TRACK.narrowWidth ?? 7.8) * 0.5;
 const FORK_HALF_L = (TRACK.forkWidthL ?? 6.8) * 0.5;
 const FORK_HALF_R = (TRACK.forkWidthR ?? 8.6) * 0.5;
-const RIBBON_STEPS = 16;
-const MAX_COLLECTIBLES = 14;
-const GRASS_PER_SEG = 34;
-const FLOWERS_PER_SEG = 18;
+const RIBBON_STEPS_HD = 16;
+const RIBBON_STEPS_ECO = 6;
+const MAX_COLLECTIBLES_HD = 10;
+const MAX_COLLECTIBLES_ECO = 6;
+const GRASS_PER_SEG = 12;
+const FLOWERS_PER_SEG = 6;
 
 /* ---------- Util deterministik ---------- */
 function hash(n) {
@@ -94,12 +104,18 @@ export function getTrackBank(z) {
 
 export function getTrackHeight(z) {
   const { amp1, freq1, amp2, freq2 } = TRACK.hill;
-  let h = amp1 * Math.sin(z * freq1) + amp2 * Math.sin(z * freq2 + 1.7);
-  const i = Math.floor(-z / L);
-  if (getSegmentType(i) === 'bridge') {
-    const z0 = -i * L, z1 = -(i + 1) * L;
-    const t = (z - z0) / (z1 - z0);
-    h += BRIDGE_H * (smoothstep(0, 0.28, t) - smoothstep(0.72, 1, t));
+  let h = HILL_OFFSET + amp1 * Math.sin(z * freq1) + amp2 * Math.sin(z * freq2 + 1.7);
+  const dist = Math.max(0, -z);
+  const iCenter = Math.floor(dist / L);
+  for (let k = iCenter - 1; k <= iCenter + 1; k++) {
+    if (k < 0 || getSegmentType(k) !== 'bridge') continue;
+    const bStart = k * L - 1.5;
+    const bEnd = (k + 1) * L + 1.5;
+    if (dist > bStart && dist < bEnd) {
+      const u = (dist - bStart) / BRIDGE_SPAN;
+      const s = Math.sin(Math.PI * u);
+      h += BRIDGE_H * s * s;
+    }
   }
   return h;
 }
@@ -309,106 +325,6 @@ export function checkBoostCollision(x, z) {
   return null;
 }
 
-/* ---------- Tekstur Trek Plastik Oranye Hot Wheels + Speed Grooves + Normal Map ---------- */
-function makeStylizedRoadTextures() {
-  const size = 512;
-  const c = document.createElement('canvas'); c.width = c.height = size;
-  const g = c.getContext('2d');
-
-  // Gradien dasar plastik satin oranye ikonik Hot Wheels (#FF6B00)
-  const baseGrad = g.createLinearGradient(0, 0, size, 0);
-  baseGrad.addColorStop(0, '#d95300');
-  baseGrad.addColorStop(0.06, '#ff6b00');
-  baseGrad.addColorStop(0.5, '#ff7b1a');
-  baseGrad.addColorStop(0.94, '#ff6b00');
-  baseGrad.addColorStop(1, '#d95300');
-  g.fillStyle = baseGrad;
-  g.fillRect(0, 0, size, size);
-
-  // Highlight kilap plastik di tengah & alur kecepatan memanjang (speed grooves)
-  const sheenGrad = g.createLinearGradient(0, 0, size, 0);
-  sheenGrad.addColorStop(0, 'rgba(255, 210, 140, 0)');
-  sheenGrad.addColorStop(0.28, 'rgba(255, 224, 170, 0.14)');
-  sheenGrad.addColorStop(0.5, 'rgba(255, 238, 195, 0.22)');
-  sheenGrad.addColorStop(0.72, 'rgba(255, 224, 170, 0.14)');
-  sheenGrad.addColorStop(1, 'rgba(255, 210, 140, 0)');
-  g.fillStyle = sheenGrad;
-  g.fillRect(0, 0, size, size);
-
-  // Alur kecepatan tengah (center speed grooves) & rel pemandu lajur halus
-  const grooveXs = [
-    size * 0.19, size * 0.21,
-    size * 0.47, size * 0.50, size * 0.53,
-    size * 0.79, size * 0.81,
-  ];
-  for (const gx of grooveXs) {
-    const isCenter = Math.abs(gx - size * 0.5) < size * 0.05;
-    const gw = isCenter ? 5 : 3;
-    g.fillStyle = isCenter ? 'rgba(165, 52, 0, 0.26)' : 'rgba(180, 62, 0, 0.18)';
-    g.fillRect(gx - gw * 0.5, 0, gw, size);
-    g.fillStyle = 'rgba(255, 200, 120, 0.24)';
-    g.fillRect(gx + gw * 0.5, 0, 2, size);
-  }
-
-  // Tekstur plastik satin mikro yang halus
-  for (let i = 0; i < 480; i++) {
-    const x = hash(i * 5.3 + 9) * size;
-    const y = hash(i * 11.1 + 3) * size;
-    g.fillStyle = i % 2 === 0 ? 'rgba(255,245,220,0.04)' : 'rgba(160,50,0,0.035)';
-    g.fillRect(x, y, 2, 10);
-  }
-
-  const map = new THREE.CanvasTexture(c);
-  map.colorSpace = THREE.SRGBColorSpace;
-  map.wrapS = THREE.ClampToEdgeWrapping;
-  map.wrapT = THREE.RepeatWrapping;
-  map.repeat.set(1, 2);
-  map.anisotropy = 4;
-
-  // Normal map prosedural untuk alur plastik cetakan (molded grooves)
-  const nc = document.createElement('canvas'); nc.width = nc.height = 256;
-  const ng = nc.getContext('2d');
-  const img = ng.createImageData(256, 256);
-  const hBuf = new Float32Array(256 * 256);
-  for (let y = 0; y < 256; y++) {
-    for (let x = 0; x < 256; x++) {
-      const u = x / 256;
-      const centerGroove =
-        Math.exp(-Math.pow((u - 0.5) * 48, 2)) * -0.85 +
-        Math.exp(-Math.pow((u - 0.47) * 58, 2)) * -0.55 +
-        Math.exp(-Math.pow((u - 0.53) * 58, 2)) * -0.55 +
-        Math.exp(-Math.pow((u - 0.2) * 52, 2)) * -0.4 +
-        Math.exp(-Math.pow((u - 0.8) * 52, 2)) * -0.4;
-      const micro = (hash(x * 37 + y * 131) - 0.5) * 0.08;
-      hBuf[y * 256 + x] = centerGroove + micro;
-    }
-  }
-  const strength = 1.6;
-  for (let y = 0; y < 256; y++) {
-    for (let x = 0; x < 256; x++) {
-      const xm = (x - 1 + 256) & 255;
-      const xp = (x + 1) & 255;
-      const ym = (y - 1 + 256) & 255;
-      const yp = (y + 1) & 255;
-      const dx = (hBuf[y * 256 + xp] - hBuf[y * 256 + xm]) * strength;
-      const dy = (hBuf[yp * 256 + x] - hBuf[ym * 256 + x]) * strength;
-      const len = Math.hypot(-dx, -dy, 1);
-      const idx = (y * 256 + x) * 4;
-      img.data[idx] = Math.round(((-dx / len) * 0.5 + 0.5) * 255);
-      img.data[idx + 1] = Math.round(((-dy / len) * 0.5 + 0.5) * 255);
-      img.data[idx + 2] = Math.round(((1 / len) * 0.5 + 0.5) * 255);
-      img.data[idx + 3] = 255;
-    }
-  }
-  ng.putImageData(img, 0, 0);
-  const normalMap = new THREE.CanvasTexture(nc);
-  normalMap.wrapS = THREE.RepeatWrapping;
-  normalMap.wrapT = THREE.RepeatWrapping;
-  normalMap.repeat.set(1, 4);
-
-  return { map, normalMap };
-}
-
 function makePlantShadowTex() {
   const c = document.createElement('canvas'); c.width = c.height = 128;
   const g = c.getContext('2d');
@@ -436,111 +352,66 @@ function makeGlowRingTex() {
   return tex;
 }
 
-/* ---------- Tekstur lantai diorama, blok ABC & gerbang ---------- */
-function makePlayroomTex(kind) {
-  const c = document.createElement('canvas'); c.width = 512; c.height = 256;
-  const g = c.getContext('2d');
-  if (kind === 0) {
-    // Padang rumput kota kecil Salatiga yang lembut & rapi
-    const cols = ['#6bbd8c', '#74c69d', '#5eb382', '#7fd1a4'];
-    const sz = 64;
-    for (let y = 0; y < 256; y += sz) {
-      for (let x = 0; x < 512; x += sz) {
-        const idx = ((x / sz) + (y / sz)) % 4;
-        g.fillStyle = cols[idx];
-        g.fillRect(x, y, sz, sz);
-        g.strokeStyle = 'rgba(255,255,255,0.08)';
-        g.lineWidth = 1.5;
-        g.strokeRect(x + 1, y + 1, sz - 2, sz - 2);
-      }
-    }
-  } else if (kind === 1) {
-    // Taman hijau dengan petak bunga mini lembut
-    g.fillStyle = '#5eb382';
-    g.fillRect(0, 0, 512, 256);
-    g.fillStyle = '#6bbd8c';
-    for (let x = 0; x < 512; x += 64) g.fillRect(x, 0, 32, 256);
-    const flowers = ['#f4a2b8', '#f6d57a', '#8fd3e8', '#f5eee0'];
-    for (let k = 0; k < 12; k++) {
-      g.fillStyle = flowers[k % flowers.length];
-      g.beginPath();
-      g.arc((k * 79 + 25) % 512, (k % 2 === 0 ? 48 : 206), 7, 0, Math.PI * 2);
-      g.fill();
-    }
-  } else {
-    // Padang rumput hijau hangat kotak halus
-    g.fillStyle = '#6bbd8c';
-    g.fillRect(0, 0, 512, 256);
-    const sz = 64;
-    for (let y = 0; y < 256; y += sz) {
-      for (let x = 0; x < 512; x += sz) {
-        if (((x / sz) + (y / sz)) % 2 === 0) {
-          g.fillStyle = '#7cd1a0';
-          g.fillRect(x, y, sz, sz);
-        }
-      }
-    }
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(6, 1);
-  tex.anisotropy = 4;
-  return tex;
-}
-
 function makeBlockTex(letter, bg, fg) {
   const c = document.createElement('canvas'); c.width = c.height = 256;
   const g = c.getContext('2d');
-  g.fillStyle = '#f5e1c0';
-  g.fillRect(0, 0, 256, 256);
-  g.fillStyle = bg;
-  g.beginPath(); g.roundRect(16, 16, 224, 224, 22); g.fill();
-  g.strokeStyle = '#fff8eb';
-  g.lineWidth = 10;
-  g.beginPath(); g.roundRect(24, 24, 208, 208, 16); g.stroke();
-  g.fillStyle = fg;
-  g.font = '700 138px Fredoka, "Plus Jakarta Sans", sans-serif';
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
-  g.fillText(letter, 128, 134);
+  const draw = () => {
+    g.fillStyle = '#f5e1c0';
+    g.fillRect(0, 0, 256, 256);
+    g.fillStyle = bg;
+    g.beginPath(); g.roundRect(16, 16, 224, 224, 22); g.fill();
+    g.strokeStyle = '#fff8eb';
+    g.lineWidth = 10;
+    g.beginPath(); g.roundRect(24, 24, 208, 208, 16); g.stroke();
+    g.fillStyle = fg;
+    g.font = '700 138px Fredoka, "Plus Jakarta Sans", sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(letter, 128, 134);
+  };
+  draw();
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
+  whenFontsReady(() => { draw(); tex.needsUpdate = true; });
   return tex;
 }
 
-function makeArchBannerTex(text = '🔥 JURAGAN NGEBUT • KING OF THE ROAD 🔥', c0 = '#d90429', c1 = '#ff6b00', border = '#ffd100', checkered = false) {
+function makeArchBannerTex(text = 'JURAGAN NGEBUT • SALATIGA', c0 = '#d90429', c1 = '#ff6b00', border = '#ffd100', checkered = false) {
   const c = document.createElement('canvas'); c.width = 1024; c.height = 192;
   const g = c.getContext('2d');
-  const grad = g.createLinearGradient(0, 0, 1024, 0);
-  grad.addColorStop(0, c0);
-  grad.addColorStop(0.5, c1);
-  grad.addColorStop(1, c0);
-  g.fillStyle = grad;
-  g.beginPath(); g.roundRect(6, 6, 1012, 180, 26); g.fill();
-  if (checkered) {
-    const sq = 22;
-    for (let x = 22; x < 118; x += sq) {
-      for (let y = 22; y < 170; y += sq) {
-        g.fillStyle = ((Math.floor(x / sq) + Math.floor(y / sq)) % 2 === 0) ? '#ffffff' : '#18181b';
-        g.fillRect(x, y, sq, sq);
-        g.fillRect(1024 - x - sq, y, sq, sq);
+  const draw = () => {
+    g.clearRect(0, 0, 1024, 192);
+    const grad = g.createLinearGradient(0, 0, 1024, 0);
+    grad.addColorStop(0, c0);
+    grad.addColorStop(0.5, c1);
+    grad.addColorStop(1, c0);
+    g.fillStyle = grad;
+    g.beginPath(); g.roundRect(6, 6, 1012, 180, 26); g.fill();
+    if (checkered) {
+      const sq = 22;
+      for (let x = 22; x < 118; x += sq) {
+        for (let y = 22; y < 170; y += sq) {
+          g.fillStyle = ((Math.floor(x / sq) + Math.floor(y / sq)) % 2 === 0) ? '#ffffff' : '#18181b';
+          g.fillRect(x, y, sq, sq);
+          g.fillRect(1024 - x - sq, y, sq, sq);
+        }
       }
     }
-  }
-  g.strokeStyle = border;
-  g.lineWidth = 12;
-  g.beginPath(); g.roundRect(14, 14, 996, 164, 20); g.stroke();
-  g.fillStyle = '#fff8eb';
-  g.font = '700 54px Fredoka, "Plus Jakarta Sans", sans-serif';
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
-  g.fillText(text, 512, 98);
+    g.strokeStyle = border;
+    g.lineWidth = 12;
+    g.beginPath(); g.roundRect(14, 14, 996, 164, 20); g.stroke();
+    g.fillStyle = '#fff8eb';
+    g.font = '700 54px Fredoka, "Plus Jakarta Sans", sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(text, 512, 98);
+  };
+  draw();
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
+  whenFontsReady(() => { draw(); tex.needsUpdate = true; });
   return tex;
 }
 
@@ -631,7 +502,8 @@ function makeRampChevronTex() {
 /* =====================================================================
    VISUAL STREAMING — pool segmen tetap, didaur ulang tanpa alokasi baru
    ===================================================================== */
-export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
+export function createTrackGenerator(scene, { maxAnisotropy = 8, eco = false } = {}) {
+  let isEco = !!eco;
   const tuneTex = (tex) => {
     if (!tex) return tex;
     tex.anisotropy = maxAnisotropy;
@@ -642,16 +514,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     return tex;
   };
 
-  const roadTex = makeStylizedRoadTextures();
-  tuneTex(roadTex.map);
-  tuneTex(roadTex.normalMap);
-  const matAsphalt = new THREE.MeshStandardMaterial({
-    map: roadTex.map,
-    normalMap: roadTex.normalMap,
-    normalScale: new THREE.Vector2(0.28, 0.28),
-    roughness: 0.36,
-    metalness: 0.08,
-  });
+  const matAsphalt = createCleanOrangeTrackMaterial({ maxAnisotropy, repeatX: 1, repeatY: 2 });
 
   /* Material bahu jalan dengan transisi vertex color oranye/stone → rumput */
   const matShoulderBlend = new THREE.MeshStandardMaterial({
@@ -660,11 +523,11 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     metalness: 0.02,
   });
 
-  const matDeckSide = new THREE.MeshStandardMaterial({ color: P.trackOrangeDark, roughness: 0.38, metalness: 0.08 });
-  const matCurb = new THREE.MeshStandardMaterial({ color: P.trackOrange, roughness: 0.36, metalness: 0.08 });
+  const matDeckSide = new THREE.MeshStandardMaterial({ color: P.trackOrangeDark, roughness: 0.42, metalness: 0.06 });
+  const matCurb = new THREE.MeshStandardMaterial({ color: P.trackOrange, roughness: 0.4, metalness: 0.06 });
   const matLine = new THREE.MeshStandardMaterial({ color: '#ffe599', roughness: 0.36, metalness: 0.04, emissive: '#ffbe0b', emissiveIntensity: 0.2 });
   const matConnectorBlue = new THREE.MeshStandardMaterial({
-    color: P.connectorBlue, roughness: 0.36, metalness: 0.08,
+    color: P.connectorBlue, roughness: 0.38, metalness: 0.08,
     emissive: '#0044aa', emissiveIntensity: 0.14,
   });
   const hazardStripeTex = (() => {
@@ -685,24 +548,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     tex.repeat.set(3, 1);
     return tuneTex(tex);
   })();
-  const skullSignTex = (() => {
-    const c = document.createElement('canvas'); c.width = 256; c.height = 160;
-    const g = c.getContext('2d');
-    const bg = g.createLinearGradient(0, 0, 256, 0);
-    bg.addColorStop(0, '#d00000'); bg.addColorStop(0.5, '#1d4ed8'); bg.addColorStop(1, '#d00000');
-    g.fillStyle = bg;
-    g.beginPath(); g.roundRect(4, 4, 248, 152, 20); g.fill();
-    g.strokeStyle = '#ffbe0b'; g.lineWidth = 8; g.stroke();
-    g.fillStyle = '#ffffff';
-    g.beginPath(); g.arc(128, 66, 30, 0, Math.PI * 2); g.fill();
-    g.fillRect(112, 86, 32, 18);
-    g.fillStyle = '#18181b';
-    g.beginPath(); g.arc(117, 63, 7, 0, Math.PI * 2); g.arc(139, 63, 7, 0, Math.PI * 2); g.fill();
-    g.strokeStyle = '#ffffff'; g.lineWidth = 10; g.lineCap = 'round';
-    g.beginPath(); g.moveTo(86, 128); g.lineTo(170, 102); g.moveTo(170, 128); g.lineTo(86, 102); g.stroke();
-    const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
-    return tuneTex(tex);
-  })();
+  const warnBarrierTex = tuneTex(createWarningSignTexture());
   const matHazardStripe = new THREE.MeshStandardMaterial({
     map: hazardStripeTex, roughness: 0.36, metalness: 0.08, emissive: '#ffbe0b', emissiveIntensity: 0.16,
   });
@@ -715,20 +561,17 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     color: '#ffffff', roughness: 0.24,
     emissive: '#ffe066', emissiveIntensity: 0.8,
   });
-  const matFireRing = new THREE.MeshPhysicalMaterial({
-    color: '#ffbe0b', roughness: 0.14, metalness: 0.65, clearcoat: 1.0,
-    emissive: '#ff5400', emissiveIntensity: 0.88,
+  const matStarRing = new THREE.MeshPhysicalMaterial({
+    color: '#ffbe0b', roughness: 0.16, metalness: 0.65, clearcoat: 1.0,
+    emissive: '#ff9f1c', emissiveIntensity: 0.72,
   });
-  const matFireFlame = new THREE.MeshStandardMaterial({
-    color: '#ff6b00', roughness: 0.3, emissive: '#ff9500', emissiveIntensity: 1.15,
-  });
-  const matConeOrange = new THREE.MeshStandardMaterial({ color: '#ff5400', roughness: 0.36, metalness: 0.06 });
-  const matConeWhite = new THREE.MeshStandardMaterial({ color: '#fff8eb', roughness: 0.36, metalness: 0.06 });
-  const matBarrelRed = new THREE.MeshStandardMaterial({ color: '#e63946', roughness: 0.36, metalness: 0.12 });
-  const matBarrelGrey = new THREE.MeshStandardMaterial({ color: '#64748b', roughness: 0.36, metalness: 0.24 });
-  const matBarrelYellow = new THREE.MeshStandardMaterial({ color: '#ffbe0b', roughness: 0.36, metalness: 0.12 });
-  const matSkullSign = new THREE.MeshStandardMaterial({
-    map: skullSignTex, roughness: 0.38, emissive: '#ffffff', emissiveMap: skullSignTex, emissiveIntensity: 0.22,
+  const matConeOrange = new THREE.MeshStandardMaterial({ color: '#ff5400', roughness: 0.38, metalness: 0.06 });
+  const matConeWhite = new THREE.MeshStandardMaterial({ color: '#fff8eb', roughness: 0.38, metalness: 0.06 });
+  const matBarrelRed = new THREE.MeshStandardMaterial({ color: '#e63946', roughness: 0.38, metalness: 0.12 });
+  const matBarrelGrey = new THREE.MeshStandardMaterial({ color: '#64748b', roughness: 0.38, metalness: 0.24 });
+  const matBarrelYellow = new THREE.MeshStandardMaterial({ color: '#ffbe0b', roughness: 0.38, metalness: 0.12 });
+  const matHazardBarrierSign = new THREE.MeshStandardMaterial({
+    map: warnBarrierTex, roughness: 0.38, emissive: '#ffffff', emissiveMap: warnBarrierTex, emissiveIntensity: 0.22,
   });
   const warnTriangleTex = tuneTex(makeWarnTriangleTex());
   const matWarnSign = new THREE.MeshStandardMaterial({
@@ -757,13 +600,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     color: '#38bdf8', roughness: 0.26, metalness: 0.24,
     emissive: '#00b4d8', emissiveIntensity: 1.25,
   });
-  const matSideStreet = new THREE.MeshStandardMaterial({ color: '#4b5563', roughness: 0.85, metalness: 0.02 });
-  const matSideWalk = new THREE.MeshStandardMaterial({ color: '#d8d0c4', roughness: 0.78 });
-  const matStreetLine = new THREE.MeshStandardMaterial({ color: '#f3efe6', roughness: 0.65 });
-  const matRailColors = [
-    new THREE.MeshStandardMaterial({ color: P.trackOrange, roughness: 0.36, metalness: 0.08 }),
-    new THREE.MeshStandardMaterial({ color: '#ff7b1a', roughness: 0.36, metalness: 0.08 }),
-  ];
+  const matRailOrange = new THREE.MeshStandardMaterial({ color: P.trackOrange, roughness: 0.4, metalness: 0.06 });
   const matRailGlow = new THREE.MeshStandardMaterial({
     color: '#ffbe0b', roughness: 0.36, metalness: 0.08,
     emissive: '#ff8800', emissiveIntensity: 0.58,
@@ -791,14 +628,19 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
   const loopSignTex = (() => {
     const c = document.createElement('canvas'); c.width = 512; c.height = 112;
     const g = c.getContext('2d');
-    g.fillStyle = '#18181b';
-    g.beginPath(); g.roundRect(4, 4, 504, 104, 18); g.fill();
-    g.strokeStyle = '#38bdf8'; g.lineWidth = 6; g.stroke();
-    g.font = '700 28px Fredoka, "Plus Jakarta Sans", sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillStyle = '#ffbe0b'; g.fillText('⬅️ LOOP 360° + BONUS', 142, 56);
-    g.fillStyle = '#6ee7b7'; g.fillText('JALUR AMAN ➡️', 392, 56);
+    const draw = () => {
+      g.clearRect(0, 0, 512, 112);
+      g.fillStyle = '#18181b';
+      g.beginPath(); g.roundRect(4, 4, 504, 104, 18); g.fill();
+      g.strokeStyle = '#38bdf8'; g.lineWidth = 6; g.stroke();
+      g.font = '700 28px Fredoka, "Plus Jakarta Sans", sans-serif';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillStyle = '#ffbe0b'; g.fillText('KIRI: LOOP 360° + BONUS', 142, 56);
+      g.fillStyle = '#6ee7b7'; g.fillText('KANAN: JALUR AMAN', 392, 56);
+    };
+    draw();
     const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+    whenFontsReady(() => { draw(); tex.needsUpdate = true; });
     return tuneTex(tex);
   })();
   const matLoopSign = new THREE.MeshStandardMaterial({
@@ -847,11 +689,10 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
   const matLampCollar = new THREE.MeshStandardMaterial({ color: P.toyRed, roughness: 0.42 });
   const matLampHead = new THREE.MeshStandardMaterial({ color: P.headlight, roughness: 0.3, emissive: P.headlight, emissiveIntensity: 1.5 });
 
-  /* Material lantai diorama & blok ABC & gerbang */
-  const floorTextures = [0, 1, 2].map((k) => tuneTex(makePlayroomTex(k)));
-  const floorMats = floorTextures.map((tex) => new THREE.MeshStandardMaterial({
-    map: tex, roughness: 0.86, metalness: 0.02,
-  }));
+  /* Material lantai hijau polos lembut, blok ABC & gerbang */
+  const matFloor = new THREE.MeshStandardMaterial({
+    color: '#6bbd8c', roughness: 0.9, metalness: 0.02,
+  });
 
   const blockSpecs = [
     ['A', P.pastelCoral, '#fff8eb'],
@@ -870,17 +711,24 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
   const matArchBanner = new THREE.MeshStandardMaterial({
     map: archBannerTex, roughness: 0.45, emissive: '#ffffff', emissiveMap: archBannerTex, emissiveIntensity: 0.22,
   });
-  const milestone500Tex = tuneTex(makeArchBannerTex('⚡ CHECKPOINT 500 METER ⚡', '#0077ff', '#ff6b00', '#ffbe0b', false));
-  const milestone1000Tex = tuneTex(makeArchBannerTex('🔥 1000 METER • SISA 500M! 🔥', '#d90429', '#ff5400', '#ffe066', false));
-  const finishBannerTex = tuneTex(makeArchBannerTex('🏁 FINISH LINE • 1500M 🏁', '#18181b', '#d90429', '#ffbe0b', true));
+  const milestone500Tex = tuneTex(makeArchBannerTex('CHECKPOINT 500 METER', '#0077ff', '#ff6b00', '#ffbe0b', false));
+  const milestone1000Tex = tuneTex(makeArchBannerTex('1000 METER • SISA 500M!', '#d90429', '#ff5400', '#ffe066', false));
+  const finishBannerTex = tuneTex(makeArchBannerTex('GARIS FINISH • 1500M', '#18181b', '#d90429', '#ffbe0b', true));
+  const matMilestone500 = new THREE.MeshStandardMaterial({
+    map: milestone500Tex, roughness: 0.4, emissive: '#ffffff', emissiveMap: milestone500Tex, emissiveIntensity: 0.28,
+  });
+  const matMilestone1000 = new THREE.MeshStandardMaterial({
+    map: milestone1000Tex, roughness: 0.4, emissive: '#ffffff', emissiveMap: milestone1000Tex, emissiveIntensity: 0.28,
+  });
+  const matMilestoneFinish = new THREE.MeshStandardMaterial({
+    map: finishBannerTex, roughness: 0.4, emissive: '#ffffff', emissiveMap: finishBannerTex, emissiveIntensity: 0.28,
+  });
   const checkeredStripeTex = tuneTex(makeCheckeredStripeTex());
   const matCheckeredStripe = new THREE.MeshStandardMaterial({
     map: checkeredStripeTex, roughness: 0.36, metalness: 0.06,
   });
   const matArchBlue = new THREE.MeshStandardMaterial({ color: P.toyBlue, roughness: 0.36, metalness: 0.08 });
   const matArchGold = new THREE.MeshStandardMaterial({ color: P.coinGold, roughness: 0.24, metalness: 0.6 });
-  const matFenceRed = new THREE.MeshStandardMaterial({ color: P.toyRed, roughness: 0.42 });
-  const matFenceWhite = new THREE.MeshStandardMaterial({ color: P.warmWhite, roughness: 0.42 });
 
   /* Material koin emas mengilap (#FFBE0B), permata, & cincin bercahaya */
   const matCoinGold = new THREE.MeshPhysicalMaterial({
@@ -891,6 +739,17 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
   const matCoinRim = new THREE.MeshPhysicalMaterial({
     color: P.coinGoldRim, metalness: 0.88, roughness: 0.2,
     clearcoat: 0.85, emissive: '#f77f00', emissiveIntensity: 0.18,
+  });
+  const matCoinMerged = new THREE.MeshPhysicalMaterial({
+    vertexColors: true, metalness: 0.87, roughness: 0.17,
+    clearcoat: 0.85, clearcoatRoughness: 0.1,
+    emissive: '#fb8500', emissiveIntensity: 0.22,
+  });
+  const matDecorVertex = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.72, metalness: 0.04 });
+  const matPropsVertex = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.38, metalness: 0.14 });
+  const matGemShared = new THREE.MeshPhysicalMaterial({
+    color: '#ff6b6b', emissive: '#ff6b6b', emissiveIntensity: 0.65,
+    roughness: 0.08, metalness: 0.25, clearcoat: 1.0,
   });
   const matGemHalo = new THREE.MeshStandardMaterial({
     color: '#ffffff', metalness: 0.5, roughness: 0.2,
@@ -939,37 +798,26 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
   geoBoosterHub.rotateZ(Math.PI / 2);
   const geoBoosterRing = new THREE.TorusGeometry(1.12, 0.08, 8, 22);
   geoBoosterRing.rotateY(Math.PI / 2);
-  const geoConnectorBar = new RoundedBoxGeometry(W + 1.45, 0.36, 1.2, 2, 0.08);
-  const geoConnectorEar = new RoundedBoxGeometry(0.58, 0.98, 1.5, 2, 0.1);
-  const geoFireRingTorus = new THREE.TorusGeometry(1.82, 0.19, 10, 28);
-  const geoFireFlame = new THREE.ConeGeometry(0.22, 0.68, 5);
-  const geoSkyLoop = new THREE.TorusGeometry(9.5, 1.35, 10, 32);
-  const geoConeBody = new THREE.ConeGeometry(0.42, 1.05, 12);
+  const geoConnectorBar = new RoundedBoxGeometry(W + 1.45, 0.36, 1.2, 1, 0.08);
+  const geoConnectorEar = new RoundedBoxGeometry(0.58, 0.98, 1.5, 1, 0.1);
+  const geoStarRingTorus = new THREE.TorusGeometry(1.82, 0.19, 8, 22);
+  const geoStarPoint = new THREE.OctahedronGeometry(0.24, 0);
+  const geoConeBody = new THREE.ConeGeometry(0.42, 1.05, 10);
   const geoConeBase = new THREE.BoxGeometry(0.95, 0.14, 0.95);
-  const geoConeCollar = new THREE.CylinderGeometry(0.21, 0.28, 0.26, 12);
-  const geoBarrelBody = new THREE.CylinderGeometry(0.54, 0.54, 1.25, 14);
-  const geoBarrelBand = new THREE.CylinderGeometry(0.56, 0.56, 0.32, 14);
-  const geoHazardBody = new RoundedBoxGeometry(3.4, 1.65, 0.62, 2, 0.12);
+  const geoConeCollar = new THREE.CylinderGeometry(0.21, 0.28, 0.26, 10);
+  const geoBarrelBody = new THREE.CylinderGeometry(0.54, 0.54, 1.25, 10);
+  const geoBarrelBand = new THREE.CylinderGeometry(0.56, 0.56, 0.32, 10);
+  const geoHazardBody = new RoundedBoxGeometry(3.4, 1.65, 0.62, 1, 0.12);
   const geoHazardSign = new THREE.PlaneGeometry(3.0, 1.4);
-  const geoHazardBeacon = new THREE.SphereGeometry(0.26, 10, 8);
-  const geoMascotPlinth = new THREE.CylinderGeometry(2.8, 3.2, 1.4, 14);
-  const geoMascotHead = new THREE.SphereGeometry(1.5, 14, 12);
-  const geoMascotBody = new RoundedBoxGeometry(2.5, 2.9, 1.8, 3, 0.4);
-  const geoMascotArm = new RoundedBoxGeometry(0.65, 2.0, 0.65, 2, 0.2);
-  const geoMonsterWheel = new THREE.CylinderGeometry(1.15, 1.15, 0.9, 14);
-  geoMonsterWheel.rotateZ(Math.PI / 2);
-  const geoMonsterCabin = new RoundedBoxGeometry(2.8, 1.75, 4.6, 3, 0.3);
-  const geoPillar = new THREE.CylinderGeometry(0.62, 0.82, 1, 12);
-  const geoPillarCollar = new THREE.CylinderGeometry(0.86, 0.86, 0.42, 14);
-  const geoPillarBase = new THREE.CylinderGeometry(1.15, 1.3, 0.5, 12);
-  const geoGuardPost = new RoundedBoxGeometry(0.26, 1.02, 0.3, 2, 0.05);
-  const geoGuardBeam = new RoundedBoxGeometry(0.32, 0.44, 4.18, 2, 0.08);
-  const geoGuardUpperBeam = new RoundedBoxGeometry(0.24, 0.22, 4.18, 2, 0.06);
+  const geoHazardBeacon = new THREE.SphereGeometry(0.26, 8, 6);
+  const geoPillar = new THREE.CylinderGeometry(0.62, 0.82, 1, 10);
+  const geoGuardPost = new RoundedBoxGeometry(0.26, 1.02, 0.3, 1, 0.05);
+  const geoGuardBeam = new RoundedBoxGeometry(0.32, 0.44, 4.18, 1, 0.08);
 
-  const geoTrunk = new THREE.CylinderGeometry(0.14, 0.26, 1.25, 10);
-  const geoCanopy = new THREE.SphereGeometry(0.86, 14, 10);
-  const geoBushLobe = new THREE.SphereGeometry(0.56, 12, 10);
-  const geoBerry = new THREE.SphereGeometry(0.1, 7, 6);
+  const geoTrunk = new THREE.CylinderGeometry(0.14, 0.26, 1.25, 8);
+  const geoCanopy = new THREE.SphereGeometry(0.86, 8, 6);
+  const geoBushLobe = new THREE.SphereGeometry(0.56, 8, 6);
+  const geoBerry = new THREE.SphereGeometry(0.1, 6, 5);
   const geoPlantShadow = new THREE.PlaneGeometry(2.4, 2.4);
   geoPlantShadow.rotateX(-Math.PI / 2);
 
@@ -1002,49 +850,486 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     return g;
   })();
 
-  const geoLampBase = new THREE.CylinderGeometry(0.18, 0.24, 0.35, 10);
-  const geoLampPole = new THREE.CylinderGeometry(0.07, 0.09, 3.1, 8);
+  const geoLampBase = new THREE.CylinderGeometry(0.18, 0.24, 0.35, 8);
+  const geoLampPole = new THREE.CylinderGeometry(0.07, 0.09, 3.1, 6);
   const geoLampArm = new THREE.BoxGeometry(0.95, 0.08, 0.08);
-  const geoLampHead = new THREE.SphereGeometry(0.22, 12, 10);
+  const geoLampHead = new THREE.SphereGeometry(0.22, 8, 6);
 
-  const geoFloor = new THREE.PlaneGeometry(240, L);
+  const geoFloor = new THREE.PlaneGeometry(460, 460);
   geoFloor.rotateX(-Math.PI / 2);
-  const geoSideStreet = new THREE.PlaneGeometry(5.2, L);
-  geoSideStreet.rotateX(-Math.PI / 2);
-  const geoSideWalk = new THREE.BoxGeometry(1.3, 0.14, L);
-  const geoStreetDash = new THREE.BoxGeometry(0.18, 0.02, 2.4);
-  const geoBlock = new RoundedBoxGeometry(4.6, 4.6, 4.6, 3, 0.32);
-  const geoFencePost = new RoundedBoxGeometry(0.24, 1.15, 0.24, 2, 0.04);
-  const geoFenceRail = new THREE.BoxGeometry(0.12, 0.16, 4.0);
-  const geoArchPillar = new RoundedBoxGeometry(1.35, 13.6, 1.35, 3, 0.16);
+  const geoBlock = new RoundedBoxGeometry(4.6, 4.6, 4.6, 1, 0.32);
+  const geoArchPillar = new RoundedBoxGeometry(1.35, 13.6, 1.35, 1, 0.16);
   const geoArchLightBar = new THREE.BoxGeometry(0.22, 9.6, 0.22);
-  const geoArchBeam = new RoundedBoxGeometry(W + 4.4, 1.75, 1.45, 3, 0.22);
+  const geoArchBeam = new RoundedBoxGeometry(W + 4.4, 1.75, 1.45, 1, 0.22);
   const geoArchSign = new THREE.PlaneGeometry(W + 2.4, 2.5);
-  const geoArchBulb = new THREE.SphereGeometry(0.26, 10, 8);
+  const geoArchBulb = new THREE.SphereGeometry(0.26, 8, 6);
   const geoBunting = new THREE.ConeGeometry(0.32, 0.65, 3);
   const geoFinishStripe = new THREE.PlaneGeometry(W - 0.6, 3.2);
   geoFinishStripe.rotateX(-Math.PI / 2);
-  const geoFinishFlagPole = new THREE.CylinderGeometry(0.11, 0.14, 3.4, 8);
+  const geoFinishFlagPole = new THREE.CylinderGeometry(0.11, 0.14, 3.4, 6);
   const geoFinishFlagCloth = new THREE.PlaneGeometry(2.6, 1.45);
-  const geoWarnPost = new THREE.CylinderGeometry(0.08, 0.11, 2.2, 8);
+  const geoWarnPost = new THREE.CylinderGeometry(0.08, 0.11, 2.2, 6);
   const geoWarnBoard = new THREE.PlaneGeometry(2.15, 2.15);
   const geoLoopArrow = new THREE.PlaneGeometry(4.4, 5.2);
   geoLoopArrow.rotateX(-Math.PI / 2);
   const geoLoopSignBoard = new THREE.PlaneGeometry(8.8, 1.5);
 
   /* Geometri koin, permata & cincin lantai */
-  const geoCoinBody = new THREE.CylinderGeometry(0.56, 0.56, 0.16, 20);
+  const geoCoinBody = new THREE.CylinderGeometry(0.56, 0.56, 0.16, 16);
   geoCoinBody.rotateX(Math.PI / 2);
-  const geoCoinRim = new THREE.TorusGeometry(0.55, 0.09, 10, 24);
+  const geoCoinRim = new THREE.TorusGeometry(0.55, 0.09, 6, 16);
   const geoCoinCore = new THREE.CylinderGeometry(0.30, 0.30, 0.21, 6);
   geoCoinCore.rotateX(Math.PI / 2);
 
+  function bakePart(src, hex, tx = 0, ty = 0, tz = 0, sx = 1, sy = 1, sz = 1, rx = 0, ry = 0, rz = 0) {
+    const g = src.index ? src.toNonIndexed() : src.clone();
+    g.deleteAttribute('uv');
+    if (rx !== 0 || ry !== 0 || rz !== 0) g.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rx, ry, rz)));
+    if (sx !== 1 || sy !== 1 || sz !== 1) g.scale(sx, sy, sz);
+    if (tx !== 0 || ty !== 0 || tz !== 0) g.translate(tx, ty, tz);
+    const n = g.attributes.position.count;
+    const c = new THREE.Color(hex);
+    const cols = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { cols[i * 3] = c.r; cols[i * 3 + 1] = c.g; cols[i * 3 + 2] = c.b; }
+    g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+    return g;
+  }
+
+  function mergeTransformed(items) {
+    const m4 = new THREE.Matrix4();
+    const eu = new THREE.Euler();
+    const q = new THREE.Quaternion();
+    const pos = new THREE.Vector3();
+    const scl = new THREE.Vector3();
+    const parts = items.map(({ geo, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1 }) => {
+      const g = geo.index ? geo.toNonIndexed() : geo.clone();
+      eu.set(rx, ry, rz);
+      q.setFromEuler(eu);
+      pos.set(x, y, z);
+      scl.set(sx, sy, sz);
+      m4.compose(pos, q, scl);
+      g.applyMatrix4(m4);
+      return g;
+    });
+    const m = mergeGeometries(parts, false);
+    parts.forEach((p) => p.dispose());
+    return m;
+  }
+
+  const geoCoinMerged = (() => {
+    const p = [bakePart(geoCoinBody, P.coinGold), bakePart(geoCoinRim, P.coinGoldRim), bakePart(geoCoinCore, P.coinGoldRim)];
+    const m = mergeGeometries(p, false);
+    p.forEach((g) => g.dispose());
+    return m;
+  })();
+
+  const geoConnectorMerged = (() => {
+    const gBar = geoConnectorBar.clone(); gBar.translate(0, -0.14, 0);
+    const gEarL = geoConnectorEar.clone(); gEarL.translate(-(W / 2 + 0.38), 0.34, 0);
+    const gEarR = geoConnectorEar.clone(); gEarR.translate(W / 2 + 0.38, 0.34, 0);
+    const m = mergeGeometries([gBar, gEarL, gEarR], false);
+    gBar.dispose(); gEarL.dispose(); gEarR.dispose();
+    return m;
+  })();
+
+  const geoTreeMerged = (() => {
+    const p = [
+      bakePart(geoTrunk, P.woodDark, 0, 0.62, 0),
+      bakePart(geoCanopy, '#38b000', 0, 1.75, 0, 1.12, 0.92, 1.12),
+      bakePart(geoCanopy, '#4d7c0f', -0.48, 1.48, 0.28, 0.74, 0.74, 0.74),
+      bakePart(geoCanopy, '#52b788', 0.46, 1.56, -0.22, 0.7, 0.7, 0.7),
+    ];
+    const m = mergeGeometries(p, false);
+    p.forEach((g) => g.dispose());
+    return m;
+  })();
+
+  const geoBushMerged = (() => {
+    const p = [
+      bakePart(geoBushLobe, '#ffffff', 0, 0.42, 0, 1.15, 0.85, 1.15),
+      bakePart(geoBushLobe, '#ffffff', -0.42, 0.34, 0.14, 0.76, 0.76, 0.76),
+    ];
+    const m = mergeGeometries(p, false);
+    p.forEach((g) => g.dispose());
+    return m;
+  })();
+
+  const geoLampPoleMerged = (() => {
+    const p = [
+      bakePart(geoLampBase, P.toyRed, 0, 0.17, 0),
+      bakePart(geoLampPole, P.tire, 0, 1.72, 0),
+      bakePart(geoLampArm, P.tire, 0.42, 3.22, 0),
+    ];
+    const m = mergeGeometries(p, false);
+    p.forEach((g) => g.dispose());
+    return m;
+  })();
+
+  const geoConeMerged = (() => {
+    const p = [
+      bakePart(geoConeBase, '#ff5400', 0, 0.07, 0),
+      bakePart(geoConeBody, '#ff5400', 0, 0.58, 0),
+      bakePart(geoConeCollar, '#fff8eb', 0, 0.68, 0),
+    ];
+    const m = mergeGeometries(p, false);
+    p.forEach((g) => g.dispose());
+    return m;
+  })();
+
+  const geoBarrelStackMerged = (() => {
+    const parts = [];
+    for (const [bx, by] of [[-0.45, 0.46], [0.45, 0.46], [0, 1.34]]) {
+      parts.push(bakePart(geoBarrelBody, '#64748b', bx, by, 0, 0.74, 0.74, 0.74));
+      parts.push(bakePart(geoBarrelBand, '#ffbe0b', bx, by - 0.26 * 0.74, 0, 0.74, 0.74, 0.74));
+      parts.push(bakePart(geoBarrelBand, '#ffbe0b', bx, by + 0.26 * 0.74, 0, 0.74, 0.74, 0.74));
+    }
+    const m = mergeGeometries(parts, false);
+    parts.forEach((g) => g.dispose());
+    return m;
+  })();
+
   const geoGemStar = new THREE.OctahedronGeometry(0.68, 0);
+  const geoGemStarMerged = (() => {
+    const a = geoGemStar.index ? geoGemStar.toNonIndexed() : geoGemStar.clone();
+    const b = a.clone();
+    b.rotateX(Math.PI / 4);
+    b.rotateY(Math.PI / 4);
+    const m = mergeGeometries([a, b], false);
+    a.dispose(); b.dispose();
+    return m;
+  })();
+  const geoStarRingMerged = (() => {
+    const parts = [geoStarRingTorus.index ? geoStarRingTorus.toNonIndexed() : geoStarRingTorus.clone()];
+    for (let k = 0; k < 5; k++) {
+      const a = (k / 5) * Math.PI * 2 + Math.PI / 2;
+      const st = geoStarPoint.index ? geoStarPoint.toNonIndexed() : geoStarPoint.clone();
+      st.translate(Math.cos(a) * 2.08, Math.sin(a) * 2.08, 0);
+      parts.push(st);
+    }
+    const m = mergeGeometries(parts, false);
+    parts.forEach((p) => p.dispose());
+    return m;
+  })();
+  const geoHazardFrameMerged = (() => {
+    const p = [
+      bakePart(geoGuardPost, P.connectorBlue, -1.35, 0.42, 0),
+      bakePart(geoGuardPost, P.connectorBlue, 1.35, 0.42, 0),
+      bakePart(geoHazardBody, '#e63946', 0, 1.12, 0),
+    ];
+    const m = mergeGeometries(p, false);
+    p.forEach((g) => g.dispose());
+    return m;
+  })();
   const geoGemRing = new THREE.TorusGeometry(0.92, 0.055, 8, 24);
   const geoGlowRing = new THREE.PlaneGeometry(2.35, 2.35);
 
+  const geoRampRailsMerged = mergeTransformed([-1, 1].map((side) => ({
+    geo: geoRampRail, x: side * (RAMP_W / 2 + 0.14), y: 0.14, z: 0, rx: Math.atan2(RAMP_RISE, RAMP_LEN),
+  })));
+  const geoRampStripesMerged = mergeTransformed([0, 1, 2, 3].map((s) => {
+    const lz = 1.65 - s * 1.1;
+    const u = (s + 0.5) / 4;
+    return {
+      geo: geoRampStripe,
+      x: 0, y: -RAMP_RISE * 0.45 + u * RAMP_RISE + 0.06, z: lz,
+      rx: Math.atan2(RAMP_RISE, RAMP_LEN),
+    };
+  }));
+  const geoBoostChevronsMerged = mergeTransformed([0, 1, 2].map((c) => ({
+    geo: geoChevron, x: 0, y: 0.09, z: -1.0 + c * 1.0, ry: c % 2 ? 0.35 : -0.35,
+  })));
+  const geoBoostHousingsMerged = mergeTransformed([-1, 1].map((side) => ({
+    geo: geoBoosterHousing, x: side * (BOOST_W / 2 + 0.85), y: 0.64, z: 0,
+  })));
+  const geoBoostRingsMerged = mergeTransformed([-1, 1].flatMap((side) => (
+    [-1.05, 1.05].map((wz) => ({
+      geo: geoBoosterRing, x: side * (BOOST_W / 2 + 0.28), y: 0.68, z: wz,
+    }))
+  )));
+  const geoBoosterWheelMerged = (() => {
+    const p = [
+      bakePart(geoBoosterWheel, '#ffd100'),
+      bakePart(geoBoosterHub, P.connectorBlue),
+    ];
+    const m = mergeGeometries(p, false);
+    p.forEach((g) => g.dispose());
+    return m;
+  })();
+  const geoArchFrameMerged = (() => {
+    const p = [];
+    for (const sx of [-1, 1]) {
+      p.push(bakePart(geoArchPillar, P.toyBlue, sx * (W / 2 + 1.4), 3.4, 0));
+      p.push(bakePart(geoArchBulb, P.coinGold, sx * (W / 2 + 1.4), 10.6, 0, 2.8, 2.8, 2.8));
+    }
+    p.push(bakePart(geoArchBeam, P.coinGold, 0, 8.2, 0));
+    for (let b = 0; b < 9; b++) {
+      const bx = -W / 2 + 0.8 + b * ((W - 1.6) / 8);
+      p.push(bakePart(geoBunting, P.trackOrange, bx, 7.05, 0, 1, 1, 1, Math.PI, 0, 0));
+    }
+    const m = mergeGeometries(p, false);
+    p.forEach((g) => g.dispose());
+    return m;
+  })();
+  const geoArchLightBarsMerged = mergeTransformed([-1, 1].map((sx) => ({
+    geo: geoArchLightBar, x: sx * (W / 2 + 0.66), y: 4.2, z: 0,
+  })));
+  const geoArchBulbsMerged = mergeTransformed(Array.from({ length: 9 }, (_, b) => ({
+    geo: geoArchBulb, x: -W / 2 + 0.8 + b * ((W - 1.6) / 8), y: 9.25, z: 0,
+  })));
+  const geoArchSignsMerged = mergeTransformed([
+    { geo: geoArchSign, x: 0, y: 8.2, z: 0.76 },
+    { geo: geoArchSign, x: 0, y: 8.2, z: -0.76, ry: Math.PI },
+  ]);
+  const geoMilestoneFrameMerged = (() => {
+    const p = [];
+    for (const sx of [-1, 1]) {
+      p.push(bakePart(geoArchPillar, P.toyBlue, sx * (W / 2 + 1.4), 3.4, 0));
+      p.push(bakePart(geoArchBulb, P.coinGold, sx * (W / 2 + 1.4), 10.5, 0, 2.6, 2.6, 2.6));
+    }
+    p.push(bakePart(geoArchBeam, P.coinGold, 0, 8.2, 0));
+    const m = mergeGeometries(p, false);
+    p.forEach((g) => g.dispose());
+    return m;
+  })();
+  const geoFinishFlagPolesMerged = mergeTransformed([-1, 1].map((sx) => ({
+    geo: geoFinishFlagPole, x: sx * (W / 2 + 1.4), y: 12.1, z: 0,
+  })));
+  const geoFinishFlagClothsMerged = mergeTransformed([-1, 1].map((sx) => ({
+    geo: geoFinishFlagCloth, x: sx * (W / 2 + 1.4) + (sx < 0 ? 1.2 : -1.2), y: 13.0, z: 0,
+  })));
+  const geoHazardSignsMerged = mergeTransformed([
+    { geo: geoHazardSign, x: 0, y: 1.12, z: 0.33 },
+    { geo: geoHazardSign, x: 0, y: 1.12, z: -0.33, ry: Math.PI },
+  ]);
+
   const pool = [];
   const POOL_SIZE = TRACK.segmentsAhead + TRACK.segmentsBehind + 2;
+  let ribbonSteps = isEco ? RIBBON_STEPS_ECO : RIBBON_STEPS_HD;
+  let roadRows = isEco ? 6 : 14;
+
+  const floorMesh = new THREE.Mesh(geoFloor, matFloor);
+  floorMesh.position.set(0, FLOOR_Y, -110);
+  floorMesh.receiveShadow = true;
+  scene.add(floorMesh);
+
+  const MAX_GUARDS = POOL_SIZE * 12;
+  const guardPostInst = new THREE.InstancedMesh(geoGuardPost, matCurb, MAX_GUARDS);
+  guardPostInst.frustumCulled = false;
+  guardPostInst.castShadow = !isEco;
+  guardPostInst.count = 0;
+  scene.add(guardPostInst);
+
+  const guardBeamInst = new THREE.InstancedMesh(geoGuardBeam, matRailOrange, MAX_GUARDS);
+  guardBeamInst.frustumCulled = false;
+  guardBeamInst.castShadow = !isEco;
+  guardBeamInst.receiveShadow = true;
+  guardBeamInst.count = 0;
+  scene.add(guardBeamInst);
+
+  const dashInst = new THREE.InstancedMesh(geoDash, matLine, POOL_SIZE * 6);
+  dashInst.frustumCulled = false;
+  dashInst.count = 0;
+  scene.add(dashInst);
+
+  const connectorInst = new THREE.InstancedMesh(geoConnectorMerged, matConnectorBlue, POOL_SIZE);
+  connectorInst.frustumCulled = false;
+  connectorInst.count = 0;
+  scene.add(connectorInst);
+
+  const pierInst = new THREE.InstancedMesh(geoPillar, matPillar, POOL_SIZE * 2);
+  pierInst.frustumCulled = false;
+  pierInst.count = 0;
+  scene.add(pierInst);
+
+  const treeInst = new THREE.InstancedMesh(geoTreeMerged, matDecorVertex, POOL_SIZE);
+  treeInst.frustumCulled = false;
+  treeInst.count = 0;
+  scene.add(treeInst);
+
+  const bushInst = new THREE.InstancedMesh(geoBushMerged, matDecorVertex, POOL_SIZE);
+  bushInst.frustumCulled = false;
+  bushInst.count = 0;
+  scene.add(bushInst);
+
+  const lampInst = new THREE.InstancedMesh(geoLampPoleMerged, matDecorVertex, POOL_SIZE);
+  lampInst.frustumCulled = false;
+  lampInst.count = 0;
+  scene.add(lampInst);
+
+  const lampHeadInst = new THREE.InstancedMesh(geoLampHead, matLampHead, POOL_SIZE);
+  lampHeadInst.frustumCulled = false;
+  lampHeadInst.count = 0;
+  scene.add(lampHeadInst);
+
+  const grassGlobalInst = new THREE.InstancedMesh(geoGrassTuft, matGrassTuft, POOL_SIZE * GRASS_PER_SEG);
+  grassGlobalInst.frustumCulled = false;
+  grassGlobalInst.count = 0;
+  grassGlobalInst.visible = !isEco;
+  scene.add(grassGlobalInst);
+
+  const flowerGlobalInst = new THREE.InstancedMesh(geoFlower, matFlower, POOL_SIZE * FLOWERS_PER_SEG);
+  flowerGlobalInst.frustumCulled = false;
+  flowerGlobalInst.count = 0;
+  flowerGlobalInst.visible = !isEco;
+  scene.add(flowerGlobalInst);
+
+  const _gDummy = new THREE.Object3D();
+  const _bushCol = new THREE.Color('#2ec4b6');
+  function syncGuardrails() {
+    let postCount = 0;
+    let beamCount = 0;
+    let dashCount = 0;
+    let connCount = 0;
+    let pierCount = 0;
+    let treeCount = 0;
+    let bushCount = 0;
+    let lampCount = 0;
+    let grassCount = 0;
+    let flowerCount = 0;
+    for (const seg of pool) {
+      if (seg.index === null || !seg.guardLayout) continue;
+      const cz = seg.group.position.z;
+      for (const p of seg.guardLayout.posts) {
+        if (postCount >= MAX_GUARDS) break;
+        _gDummy.position.set(p.x, p.y, cz + p.lz);
+        _gDummy.rotation.set(0, p.yaw, 0);
+        _gDummy.scale.set(1, 1, 1);
+        _gDummy.updateMatrix();
+        guardPostInst.setMatrixAt(postCount++, _gDummy.matrix);
+      }
+      for (const b of seg.guardLayout.beams) {
+        if (beamCount >= MAX_GUARDS) break;
+        _gDummy.position.set(b.x, b.y, cz + b.lz);
+        _gDummy.rotation.order = 'YXZ';
+        _gDummy.rotation.set(b.pitch, b.yaw, b.bank);
+        _gDummy.scale.set(1, 1, b.scaleZ);
+        _gDummy.updateMatrix();
+        guardBeamInst.setMatrixAt(beamCount++, _gDummy.matrix);
+      }
+      const dl = seg.decorLayout;
+      if (dl) {
+        for (const d of dl.dashes) {
+          _gDummy.position.set(d.x, d.y, cz + d.lz);
+          _gDummy.rotation.order = 'YXZ';
+          _gDummy.rotation.set(d.pitch, d.yaw, d.bank);
+          _gDummy.scale.set(1, 1, 1);
+          _gDummy.updateMatrix();
+          dashInst.setMatrixAt(dashCount++, _gDummy.matrix);
+        }
+        if (dl.conn) {
+          _gDummy.position.set(dl.conn.x, dl.conn.y, cz + dl.conn.lz);
+          _gDummy.rotation.order = 'YXZ';
+          _gDummy.rotation.set(dl.conn.pitch, dl.conn.yaw, dl.conn.bank);
+          _gDummy.scale.set(1, 1, 1);
+          _gDummy.updateMatrix();
+          connectorInst.setMatrixAt(connCount++, _gDummy.matrix);
+        }
+        for (const pr of dl.piers) {
+          _gDummy.position.set(pr.x, pr.y, cz);
+          _gDummy.rotation.set(0, 0, 0);
+          _gDummy.scale.set(1, pr.h, 1);
+          _gDummy.updateMatrix();
+          pierInst.setMatrixAt(pierCount++, _gDummy.matrix);
+        }
+        if (dl.tree) {
+          _gDummy.position.set(dl.tree.x, dl.tree.y, cz + dl.tree.lz);
+          _gDummy.rotation.set(0, dl.tree.ry, 0);
+          _gDummy.scale.setScalar(dl.tree.sc);
+          _gDummy.updateMatrix();
+          treeInst.setMatrixAt(treeCount++, _gDummy.matrix);
+        }
+        if (dl.bush) {
+          _gDummy.position.set(dl.bush.x, dl.bush.y, cz + dl.bush.lz);
+          _gDummy.rotation.set(0, dl.bush.ry, 0);
+          _gDummy.scale.setScalar(dl.bush.sc);
+          _gDummy.updateMatrix();
+          bushInst.setMatrixAt(bushCount, _gDummy.matrix);
+          _bushCol.set(seg.index % 2 === 0 ? '#2ec4b6' : '#8338ec');
+          bushInst.setColorAt(bushCount, _bushCol);
+          bushCount++;
+        }
+        if (dl.lamp) {
+          _gDummy.position.set(dl.lamp.x, dl.lamp.y, cz + dl.lamp.lz);
+          _gDummy.rotation.set(0, dl.lamp.ry, 0);
+          _gDummy.scale.set(1, 1, 1);
+          _gDummy.updateMatrix();
+          lampInst.setMatrixAt(lampCount, _gDummy.matrix);
+          const hx = dl.lamp.x + Math.cos(dl.lamp.ry) * 0.84;
+          const hz = cz + dl.lamp.lz - Math.sin(dl.lamp.ry) * 0.84;
+          _gDummy.position.set(hx, dl.lamp.y + 3.06, hz);
+          _gDummy.rotation.set(0, 0, 0);
+          _gDummy.updateMatrix();
+          lampHeadInst.setMatrixAt(lampCount, _gDummy.matrix);
+          lampCount++;
+        }
+      }
+      if (!isEco && seg.foliageLayout) {
+        for (const gr of seg.foliageLayout.grass) {
+          _gDummy.position.set(gr.x, gr.y, cz + gr.lz);
+          _gDummy.rotation.set(0, gr.ry, 0);
+          _gDummy.scale.setScalar(gr.sc);
+          _gDummy.updateMatrix();
+          grassGlobalInst.setMatrixAt(grassCount, _gDummy.matrix);
+          _col.set(gr.col);
+          grassGlobalInst.setColorAt(grassCount, _col);
+          grassCount++;
+        }
+        for (const fl of seg.foliageLayout.flowers) {
+          _gDummy.position.set(fl.x, fl.y, cz + fl.lz);
+          _gDummy.rotation.set(0, fl.ry, 0);
+          _gDummy.scale.setScalar(fl.sc);
+          _gDummy.updateMatrix();
+          flowerGlobalInst.setMatrixAt(flowerCount, _gDummy.matrix);
+          _col.set(fl.col);
+          flowerGlobalInst.setColorAt(flowerCount, _col);
+          flowerCount++;
+        }
+      }
+    }
+    guardPostInst.count = postCount;
+    guardPostInst.instanceMatrix.needsUpdate = true;
+    guardBeamInst.count = beamCount;
+    guardBeamInst.instanceMatrix.needsUpdate = true;
+    dashInst.count = dashCount;
+    dashInst.instanceMatrix.needsUpdate = true;
+    connectorInst.count = connCount;
+    connectorInst.instanceMatrix.needsUpdate = true;
+    pierInst.count = pierCount;
+    pierInst.instanceMatrix.needsUpdate = true;
+    treeInst.count = treeCount;
+    treeInst.instanceMatrix.needsUpdate = true;
+    bushInst.count = bushCount;
+    bushInst.instanceMatrix.needsUpdate = true;
+    if (bushInst.instanceColor) bushInst.instanceColor.needsUpdate = true;
+    lampInst.count = lampCount;
+    lampInst.instanceMatrix.needsUpdate = true;
+    lampHeadInst.count = lampCount;
+    lampHeadInst.instanceMatrix.needsUpdate = true;
+    grassGlobalInst.visible = !isEco;
+    grassGlobalInst.count = grassCount;
+    grassGlobalInst.instanceMatrix.needsUpdate = true;
+    if (grassGlobalInst.instanceColor) grassGlobalInst.instanceColor.needsUpdate = true;
+    flowerGlobalInst.visible = !isEco;
+    flowerGlobalInst.count = flowerCount;
+    flowerGlobalInst.instanceMatrix.needsUpdate = true;
+    if (flowerGlobalInst.instanceColor) flowerGlobalInst.instanceColor.needsUpdate = true;
+  }
+
+  function ensureCollectibleMesh(slot, kind) {
+    if (kind === 'coin' && !slot.coinMesh) {
+      slot.coinMesh = buildCoinMesh();
+      slot.obj.add(slot.coinMesh);
+    } else if (kind === 'gem' && !slot.gemMesh) {
+      slot.gemMesh = buildGemMesh();
+      slot.obj.add(slot.gemMesh);
+    } else if (kind === 'fruit' && !slot.fruitMesh) {
+      slot.fruitMesh = buildToyFruit(slot.fruitType);
+      slot.obj.add(slot.fruitMesh);
+    } else if (kind === 'ring' && !slot.starRingMesh) {
+      slot.starRingMesh = buildStarRingMesh();
+      slot.obj.add(slot.starRingMesh);
+    }
+  }
 
   function cacheBaseX(mesh) {
     const pos = mesh.geometry.attributes.position;
@@ -1077,17 +1362,17 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     g.computeVertexNormals();
   }
 
-  function makeRoadGeo(width, beveled = true) {
-    const g = new THREE.PlaneGeometry(width, L, beveled ? 4 : 1, 14);
+  function makeRoadGeo(width, beveled = true, rows = 14) {
+    const g = new THREE.PlaneGeometry(width, L, beveled ? 4 : 1, rows);
     g.rotateX(-Math.PI / 2);
     if (beveled) applyBeveledProfile(g, width);
     return g;
   }
 
   /** Bahu rumput-ke-trotoar di sisi kiri/kanan jalan dengan transisi vertex color halus */
-  function makeShoulderBlendGeo(side) {
+  function makeShoulderBlendGeo(side, rows = 14) {
     const shoulderW = 2.6;
-    const g = new THREE.PlaneGeometry(shoulderW, L, 2, 14);
+    const g = new THREE.PlaneGeometry(shoulderW, L, 2, rows);
     g.rotateX(-Math.PI / 2);
     const pos = g.attributes.position;
     const cols = new Float32Array(pos.count * 3);
@@ -1109,10 +1394,40 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     return g;
   }
 
-  function makeSkirtGeo() {
-    const g = new THREE.PlaneGeometry(L, 1.25, 14, 1);
+  function makeShoulderBlendPairGeo(rows = 14) {
+    const shL = makeShoulderBlendGeo(-1, rows);
+    shL.translate(-(W / 2 + 1.3), 0, 0);
+    const shR = makeShoulderBlendGeo(1, rows);
+    shR.translate(W / 2 + 1.3, 0, 0);
+    const m = mergeGeometries([shL, shR], false);
+    shL.dispose(); shR.dispose();
+    return m;
+  }
+
+  function makeSkirtGeo(rows = 14) {
+    const g = new THREE.PlaneGeometry(L, 1.25, rows, 1);
     g.rotateY(Math.PI / 2);
     return g;
+  }
+
+  function makeSkirtPairGeo(rows = 14) {
+    const skL = makeSkirtGeo(rows);
+    skL.translate(-W / 2, 0, 0);
+    const skR = makeSkirtGeo(rows);
+    skR.translate(W / 2, 0, 0);
+    const m = mergeGeometries([skL, skR], false);
+    skL.dispose(); skR.dispose();
+    return m;
+  }
+
+  function makeEdgesPairGeo(rows = 14) {
+    const eL = makeRoadGeo(0.28, false, rows);
+    eL.translate(-W / 2 + 0.3, 0, 0);
+    const eR = makeRoadGeo(0.28, false, rows);
+    eR.translate(W / 2 - 0.3, 0, 0);
+    const m = mergeGeometries([eL, eR], false);
+    eL.dispose(); eR.dispose();
+    return m;
   }
 
   /* Geometri ribbon dinamis untuk Narrow Bridge, Y-Split Fork, dan 360° Loop */
@@ -1170,41 +1485,36 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     return g;
   }
 
-  const matForkLeft = new THREE.MeshStandardMaterial({
-    map: roadTex.map,
-    normalMap: roadTex.normalMap,
-    normalScale: new THREE.Vector2(0.28, 0.28),
-    color: '#ff9068',
-    roughness: 0.36,
-    metalness: 0.08,
-  });
-  const matLoopSurface = new THREE.MeshStandardMaterial({
-    map: roadTex.map,
-    normalMap: roadTex.normalMap,
-    normalScale: new THREE.Vector2(0.28, 0.28),
-    roughness: 0.36,
-    metalness: 0.08,
-    side: THREE.DoubleSide,
-  });
+  const matForkLeft = createCleanOrangeTrackMaterial({ maxAnisotropy, repeatX: 1, repeatY: 2 });
+  matForkLeft.color.set('#ff9068');
+  const matLoopSurface = createCleanOrangeTrackMaterial({ maxAnisotropy, side: THREE.DoubleSide, repeatX: 1, repeatY: 2 });
   const matGapCap = new THREE.MeshStandardMaterial({
     color: P.connectorBlue, roughness: 0.36, metalness: 0.08,
     emissive: '#0044aa', emissiveIntensity: 0.18,
   });
-  const geoGapCap = new RoundedBoxGeometry(W * 0.5 + 0.35, 0.42, 0.52, 2, 0.08);
-  const geoLoopStrut = new THREE.CylinderGeometry(0.32, 0.45, 1, 10);
+  const geoGapCap = new RoundedBoxGeometry(W * 0.5 + 0.35, 0.42, 0.52, 1, 0.08);
+  const geoLoopStrut = new THREE.CylinderGeometry(0.32, 0.45, 1, 8);
   const geoForkSignPost = new THREE.CylinderGeometry(0.16, 0.2, 4.4, 8);
+  const geoLoopSignPostsMerged = mergeTransformed([-4.2, 4.2].map((px) => ({
+    geo: geoForkSignPost, x: px, y: 2.2, z: 0,
+  })));
   const geoForkSignBoard = new THREE.PlaneGeometry(7.6, 1.4);
   const forkSignTex = (() => {
     const c = document.createElement('canvas'); c.width = 512; c.height = 112;
     const g = c.getContext('2d');
-    g.fillStyle = '#1b1b22';
-    g.beginPath(); g.roundRect(4, 4, 504, 104, 18); g.fill();
-    g.strokeStyle = '#ffbe0b'; g.lineWidth = 6; g.stroke();
-    g.font = '700 28px Fredoka, "Plus Jakarta Sans", sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillStyle = '#ff6b8b'; g.fillText('⬆️ ATAS: BUAH & API', 140, 56);
-    g.fillStyle = '#38bdf8'; g.fillText('⬇️ BAWAH: KOIN AMAN', 376, 56);
+    const draw = () => {
+      g.clearRect(0, 0, 512, 112);
+      g.fillStyle = '#1b1b22';
+      g.beginPath(); g.roundRect(4, 4, 504, 104, 18); g.fill();
+      g.strokeStyle = '#ffbe0b'; g.lineWidth = 6; g.stroke();
+      g.font = '700 28px Fredoka, "Plus Jakarta Sans", sans-serif';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillStyle = '#ff6b8b'; g.fillText('ATAS: BUAH & BINTANG', 142, 56);
+      g.fillStyle = '#38bdf8'; g.fillText('BAWAH: KOIN AMAN', 382, 56);
+    };
+    draw();
     const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+    whenFontsReady(() => { draw(); tex.needsUpdate = true; });
     return tuneTex(tex);
   })();
   const matForkSign = new THREE.MeshStandardMaterial({
@@ -1212,120 +1522,33 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
   });
 
   function buildCoinMesh() {
-    const g = new THREE.Group();
-    const body = new THREE.Mesh(geoCoinBody, matCoinGold);
-    const rim = new THREE.Mesh(geoCoinRim, matCoinRim);
-    const core = new THREE.Mesh(geoCoinCore, matCoinRim);
-    body.castShadow = true;
-    g.add(body, rim, core);
-    return g;
+    const m = new THREE.Mesh(geoCoinMerged, matCoinMerged);
+    m.castShadow = true;
+    return m;
   }
 
   function buildGemMesh() {
     const g = new THREE.Group();
-    const gemMat = new THREE.MeshPhysicalMaterial({
-      color: '#ff6b6b', emissive: '#ff6b6b', emissiveIntensity: 0.65,
-      roughness: 0.08, metalness: 0.25, clearcoat: 1.0,
-    });
-    const s1 = new THREE.Mesh(geoGemStar, gemMat);
-    const s2 = new THREE.Mesh(geoGemStar, gemMat);
-    s2.rotation.set(Math.PI / 4, Math.PI / 4, 0);
+    const s1 = new THREE.Mesh(geoGemStarMerged, matGemShared);
     const ring = new THREE.Mesh(geoGemRing, matGemHalo);
     ring.rotation.x = Math.PI / 3;
     s1.castShadow = true;
-    g.add(s1, s2, ring);
-    g.userData.gemMat = gemMat;
+    g.add(s1, ring);
+    g.userData.gemMat = matGemShared;
     g.userData.ring = ring;
     return g;
   }
 
-  function buildStyledTree() {
-    const g = new THREE.Group();
-    const shadow = new THREE.Mesh(geoPlantShadow, matPlantShadow);
-    shadow.position.y = 0.04;
-    g.add(shadow);
-
-    const trunk = new THREE.Mesh(geoTrunk, matTrunk);
-    trunk.position.y = 0.62;
-    trunk.castShadow = true;
-    g.add(trunk);
-
-    const c1 = new THREE.Mesh(geoCanopy, matLeaf1); c1.position.set(0, 1.75, 0); c1.scale.set(1.12, 0.92, 1.12); c1.castShadow = true;
-    const c2 = new THREE.Mesh(geoCanopy, matLeaf2); c2.position.set(-0.48, 1.48, 0.28); c2.scale.setScalar(0.74); c2.castShadow = true;
-    const c3 = new THREE.Mesh(geoCanopy, matLeaf3); c3.position.set(0.46, 1.56, -0.22); c3.scale.setScalar(0.7); c3.castShadow = true;
-    const c4 = new THREE.Mesh(geoCanopy, matLeaf3); c4.position.set(0.08, 2.34, 0.08); c4.scale.setScalar(0.66); c4.castShadow = true;
-    g.add(c1, c2, c3, c4);
-    return g;
-  }
-
-  function buildOrnamentalBush(isPurple) {
-    const g = new THREE.Group();
-    const shadow = new THREE.Mesh(geoPlantShadow, matPlantShadow);
-    shadow.position.y = 0.04;
-    shadow.scale.setScalar(0.65);
-    g.add(shadow);
-
-    const mat = isPurple ? matBushPurple : matBushEmerald;
-    const m1 = new THREE.Mesh(geoBushLobe, mat); m1.position.set(0, 0.42, 0); m1.scale.set(1.15, 0.85, 1.15); m1.castShadow = true;
-    const m2 = new THREE.Mesh(geoBushLobe, mat); m2.position.set(-0.42, 0.34, 0.14); m2.scale.setScalar(0.76); m2.castShadow = true;
-    const m3 = new THREE.Mesh(geoBushLobe, mat); m3.position.set(0.4, 0.36, -0.12); m3.scale.setScalar(0.72); m3.castShadow = true;
-    g.add(m1, m2, m3);
-
-    if (isPurple) {
-      for (const [bx, by, bz] of [[-0.25, 0.72, 0.2], [0.22, 0.74, -0.15], [0, 0.84, 0.05]]) {
-        const b = new THREE.Mesh(geoBerry, matBerry);
-        b.position.set(bx, by, bz);
-        g.add(b);
-      }
-    }
-    return g;
-  }
-
-  function buildFireRingMesh() {
-    const g = new THREE.Group();
-    const torus = new THREE.Mesh(geoFireRingTorus, matFireRing);
-    torus.castShadow = false;
-    g.add(torus);
-    for (let k = 0; k < 10; k++) {
-      const a = (k / 10) * Math.PI * 2;
-      const flame = new THREE.Mesh(geoFireFlame, matFireFlame);
-      flame.position.set(Math.cos(a) * 2.04, Math.sin(a) * 2.04, 0);
-      flame.rotation.z = a - Math.PI / 2;
-      g.add(flame);
-    }
-    return g;
+  function buildStarRingMesh() {
+    const m = new THREE.Mesh(geoStarRingMerged, matStarRing);
+    m.castShadow = false;
+    return m;
   }
 
   function buildPropMesh(kind) {
-    const g = new THREE.Group();
-    if (kind === 'cone') {
-      const base = new THREE.Mesh(geoConeBase, matConeOrange);
-      base.position.y = 0.07;
-      base.castShadow = true;
-      const body = new THREE.Mesh(geoConeBody, matConeOrange);
-      body.position.y = 0.58;
-      body.castShadow = true;
-      const collar = new THREE.Mesh(geoConeCollar, matConeWhite);
-      collar.position.y = 0.68;
-      g.add(base, body, collar);
-    } else {
-      /* Piramida 3 tong abu-abu & strip kuning yang bisa ditabrak hancur */
-      const stackCoords = [[-0.45, 0.46], [0.45, 0.46], [0, 1.34]];
-      for (const [bx, by] of stackCoords) {
-        const sub = new THREE.Group();
-        const body = new THREE.Mesh(geoBarrelBody, matBarrelGrey);
-        body.castShadow = true;
-        const band1 = new THREE.Mesh(geoBarrelBand, matBarrelYellow);
-        band1.position.y = -0.26;
-        const band2 = new THREE.Mesh(geoBarrelBand, matBarrelYellow);
-        band2.position.y = 0.26;
-        sub.add(body, band1, band2);
-        sub.scale.setScalar(0.74);
-        sub.position.set(bx, by, 0);
-        g.add(sub);
-      }
-    }
-    return g;
+    const m = new THREE.Mesh(kind === 'cone' ? geoConeMerged : geoBarrelStackMerged, matPropsVertex);
+    m.castShadow = true;
+    return m;
   }
 
   function buildWarningSignMesh() {
@@ -1340,82 +1563,17 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     return g;
   }
 
-  function buildSkullHazardMesh() {
+  function buildHazardBarrierMesh() {
     const g = new THREE.Group();
-    for (const sx of [-1.35, 1.35]) {
-      const leg = new THREE.Mesh(geoGuardPost, matConnectorBlue);
-      leg.position.set(sx, 0.42, 0);
-      leg.castShadow = true;
-      g.add(leg);
-    }
-    const bar = new THREE.Mesh(geoHazardBody, matBarrelRed);
-    bar.position.set(0, 1.12, 0);
-    bar.castShadow = true;
-    const front = new THREE.Mesh(geoHazardSign, matSkullSign);
-    front.position.set(0, 1.12, 0.33);
-    const back = new THREE.Mesh(geoHazardSign, matSkullSign);
-    back.position.set(0, 1.12, -0.33);
-    back.rotation.y = Math.PI;
+    const frame = new THREE.Mesh(geoHazardFrameMerged, matPropsVertex);
+    frame.castShadow = true;
+    const signs = new THREE.Mesh(geoHazardSignsMerged, matHazardBarrierSign);
     const beaconL = new THREE.Mesh(geoHazardBeacon, matBeaconRed);
     beaconL.position.set(-1.35, 2.08, 0);
     const beaconR = new THREE.Mesh(geoHazardBeacon, matBeaconBlue);
     beaconR.position.set(1.35, 2.08, 0);
-    g.add(bar, front, back, beaconL, beaconR);
+    g.add(frame, signs, beaconL, beaconR);
     g.userData = { beaconL, beaconR };
-    return g;
-  }
-
-  function buildSkyLoopDecor() {
-    const g = new THREE.Group();
-    const deck = new THREE.Mesh(geoSkyLoop, matAsphalt);
-    deck.position.y = 10.0;
-    const rim = new THREE.Mesh(geoSkyLoop, matCurb);
-    rim.position.y = 10.0;
-    rim.scale.set(1.04, 1.04, 0.45);
-    g.add(deck, rim);
-    for (const sx of [-4.2, 4.2]) {
-      const strut = new THREE.Mesh(geoLoopStrut, matConnectorBlue);
-      strut.scale.set(1, 10.2, 1);
-      strut.position.set(sx, 5.1, 0);
-      g.add(strut);
-    }
-    return g;
-  }
-
-  function buildMascotDisplay(variant) {
-    const g = new THREE.Group();
-    const plinth = new THREE.Mesh(geoMascotPlinth, matConnectorBlue);
-    plinth.position.y = 0.7;
-    plinth.castShadow = true;
-    g.add(plinth);
-    if (variant === 0) {
-      const body = new THREE.Mesh(geoMascotBody, matBarrelRed);
-      body.position.y = 2.85;
-      body.castShadow = true;
-      const head = new THREE.Mesh(geoMascotHead, matRampStripe);
-      head.position.y = 5.15;
-      head.castShadow = true;
-      const armL = new THREE.Mesh(geoMascotArm, matBarrelYellow);
-      armL.position.set(-1.75, 3.25, 0);
-      armL.rotation.z = 0.55;
-      const armR = new THREE.Mesh(geoMascotArm, matBarrelYellow);
-      armR.position.set(1.75, 3.25, 0);
-      armR.rotation.z = -0.55;
-      g.add(body, head, armL, armR);
-      g.userData = { variant: 0, armL, armR };
-    } else {
-      const cabin = new THREE.Mesh(geoMonsterCabin, matBarrelRed);
-      cabin.position.y = 3.15;
-      cabin.castShadow = true;
-      g.add(cabin);
-      for (const wx of [-1.65, 1.65]) for (const wz of [-1.45, 1.45]) {
-        const w = new THREE.Mesh(geoMonsterWheel, matLampPole);
-        w.position.set(wx, 2.05, wz);
-        w.castShadow = true;
-        g.add(w);
-      }
-      g.userData = { variant: 1 };
-    }
     return g;
   }
 
@@ -1429,8 +1587,9 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     const seg = {
       group, index: null, type: 'plain',
       road: null, rampRoads: [], rampSafeRoad: null, rampCaps: [],
-      shoulders: [], skirts: [], edges: [], dashes: [],
-      guardPosts: [], guardBeams: [], guardUpperBeams: [], connector: null,
+      shoulder: null, skirt: null, edges: null,
+      guardLayout: { posts: [], beams: [] },
+      decorLayout: { dashes: [], conn: null, piers: [], tree: null, bush: null, lamp: null },
       narrowRoad: null, narrowGroup: null,
       forkGroup: null, forkLeftRoad: null, forkRightRoad: null,
       forkLeftRailL: null, forkLeftRailR: null, forkRightRailL: null, forkRightRailR: null,
@@ -1438,81 +1597,27 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       loopGroup: null, loopDeck: null, loopRailL: null, loopRailR: null,
       loopBypassRoad: null, loopBypassRailL: null, loopBypassRailR: null,
       loopEntryArrow: null, loopSign: null, loopStruts: [],
-      ramp: null, boost: null, boosterWheels: [], bridge: null, piers: [], pierCollars: [],
-      floor: null, blocks: [], fences: [], arch: null,
-      milestoneArch: null, milestoneMat: null, finishStripe: null, finishFlags: [],
-      skyLoop: null, mascot0: null, mascot1: null,
+      ramp: null, boost: null, boosterWheels: [],
+      blocks: [], arch: null,
+      milestoneArch: null, mSignFront: null, mSignBack: null, finishStripe: null, finishFlags: [],
       smashProps: [], hazard: null, warnSign: null,
-      decor: [], grassInst: null, flowerInst: null,
+      grassInst: null, flowerInst: null,
       collectibles: [],
     };
 
-    /* Lantai diorama kota Salatiga (di bawah jalan layang) + Jalan Raya Miniatur menerus */
-    seg.floor = new THREE.Mesh(geoFloor, floorMats[0]);
-    seg.floor.position.y = FLOOR_Y;
-    seg.floor.receiveShadow = true;
-    group.add(seg.floor);
-
-    for (const side of [-1, 1]) {
-      const street = new THREE.Mesh(geoSideStreet, matSideStreet);
-      street.position.set(side * 19.0, FLOOR_Y + 0.03, 0);
-      street.receiveShadow = true;
-      group.add(street);
-
-      const walkOuter = new THREE.Mesh(geoSideWalk, matSideWalk);
-      walkOuter.position.set(side * 22.25, FLOOR_Y + 0.07, 0);
-      walkOuter.receiveShadow = true;
-      group.add(walkOuter);
-
-      const walkInner = new THREE.Mesh(geoSideWalk, matSideWalk);
-      walkInner.position.set(side * 15.85, FLOOR_Y + 0.07, 0);
-      walkInner.receiveShadow = true;
-      group.add(walkInner);
-
-      for (let d = 0; d < 4; d++) {
-        const dash = new THREE.Mesh(geoStreetDash, matStreetLine);
-        dash.position.set(side * 19.0, FLOOR_Y + 0.045, -L / 2 + 3 + d * 6);
-        group.add(dash);
-      }
-    }
-
-    /* Balok kayu ABC pastel di taman pinggir luar */
-    for (let b = 0; b < 4; b++) {
-      const m = new THREE.Mesh(geoBlock, blockMats[b % blockMats.length]);
-      m.castShadow = true;
-      m.receiveShadow = true;
-      group.add(m);
-      seg.blocks.push(m);
-    }
-
-    /* Pagar pembatas median antara pilar jalan layang & jalan kota bawah */
-    for (const side of [-1, 1]) {
-      const fg = new THREE.Group();
-      for (let k = 0; k < 6; k++) {
-        const lz = -L / 2 + 2 + k * 4;
-        const post = new THREE.Mesh(geoFencePost, k % 2 ? matFenceRed : matFenceWhite);
-        post.position.set(0, 0.58, lz);
-        post.castShadow = true;
-        fg.add(post);
-      }
-      for (const ry of [0.38, 0.82]) {
-        for (let k = 0; k < 6; k++) {
-          const rail = new THREE.Mesh(geoFenceRail, k % 2 ? matFenceWhite : matFenceRed);
-          rail.position.set(0, ry, -L / 2 + 2 + k * 4);
-          fg.add(rail);
-        }
-      }
-      fg.position.set(side * 15.2, FLOOR_Y, 0);
-      group.add(fg);
-      seg.fences.push(fg);
-    }
+    /* 1 balok kayu ABC pastel di area luar jauh (>=40m) */
+    const blk = new THREE.Mesh(geoBlock, blockMats[0]);
+    blk.castShadow = !isEco;
+    blk.receiveShadow = true;
+    group.add(blk);
+    seg.blocks.push(blk);
 
     /* Jalan plastik oranye + potongan chasm satu sisi & jalur aman di sebelahnya */
-    seg.road = cacheBaseX(new THREE.Mesh(makeRoadGeo(W), matAsphalt));
+    seg.road = cacheBaseX(new THREE.Mesh(makeRoadGeo(W, true, roadRows), matAsphalt));
     seg.road.receiveShadow = true;
     group.add(seg.road);
 
-    const rampApproach = cacheBaseX(new THREE.Mesh(makeGapRoadGeo(L / 2, RAMP_GAP_START, W, 8), matAsphalt));
+    const rampApproach = cacheBaseX(new THREE.Mesh(makeGapRoadGeo(L / 2, RAMP_GAP_START, W, 6), matAsphalt));
     rampApproach.receiveShadow = true; rampApproach.visible = false;
     const rampExit = cacheBaseX(new THREE.Mesh(makeGapRoadGeo(RAMP_GAP_END, -L / 2, W, 2), matAsphalt));
     rampExit.receiveShadow = true; rampExit.visible = false;
@@ -1528,9 +1633,9 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       seg.rampCaps.push({ mesh: cap, lz: cz });
     }
 
-    /* Narrowing Beam Bridge (half normal width, guardrails terbuka!) */
+    /* Narrowing Beam Bridge */
     const narrowGroup = new THREE.Group();
-    const narrowRoad = new THREE.Mesh(makeBeveledRibbonGeo(RIBBON_STEPS), matAsphalt);
+    const narrowRoad = new THREE.Mesh(makeBeveledRibbonGeo(ribbonSteps), matAsphalt);
     narrowRoad.receiveShadow = true;
     narrowGroup.add(narrowRoad);
     narrowGroup.visible = false;
@@ -1538,16 +1643,16 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     seg.narrowGroup = narrowGroup;
     seg.narrowRoad = narrowRoad;
 
-    /* Over-Under Split Fork Paths (Kiri Atas: bertingkat penuh buah & api | Kanan Bawah: koin aman) */
+    /* Over-Under Split Fork Paths (Kiri Atas: bertingkat penuh buah & bintang | Kanan Bawah: koin aman) */
     const forkGroup = new THREE.Group();
-    const forkLeftRoad = new THREE.Mesh(makeBeveledRibbonGeo(RIBBON_STEPS), matForkLeft);
+    const forkLeftRoad = new THREE.Mesh(makeBeveledRibbonGeo(ribbonSteps), matForkLeft);
     forkLeftRoad.receiveShadow = true;
-    const forkRightRoad = new THREE.Mesh(makeBeveledRibbonGeo(RIBBON_STEPS), matAsphalt);
+    const forkRightRoad = new THREE.Mesh(makeBeveledRibbonGeo(ribbonSteps), matAsphalt);
     forkRightRoad.receiveShadow = true;
-    const forkLeftRailL = new THREE.Mesh(makeRibbonGridGeo(RIBBON_STEPS), matRailGlow);
-    const forkLeftRailR = new THREE.Mesh(makeRibbonGridGeo(RIBBON_STEPS), matRailGlow);
-    const forkRightRailL = new THREE.Mesh(makeRibbonGridGeo(RIBBON_STEPS), matRailGlow);
-    const forkRightRailR = new THREE.Mesh(makeRibbonGridGeo(RIBBON_STEPS), matRailGlow);
+    const forkLeftRailL = new THREE.Mesh(makeRibbonGridGeo(ribbonSteps), matRailGlow);
+    const forkLeftRailR = new THREE.Mesh(makeRibbonGridGeo(ribbonSteps), matRailGlow);
+    const forkRightRailL = new THREE.Mesh(makeRibbonGridGeo(ribbonSteps), matRailGlow);
+    const forkRightRailR = new THREE.Mesh(makeRibbonGridGeo(ribbonSteps), matRailGlow);
     const forkSign = new THREE.Group();
     const fPost = new THREE.Mesh(geoForkSignPost, matConnectorBlue);
     fPost.position.set(0, 2.2, 0); fPost.castShadow = true;
@@ -1576,26 +1681,24 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     seg.forkRightRailR = forkRightRailR;
     seg.forkSign = forkSign;
 
-    /* 360° Hot Wheels Dual-Choice Loop (Kiri: Loop 360° | Kanan: Jalur Aman Lurus) */
+    /* 360° Dual-Choice Loop (Kiri: Loop 360° | Kanan: Jalur Aman Lurus) */
     const loopGroup = new THREE.Group();
     const loopDeck = new THREE.Mesh(makeBeveledRibbonGeo(LOOP_STEPS), matLoopSurface);
     loopDeck.receiveShadow = true;
     const loopRailL = new THREE.Mesh(makeRibbonGridGeo(LOOP_STEPS), matCurb);
     const loopRailR = new THREE.Mesh(makeRibbonGridGeo(LOOP_STEPS), matCurb);
-    const loopBypassRoad = new THREE.Mesh(makeBeveledRibbonGeo(RIBBON_STEPS), matAsphalt);
+    const loopBypassRoad = new THREE.Mesh(makeBeveledRibbonGeo(ribbonSteps), matAsphalt);
     loopBypassRoad.receiveShadow = true;
-    const loopBypassRailL = new THREE.Mesh(makeRibbonGridGeo(RIBBON_STEPS), matRailGlow);
-    const loopBypassRailR = new THREE.Mesh(makeRibbonGridGeo(RIBBON_STEPS), matRailGlow);
+    const loopBypassRailL = new THREE.Mesh(makeRibbonGridGeo(ribbonSteps), matRailGlow);
+    const loopBypassRailR = new THREE.Mesh(makeRibbonGridGeo(ribbonSteps), matRailGlow);
     const loopEntryArrow = new THREE.Mesh(geoLoopArrow, matLoopArrow);
     loopEntryArrow.renderOrder = 2;
     const loopSign = new THREE.Group();
-    const lPostL = new THREE.Mesh(geoForkSignPost, matConnectorBlue);
-    lPostL.position.set(-4.2, 2.2, 0); lPostL.castShadow = true;
-    const lPostR = new THREE.Mesh(geoForkSignPost, matConnectorBlue);
-    lPostR.position.set(4.2, 2.2, 0); lPostR.castShadow = true;
+    const lPosts = new THREE.Mesh(geoLoopSignPostsMerged, matConnectorBlue);
+    lPosts.castShadow = true;
     const lBoard = new THREE.Mesh(geoLoopSignBoard, matLoopSign);
     lBoard.position.set(0, 4.4, 0);
-    loopSign.add(lPostL, lPostR, lBoard);
+    loopSign.add(lPosts, lBoard);
     loopGroup.add(
       loopDeck, loopRailL, loopRailR,
       loopBypassRoad, loopBypassRailL, loopBypassRailR,
@@ -1619,289 +1722,90 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     seg.loopEntryArrow = loopEntryArrow;
     seg.loopSign = loopSign;
 
-    for (const side of [-1, 1]) {
-      const shGeo = makeShoulderBlendGeo(side);
-      shGeo.translate(side * (W / 2 + 1.3), 0, 0);
-      const sh = cacheBaseX(new THREE.Mesh(shGeo, matShoulderBlend));
-      sh.receiveShadow = true;
-      group.add(sh);
-      seg.shoulders.push({ mesh: sh, side });
-    }
+    const sh = cacheBaseX(new THREE.Mesh(makeShoulderBlendPairGeo(roadRows), matShoulderBlend));
+    sh.receiveShadow = true;
+    group.add(sh);
+    seg.shoulder = sh;
 
-    for (const sx of [-W / 2, W / 2]) {
-      const skGeo = makeSkirtGeo();
-      skGeo.translate(sx, 0, 0);
-      const sk = cacheBaseX(new THREE.Mesh(skGeo, matDeckSide));
-      sk.receiveShadow = true;
-      group.add(sk);
-      seg.skirts.push(sk);
-    }
+    const sk = cacheBaseX(new THREE.Mesh(makeSkirtPairGeo(roadRows), matDeckSide));
+    sk.receiveShadow = true;
+    group.add(sk);
+    seg.skirt = sk;
 
-    for (const ex of [-W / 2 + 0.3, W / 2 - 0.3]) {
-      const eGeo = makeRoadGeo(0.28, false);
-      eGeo.translate(ex, 0, 0);
-      const e = cacheBaseX(new THREE.Mesh(eGeo, matLine));
-      e.receiveShadow = true;
-      group.add(e); seg.edges.push(e);
-    }
-    for (let d = 0; d < 6; d++) {
-      const m = new THREE.Mesh(geoDash, matLine);
-      group.add(m); seg.dashes.push(m);
-    }
+    const ed = cacheBaseX(new THREE.Mesh(makeEdgesPairGeo(roadRows), matLine));
+    ed.receiveShadow = true;
+    group.add(ed);
+    seg.edges = ed;
 
-    /* Guardrail sisi oranye lapis ganda bercahaya + Klip Konektor Biru (#0077FF) */
-    for (const side of [-1, 1]) {
-      for (let k = 0; k < 6; k++) {
-        const post = new THREE.Mesh(geoGuardPost, matCurb);
-        post.castShadow = true;
-        group.add(post);
-        seg.guardPosts.push({ mesh: post, side, k });
-
-        const beam = new THREE.Mesh(geoGuardBeam, matRailColors[k % matRailColors.length]);
-        beam.castShadow = true;
-        beam.receiveShadow = true;
-        group.add(beam);
-        seg.guardBeams.push({ mesh: beam, side, k });
-
-        const upperBeam = new THREE.Mesh(geoGuardUpperBeam, matRailGlow);
-        upperBeam.castShadow = false;
-        group.add(upperBeam);
-        seg.guardUpperBeams.push({ mesh: upperBeam, side, k });
-      }
-    }
-
-    const connector = new THREE.Group();
-    const connBar = new THREE.Mesh(geoConnectorBar, matConnectorBlue);
-    connBar.position.set(0, -0.14, 0);
-    connBar.castShadow = true;
-    connector.add(connBar);
-    for (const side of [-1, 1]) {
-      const ear = new THREE.Mesh(geoConnectorEar, matConnectorBlue);
-      ear.position.set(side * (W / 2 + 0.38), 0.34, 0);
-      ear.castShadow = true;
-      connector.add(ear);
-    }
-    group.add(connector);
-    seg.connector = connector;
-
-    /* Pilar penopang jalan layang bercahaya ke lantai kota */
-    for (const px of [-W / 2 + 1.8, W / 2 - 1.8]) {
-      const p = new THREE.Mesh(geoPillar, matPillar);
-      p.castShadow = true;
-      group.add(p);
-      seg.piers.push({ mesh: p, x: px });
-
-      const collar = new THREE.Mesh(geoPillarCollar, matPillarGlow);
-      group.add(collar);
-      const base = new THREE.Mesh(geoPillarBase, matConnectorBlue);
-      group.add(base);
-      seg.pierCollars.push({ collar, base, x: px });
-    }
-
-    /* Steep Glowing Green/Blue Triangular Launch Ramp with Yellow-Black Hazard Edge */
+    /* Steep Triangular Launch Ramp with Yellow-Black Hazard Edge */
     const ramp = new THREE.Group();
     const slab = new THREE.Mesh(geoRamp, matRamp);
     slab.castShadow = true; slab.receiveShadow = true;
-    ramp.add(slab);
-    const rampAngle = Math.atan2(RAMP_RISE, RAMP_LEN);
-    for (const side of [-1, 1]) {
-      const rail = new THREE.Mesh(geoRampRail, matConnectorBlue);
-      rail.position.set(side * (RAMP_W / 2 + 0.14), 0.14, 0);
-      rail.rotation.x = rampAngle;
-      rail.castShadow = true;
-      ramp.add(rail);
-    }
-    for (let s = 0; s < 4; s++) {
-      const lz = 1.65 - s * 1.1;
-      const u = (s + 0.5) / 4;
-      const st = new THREE.Mesh(geoRampStripe, matRampStripe);
-      st.position.set(0, -RAMP_RISE * 0.45 + u * RAMP_RISE + 0.06, lz);
-      st.rotation.x = rampAngle;
-      ramp.add(st);
-    }
+    const rampRails = new THREE.Mesh(geoRampRailsMerged, matConnectorBlue);
+    rampRails.castShadow = true;
+    const rampStripes = new THREE.Mesh(geoRampStripesMerged, matRampStripe);
     const hazardLip = new THREE.Mesh(geoRampLipHazard, matHazardStripe);
     hazardLip.position.set(0, RAMP_RISE * 0.46, -RAMP_LEN * 0.47);
-    ramp.add(hazardLip);
+    ramp.add(slab, rampRails, rampStripes, hazardLip);
     ramp.visible = false;
     group.add(ramp); seg.ramp = ramp;
 
-    /* Boost Pad + Turbin Booster Raksasa Bercahaya di kedua sisi */
+    /* Boost Pad + Turbin Booster */
     const boost = new THREE.Group();
     const pad = new THREE.Mesh(geoBoost, matBoost);
     pad.receiveShadow = true;
-    boost.add(pad);
-    for (let c = 0; c < 3; c++) {
-      const ch = new THREE.Mesh(geoChevron, matChevron);
-      ch.position.set(0, 0.09, -1.0 + c * 1.0);
-      ch.rotation.y = c % 2 ? 0.35 : -0.35;
-      boost.add(ch);
-    }
+    const chevrons = new THREE.Mesh(geoBoostChevronsMerged, matChevron);
+    const housings = new THREE.Mesh(geoBoostHousingsMerged, matConnectorBlue);
+    housings.castShadow = true;
+    const boostRings = new THREE.Mesh(geoBoostRingsMerged, matPillarGlow);
+    boost.add(pad, chevrons, housings, boostRings);
     for (const side of [-1, 1]) {
-      const hx = side * (BOOST_W / 2 + 0.85);
-      const housing = new THREE.Mesh(geoBoosterHousing, matConnectorBlue);
-      housing.position.set(hx, 0.64, 0);
-      housing.castShadow = true;
-      boost.add(housing);
-
       for (const wz of [-1.05, 1.05]) {
-        const ringGlow = new THREE.Mesh(geoBoosterRing, matPillarGlow);
-        ringGlow.position.set(side * (BOOST_W / 2 + 0.28), 0.68, wz);
-        boost.add(ringGlow);
-
-        const wheelGroup = new THREE.Group();
-        wheelGroup.position.set(side * (BOOST_W / 2 + 0.32), 0.68, wz);
-        const tire = new THREE.Mesh(geoBoosterWheel, matBoosterWheel);
-        tire.castShadow = true;
-        const hub = new THREE.Mesh(geoBoosterHub, matBoosterHub);
-        wheelGroup.add(tire, hub);
-        boost.add(wheelGroup);
-        seg.boosterWheels.push({ mesh: wheelGroup, side });
+        const wheelMesh = new THREE.Mesh(geoBoosterWheelMerged, matPropsVertex);
+        wheelMesh.position.set(side * (BOOST_W / 2 + 0.32), 0.68, wz);
+        wheelMesh.castShadow = true;
+        boost.add(wheelMesh);
+        seg.boosterWheels.push({ mesh: wheelMesh, side });
       }
     }
     boost.visible = false;
     group.add(boost); seg.boost = boost;
 
-    /* Jembatan layang dengan cincin pylon bercahaya */
-    const bridge = new THREE.Group();
-    seg.pillars = [];
-    for (const px of [-W / 2 + 1.4, W / 2 - 1.4]) for (const pz of [-L * 0.22, L * 0.22]) {
-      const p = new THREE.Mesh(geoPillar, matPillar);
-      p.castShadow = true; p.position.set(px, 0, pz);
-      const collar = new THREE.Mesh(geoPillarCollar, matPillarGlow);
-      collar.position.set(px, FLOOR_Y + 3.2, pz);
-      bridge.add(p, collar);
-      seg.pillars.push({ mesh: p, collar, px, pz });
-    }
-    bridge.visible = false;
-    group.add(bridge); seg.bridge = bridge;
-
-    /* Gerbang Emas Megah Jalan Layang (setiap archEvery segmen) */
+    /* Gerbang Emas Megah Jalan Layang */
     const arch = new THREE.Group();
-    for (const sx of [-1, 1]) {
-      const col = new THREE.Mesh(geoArchPillar, matArchBlue);
-      col.position.set(sx * (W / 2 + 1.4), 3.4, 0);
-      col.castShadow = true;
-      arch.add(col);
-      const lightStrip = new THREE.Mesh(geoArchLightBar, matPillarGlow);
-      lightStrip.position.set(sx * (W / 2 + 0.66), 4.2, 0);
-      arch.add(lightStrip);
-      const cap = new THREE.Mesh(geoArchBulb, matArchGold);
-      cap.position.set(sx * (W / 2 + 1.4), 10.6, 0);
-      cap.scale.setScalar(2.8);
-      arch.add(cap);
-    }
-    const beam = new THREE.Mesh(geoArchBeam, matArchGold);
-    beam.position.set(0, 8.2, 0);
-    beam.castShadow = true;
-    arch.add(beam);
-    const signFront = new THREE.Mesh(geoArchSign, matArchBanner);
-    signFront.position.set(0, 8.2, 0.76);
-    arch.add(signFront);
-    const signBack = new THREE.Mesh(geoArchSign, matArchBanner);
-    signBack.position.set(0, 8.2, -0.76);
-    signBack.rotation.y = Math.PI;
-    arch.add(signBack);
-    for (let b = 0; b < 9; b++) {
-      const bx = -W / 2 + 0.8 + b * ((W - 1.6) / 8);
-      const bulb = new THREE.Mesh(geoArchBulb, matLampHead);
-      bulb.position.set(bx, 9.25, 0);
-      arch.add(bulb);
-      const flag = new THREE.Mesh(geoBunting, matRailColors[b % matRailColors.length]);
-      flag.position.set(bx, 7.05, 0);
-      flag.rotation.x = Math.PI;
-      arch.add(flag);
-    }
+    const archFrame = new THREE.Mesh(geoArchFrameMerged, matPropsVertex);
+    archFrame.castShadow = true;
+    const archLightBars = new THREE.Mesh(geoArchLightBarsMerged, matPillarGlow);
+    const archBulbs = new THREE.Mesh(geoArchBulbsMerged, matLampHead);
+    const archSigns = new THREE.Mesh(geoArchSignsMerged, matArchBanner);
+    arch.add(archFrame, archLightBars, archBulbs, archSigns);
     arch.visible = false;
     group.add(arch);
     seg.arch = arch;
 
     /* Gerbang Milestone (500m / 1000m) & Gerbang FINISH 1500m Berkotak-kotak */
     const mArch = new THREE.Group();
-    for (const sx of [-1, 1]) {
-      const col = new THREE.Mesh(geoArchPillar, matArchBlue);
-      col.position.set(sx * (W / 2 + 1.4), 3.4, 0);
-      col.castShadow = true;
-      mArch.add(col);
-      const cap = new THREE.Mesh(geoArchBulb, matArchGold);
-      cap.position.set(sx * (W / 2 + 1.4), 10.5, 0);
-      cap.scale.setScalar(2.6);
-      mArch.add(cap);
-
-      const fPole = new THREE.Mesh(geoFinishFlagPole, matLampPole);
-      fPole.position.set(sx * (W / 2 + 1.4), 12.1, 0);
-      const fCloth = new THREE.Mesh(geoFinishFlagCloth, matCheckeredStripe);
-      fCloth.position.set(sx * (W / 2 + 1.4) + (sx < 0 ? 1.2 : -1.2), 13.0, 0);
-      mArch.add(fPole, fCloth);
-      seg.finishFlags.push(fPole, fCloth);
-    }
-    const mBeam = new THREE.Mesh(geoArchBeam, matArchGold);
-    mBeam.position.set(0, 8.2, 0);
-    mBeam.castShadow = true;
-    mArch.add(mBeam);
-    const milestoneMat = new THREE.MeshStandardMaterial({
-      map: finishBannerTex, roughness: 0.4, emissive: '#ffffff', emissiveMap: finishBannerTex, emissiveIntensity: 0.28,
-    });
-    const mSignFront = new THREE.Mesh(geoArchSign, milestoneMat);
-    mSignFront.position.set(0, 8.2, 0.76);
-    const mSignBack = new THREE.Mesh(geoArchSign, milestoneMat);
-    mSignBack.position.set(0, 8.2, -0.76);
-    mSignBack.rotation.y = Math.PI;
+    const mFrame = new THREE.Mesh(geoMilestoneFrameMerged, matPropsVertex);
+    mFrame.castShadow = true;
+    const fPoles = new THREE.Mesh(geoFinishFlagPolesMerged, matLampPole);
+    const fCloths = new THREE.Mesh(geoFinishFlagClothsMerged, matCheckeredStripe);
+    seg.finishFlags.push(fPoles, fCloths);
+    const mSigns = new THREE.Mesh(geoArchSignsMerged, matMilestoneFinish);
     const finishStripe = new THREE.Mesh(geoFinishStripe, matCheckeredStripe);
     finishStripe.position.set(0, 0.04, 0);
     finishStripe.receiveShadow = true;
-    mArch.add(mSignFront, mSignBack, finishStripe);
+    mArch.add(mFrame, fPoles, fCloths, mSigns, finishStripe);
     mArch.visible = false;
     group.add(mArch);
     seg.milestoneArch = mArch;
-    seg.milestoneMat = milestoneMat;
+    seg.mSignFront = mSigns;
+    seg.mSignBack = mSigns;
     seg.finishStripe = finishStripe;
 
-    /* Foliage pinggir: 3 pohon kanopi berlapis + 3 semak hias ungu/zamrud + 2 lampu jalan */
-    for (let t = 0; t < 3; t++) {
-      const tree = buildStyledTree();
-      group.add(tree);
-      seg.decor.push({ obj: tree, kind: 'tree', phase: t * 1.4 });
-    }
-    for (let b = 0; b < 3; b++) {
-      const bush = buildOrnamentalBush(b === 1);
-      group.add(bush);
-      seg.decor.push({ obj: bush, kind: 'bush', phase: b * 1.7 + 0.5 });
-    }
-    for (let l = 0; l < 2; l++) {
-      const lamp = new THREE.Group();
-      const base = new THREE.Mesh(geoLampBase, matLampCollar); base.position.y = 0.17; base.castShadow = true;
-      const pole = new THREE.Mesh(geoLampPole, matLampPole); pole.position.y = 1.72; pole.castShadow = true;
-      const arm = new THREE.Mesh(geoLampArm, matLampPole); arm.position.set(0.42, 3.22, 0);
-      const head = new THREE.Mesh(geoLampHead, matLampHead); head.position.set(0.84, 3.06, 0);
-      lamp.add(base, pole, arm, head);
-      group.add(lamp); seg.decor.push({ obj: lamp, kind: 'lamp', sideIdx: l });
-    }
+    /* Foliage pinggir jauh, rumput, bunga & lampu jalan di-render via global InstancedMesh */
+    seg.foliageLayout = { grass: [], flowers: [] };
 
-    /* InstancedMesh rumpun rumput & bunga liar di bahu jalan + halaman diorama */
-    const grassInst = new THREE.InstancedMesh(geoGrassTuft, matGrassTuft, GRASS_PER_SEG);
-    grassInst.frustumCulled = false;
-    group.add(grassInst);
-    seg.grassInst = grassInst;
-
-    const flowerInst = new THREE.InstancedMesh(geoFlower, matFlower, FLOWERS_PER_SEG);
-    flowerInst.frustumCulled = false;
-    group.add(flowerInst);
-    seg.flowerInst = flowerInst;
-
-    /* Dekorasi langit: Background Sky Loops + Giant Mascot / Monster Truck Displays */
-    seg.skyLoop = buildSkyLoopDecor();
-    seg.skyLoop.visible = false;
-    group.add(seg.skyLoop);
-
-    seg.mascot0 = buildMascotDisplay(0);
-    seg.mascot0.visible = false;
-    group.add(seg.mascot0);
-
-    seg.mascot1 = buildMascotDisplay(1);
-    seg.mascot1.visible = false;
-    group.add(seg.mascot1);
-
-    /* Smashable cones & 3-barrel grey/yellow pyramid stacks (2 tumpuk tong + 2 kerucut per segmen) */
+    /* Smashable props (2 tumpuk barel + 2 kerucut per segmen) */
     for (let p = 0; p < 4; p++) {
       const kind = p < 2 ? 'barrel' : 'cone';
       const mesh = buildPropMesh(kind);
@@ -1913,8 +1817,8 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       });
     }
 
-    /* Penghalang bahaya tengkorak merah/biru + Papan Segitiga Merah "!" Mengambang */
-    const hazMesh = buildSkullHazardMesh();
+    /* Penghalang bahaya merah/biru dengan simbol "!" (tanpa tengkorak) */
+    const hazMesh = buildHazardBarrierMesh();
     hazMesh.visible = false;
     group.add(hazMesh);
     seg.hazard = {
@@ -1927,15 +1831,10 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     group.add(warnMesh);
     seg.warnSign = { mesh: warnMesh, active: false, baseY: 0, lz: 0, lx: 0, phase: 0 };
 
-    /* Pool kolektibel per segmen (koin emas, permata pelangi, buah 3D glossy, & Fire Ring) */
-    for (let c = 0; c < MAX_COLLECTIBLES; c++) {
+    /* Pool kolektibel lazy per segmen */
+    for (let c = 0; c < MAX_COLLECTIBLES_HD; c++) {
       const wrapper = new THREE.Group();
-      const coinMesh = buildCoinMesh();
-      const gemMesh = buildGemMesh();
       const fruitType = FRUIT_TYPES[c % FRUIT_TYPES.length];
-      const fruitMesh = buildToyFruit(fruitType);
-      const fireRingMesh = buildFireRingMesh();
-      wrapper.add(coinMesh, gemMesh, fruitMesh, fireRingMesh);
       wrapper.visible = false;
       group.add(wrapper);
 
@@ -1948,10 +1847,10 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       seg.collectibles.push({
         obj: wrapper,
         groundRing,
-        coinMesh,
-        gemMesh,
-        fruitMesh,
-        fireRingMesh,
+        coinMesh: null,
+        gemMesh: null,
+        fruitMesh: null,
+        starRingMesh: null,
         fruitType,
         kind: 'coin',
         lx: 0,
@@ -1967,7 +1866,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     return seg;
   }
 
-  function displace(mesh, centerZ, yOffset = 0, xShift = 0) {
+  function displace(mesh, centerZ, yOffset = 0, xShift = 0, recomputeNormals = true) {
     const pos = mesh.geometry.attributes.position;
     const bx = mesh.userData.baseX;
     const by = mesh.userData.baseY;
@@ -1980,16 +1879,17 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       pos.setY(v, getTrackHeight(wz) + lx * bank + yOffset + (by ? by[v] : 0));
     }
     pos.needsUpdate = true;
-    mesh.geometry.computeVertexNormals();
+    if (recomputeNormals) mesh.geometry.computeVertexNormals();
   }
 
-  function displaceShoulder(mesh, side, centerZ) {
+  function displaceShoulder(mesh, centerZ) {
     const pos = mesh.geometry.attributes.position;
     const bx = mesh.userData.baseX;
     const shoulderW = 2.6;
-    const baseEdge = side * (W / 2 + 1.3);
     for (let v = 0; v < pos.count; v++) {
       const lxWorld = bx ? bx[v] : pos.getX(v);
+      const side = lxWorld < 0 ? -1 : 1;
+      const baseEdge = side * (W / 2 + 1.3);
       const lxRel = lxWorld - baseEdge;
       const t = side < 0 ? (shoulderW * 0.5 - lxRel) / shoulderW : (lxRel + shoulderW * 0.5) / shoulderW;
       const drop = t * 0.22;
@@ -2006,13 +1906,14 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
   function displaceSkirt(mesh, centerZ) {
     const pos = mesh.geometry.attributes.position;
     const bx = mesh.userData.baseX;
+    const by = mesh.userData.baseY;
     for (let v = 0; v < pos.count; v++) {
       const wz = centerZ + pos.getZ(v);
       const lx = bx ? bx[v] : pos.getX(v);
       const cx = getTrackCenterX(wz);
       const bank = getTrackBank(wz);
       const h = getTrackHeight(wz) + lx * bank;
-      const isTop = v < pos.count / 2;
+      const isTop = by ? by[v] > 0 : false;
       pos.setX(v, cx + lx);
       pos.setY(v, isTop ? h + 0.01 : h - 1.25);
     }
@@ -2090,7 +1991,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     posRR.needsUpdate = true; seg.loopRailR.geometry.computeVertexNormals();
 
     /* Jalur Bypass Lurus Aman di sisi kanan (BYPASS_CENTER_X) */
-    displaceBeveledRibbon(seg.loopBypassRoad, RIBBON_STEPS, (t) => {
+    displaceBeveledRibbon(seg.loopBypassRoad, ribbonSteps, (t) => {
       const lz = L / 2 - t * L;
       const wz = centerZ + lz;
       const cx = getTrackCenterX(wz);
@@ -2100,7 +2001,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       const rx = BYPASS_CENTER_X + BYPASS_HALF_W;
       return { lx: cx + lx, rx: cx + rx, yL: h + lx * bank, yR: h + rx * bank, z: lz };
     });
-    displaceRibbon(seg.loopBypassRailL, RIBBON_STEPS, (t) => {
+    displaceRibbon(seg.loopBypassRailL, ribbonSteps, (t) => {
       const lz = L / 2 - t * L;
       const wz = centerZ + lz;
       const cx = getTrackCenterX(wz);
@@ -2108,7 +2009,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       const y = getTrackHeight(wz) + (BYPASS_CENTER_X - BYPASS_HALF_W) * bank;
       return { lx: cx + BYPASS_CENTER_X - BYPASS_HALF_W - 0.14, rx: cx + BYPASS_CENTER_X - BYPASS_HALF_W + 0.12, y: y + 0.42, z: lz };
     });
-    displaceRibbon(seg.loopBypassRailR, RIBBON_STEPS, (t) => {
+    displaceRibbon(seg.loopBypassRailR, ribbonSteps, (t) => {
       const lz = L / 2 - t * L;
       const wz = centerZ + lz;
       const cx = getTrackCenterX(wz);
@@ -2142,10 +2043,12 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       item.groundRing.visible = false;
     }
 
+    const maxCol = isEco ? MAX_COLLECTIBLES_ECO : MAX_COLLECTIBLES_HD;
     let cursor = 0;
     const placeItem = (kind, localOffsetX, lz, yOff, absY = null, absX = null) => {
-      if (cursor >= MAX_COLLECTIBLES) return;
+      if (cursor >= maxCol) return;
       const slot = seg.collectibles[cursor++];
+      ensureCollectibleMesh(slot, kind);
       slot.kind = kind;
       const wz = centerZ + lz;
       const cx = getTrackCenterX(wz);
@@ -2158,15 +2061,15 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       slot.phase = (i * 0.9 + cursor * 0.65);
       slot.active = true;
       slot.collected = false;
-      slot.coinMesh.visible = kind === 'coin';
-      slot.gemMesh.visible = kind === 'gem';
-      slot.fruitMesh.visible = kind === 'fruit';
-      slot.fireRingMesh.visible = kind === 'ring';
+      if (slot.coinMesh) slot.coinMesh.visible = kind === 'coin';
+      if (slot.gemMesh) slot.gemMesh.visible = kind === 'gem';
+      if (slot.fruitMesh) slot.fruitMesh.visible = kind === 'fruit';
+      if (slot.starRingMesh) slot.starRingMesh.visible = kind === 'ring';
       slot.obj.position.set(wx, slot.baseY, lz);
       slot.obj.rotation.y = getTrackYaw(wz);
       slot.obj.visible = true;
 
-      if (absY === null && (kind === 'fruit' || kind === 'gem')) {
+      if (absY === null && !isEco && (kind === 'fruit' || kind === 'gem')) {
         slot.groundRing.material = ringMats[kind === 'gem' ? 'gem' : slot.fruitType];
         slot.groundRing.position.set(wx, trackY + 0.06, lz);
         slot.groundRing.rotation.set(-Math.PI / 2 - getTrackSlope(wz), 0, 0);
@@ -2197,19 +2100,20 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
         const kind = idx === 2 ? 'ring' : idx === 1 || idx === 3 ? 'gem' : 'fruit';
         placeItem(kind, 0, lp.z - centerZ, 0, lp.y + (u > 0.25 && u < 0.75 ? -1.1 : 1.1), lp.x);
       });
-      for (let k = 0; k < 5; k++) {
+      const bypassCount = isEco ? 1 : 5;
+      for (let k = 0; k < bypassCount; k++) {
         placeItem('coin', BYPASS_CENTER_X, 8.0 - k * 4.0, 0.95);
       }
       return;
     }
 
     if (seg.type === 'fork') {
-      const ts = [0.22, 0.38, 0.54, 0.70, 0.82];
+      const ts = isEco ? [0.22, 0.54, 0.82] : [0.22, 0.38, 0.54, 0.70, 0.82];
       ts.forEach((t, idx) => {
         const fp = getForkProfile(t);
         const lz = L / 2 - t * L;
         const wz = centerZ + lz;
-        const kindL = idx === 2 ? 'ring' : idx === 3 ? 'gem' : 'fruit';
+        const kindL = idx === Math.floor(ts.length / 2) ? 'ring' : idx === ts.length - 1 ? 'gem' : 'fruit';
         const baseY = getTrackHeight(wz);
         placeItem(kindL, fp.cxL, lz, 0, baseY + fp.yOffL + (kindL === 'ring' ? 1.85 : 1.25));
         placeItem('coin', fp.cxR, lz, 0, baseY + 0.95);
@@ -2218,9 +2122,10 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     }
 
     if (seg.type === 'narrow') {
-      for (let k = 0; k < 6; k++) {
-        const lz = 9.0 - k * 3.6;
-        const kind = k === 2 || k === 5 ? 'fruit' : 'coin';
+      const nCount = isEco ? 4 : 6;
+      for (let k = 0; k < nCount; k++) {
+        const lz = 9.0 - k * (18.0 / Math.max(1, nCount - 1));
+        const kind = k === 1 || k === nCount - 1 ? 'fruit' : 'coin';
         placeItem(kind, Math.sin(k * 0.9) * 0.85, lz, kind === 'fruit' ? 1.25 : 0.95);
       }
       return;
@@ -2230,100 +2135,87 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       const rx = getRampSide(i) * RAMP_OFFSET;
       const sx = -rx;
       placeItem('coin', rx, 5.5, 0.95);
-      placeItem('coin', rx, 2.2, 1.2);
-      const arcSteps = [-0.8, -3.2, -5.6, -8.0, -10.4];
+      const arcSteps = isEco ? [-0.8, -5.6, -10.4] : [-0.8, -3.2, -5.6, -8.0, -10.4];
       arcSteps.forEach((lz, idx) => {
         const u = (idx + 1) / arcSteps.length;
         const yOff = 1.65 + Math.sin(u * Math.PI * 0.58) * 3.2;
-        const kind = idx === 2 ? 'ring' : idx === 3 ? 'gem' : 'coin';
+        const kind = idx === Math.floor(arcSteps.length / 2) ? 'ring' : idx === arcSteps.length - 1 ? 'gem' : 'coin';
         placeItem(kind, rx, lz, yOff);
       });
       placeItem('coin', sx, -4.5, 0.95);
-      placeItem('coin', sx, -8.5, 0.95);
       return;
     }
 
     if (prevType === 'ramp') {
       const rx = getRampSide(i - 1) * RAMP_OFFSET;
-      const descSteps = [10.4, 8.0, 5.6, 3.2, 0.8];
+      const descSteps = isEco ? [10.4, 5.6, 0.8] : [10.4, 8.0, 5.6, 3.2, 0.8];
       descSteps.forEach((lz, idx) => {
-        const u = idx / (descSteps.length - 1);
+        const u = idx / Math.max(1, descSteps.length - 1);
         const yOff = 4.4 - u * 3.35;
-        placeItem(idx === 4 ? 'fruit' : 'coin', rx, lz, yOff);
+        placeItem(idx === descSteps.length - 1 ? 'fruit' : 'coin', rx, lz, yOff);
       });
       placeItem('coin', -rx * 0.6, -4.5, 0.95);
-      placeItem('coin', -rx * 0.9, -8.5, 0.95);
       return;
     }
 
     if (seg.type === 'boost') {
       const leadSide = hash(i * 19) > 0.5 ? 1 : -1;
-      for (let k = 0; k < 5; k++) {
-        const u = k / 4;
+      const bCount = isEco ? 3 : 5;
+      for (let k = 0; k < bCount; k++) {
+        const u = k / Math.max(1, bCount - 1);
         const lz = 10.2 - u * 8.2;
         const lx = leadSide * LANE_W * (1 - u);
         placeItem('coin', lx, lz, 0.95);
       }
       placeItem(i % 2 === 0 ? 'ring' : 'fruit', 0, -4.8, i % 2 === 0 ? 1.9 : 1.25);
-      placeItem('coin', 0, -7.8, 0.95);
-      placeItem('coin', 0, -10.2, 0.95);
+      placeItem('coin', 0, -9.2, 0.95);
       return;
     }
 
     const dir = i % 2 === 0 ? 1 : -1;
-    const count = 6;
+    const count = isEco ? 4 : 6;
     for (let k = 0; k < count; k++) {
-      const u = k / (count - 1);
+      const u = k / Math.max(1, count - 1);
       const lz = 9.8 - u * 19.6;
       const lx = Math.sin(u * Math.PI * 1.5) * dir * LANE_W * 0.95;
-      const isGem = (i % 4 === 1) && k === 3;
-      const isFruit = !isGem && (k === 2 || k === 5);
+      const isGem = (i % 4 === 1) && k === Math.min(3, count - 1);
+      const isFruit = !isGem && (k === 1 || k === count - 1);
       placeItem(isGem ? 'gem' : isFruit ? 'fruit' : 'coin', lx, lz, isGem || isFruit ? 1.25 : 0.95);
     }
   }
 
   function assignFoliageInstances(seg, i, centerZ) {
+    seg.foliageLayout.grass.length = 0;
+    seg.foliageLayout.flowers.length = 0;
+    if (isEco) return;
     for (let k = 0; k < GRASS_PER_SEG; k++) {
       const side = k % 2 === 0 ? -1 : 1;
-      const onShoulder = k < 18;
       const lz = -L / 2 + 1 + hash(i * 61 + k * 3) * (L - 2);
       const wz = centerZ + lz;
       const cx = getTrackCenterX(wz);
-      const lx = onShoulder
-        ? cx + side * (W / 2 + 0.9 + hash(i * 71 + k) * 1.65)
-        : side * (13.6 + hash(i * 79 + k) * 1.8);
-      const ly = onShoulder ? getTrackHeight(wz) + (lx - cx) * getTrackBank(wz) - 0.14 : FLOOR_Y;
-      _dummy.position.set(lx, ly, lz);
-      _dummy.rotation.set(0, hash(i * 43 + k) * Math.PI * 2, 0);
-      _dummy.scale.setScalar(onShoulder ? (0.8 + hash(i * 83 + k) * 0.55) : (1.1 + hash(i * 89 + k) * 0.65));
-      _dummy.updateMatrix();
-      seg.grassInst.setMatrixAt(k, _dummy.matrix);
-      _col.set(GRASS_SHADES[(i + k) % GRASS_SHADES.length]);
-      seg.grassInst.setColorAt(k, _col);
+      const lx = cx + side * (W / 2 + 0.95 + hash(i * 71 + k) * 1.55);
+      const ly = getTrackHeight(wz) + (lx - cx) * getTrackBank(wz) - 0.14;
+      seg.foliageLayout.grass.push({
+        x: lx, y: ly, lz,
+        ry: hash(i * 43 + k) * Math.PI * 2,
+        sc: 0.8 + hash(i * 83 + k) * 0.5,
+        col: GRASS_SHADES[(i + k) % GRASS_SHADES.length],
+      });
     }
-    seg.grassInst.instanceMatrix.needsUpdate = true;
-    if (seg.grassInst.instanceColor) seg.grassInst.instanceColor.needsUpdate = true;
-
     for (let k = 0; k < FLOWERS_PER_SEG; k++) {
       const side = k % 2 === 0 ? -1 : 1;
-      const onShoulder = k < 10;
       const lz = -L / 2 + 1.5 + hash(i * 97 + k * 5) * (L - 3);
       const wz = centerZ + lz;
       const cx = getTrackCenterX(wz);
-      const lx = onShoulder
-        ? cx + side * (W / 2 + 1.05 + hash(i * 101 + k) * 1.45)
-        : side * (13.8 + hash(i * 103 + k) * 1.6);
-      const ly = onShoulder ? getTrackHeight(wz) + (lx - cx) * getTrackBank(wz) - 0.14 : FLOOR_Y;
-      _dummy.position.set(lx, ly, lz);
-      _dummy.rotation.set(0, hash(i * 59 + k) * Math.PI * 2, 0);
-      _dummy.scale.setScalar(0.85 + hash(i * 67 + k) * 0.45);
-      _dummy.updateMatrix();
-      seg.flowerInst.setMatrixAt(k, _dummy.matrix);
-      _col.set(FLOWER_SHADES[(i * 3 + k) % FLOWER_SHADES.length]);
-      seg.flowerInst.setColorAt(k, _col);
+      const lx = cx + side * (W / 2 + 1.05 + hash(i * 101 + k) * 1.4);
+      const ly = getTrackHeight(wz) + (lx - cx) * getTrackBank(wz) - 0.14;
+      seg.foliageLayout.flowers.push({
+        x: lx, y: ly, lz,
+        ry: hash(i * 59 + k) * Math.PI * 2,
+        sc: 0.85 + hash(i * 67 + k) * 0.45,
+        col: FLOWER_SHADES[(i * 3 + k) % FLOWER_SHADES.length],
+      });
     }
-    seg.flowerInst.instanceMatrix.needsUpdate = true;
-    if (seg.flowerInst.instanceColor) seg.flowerInst.instanceColor.needsUpdate = true;
   }
 
   function assign(seg, i) {
@@ -2335,24 +2227,17 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     const midYaw = getTrackYaw(centerZ);
     const midBank = getTrackBank(centerZ);
 
-    const floorKind = Math.abs(Math.floor(i / 4)) % floorMats.length;
-    seg.floor.material = floorMats[floorKind];
-
     seg.blocks.forEach((m, b) => {
-      const side = b % 2 === 0 ? -1 : 1;
-      const bx = side * (39 + hash(i * 31 + b) * 16);
-      const bz = -L * 0.35 + (b % 2) * L * 0.55 + (hash(i * 41 + b) - 0.5) * 6;
-      const sc = 0.8 + hash(i * 53 + b) * 0.5;
-      m.material = blockMats[(Math.abs(i * 3 + b)) % blockMats.length];
+      m.visible = !isEco || i % 2 === 0;
+      if (!m.visible) return;
+      const side = (i + b) % 2 === 0 ? -1 : 1;
+      const bx = side * (40 + hash(i * 31 + b) * 14);
+      const bz = -L * 0.25 + (hash(i * 41 + b) - 0.5) * 8;
+      const sc = 0.85 + hash(i * 53 + b) * 0.45;
+      m.material = blockMats[Math.abs(i * 3 + b) % blockMats.length];
       m.scale.setScalar(sc);
-      if (b >= 2 && hash(i * 11 + b) > 0.45) {
-        const base = seg.blocks[b - 2];
-        m.position.set(base.position.x + 0.2, FLOOR_Y + 2.3 * base.scale.y + 2.3 * sc, base.position.z - 0.2);
-        m.rotation.y = base.rotation.y + 0.35;
-      } else {
-        m.position.set(bx, FLOOR_Y + 2.3 * sc, bz);
-        m.rotation.y = hash(i * 29 + b) * Math.PI * 0.5;
-      }
+      m.position.set(bx, FLOOR_Y + 2.3 * sc, bz);
+      m.rotation.y = hash(i * 29 + b) * Math.PI * 0.5;
     });
 
     const isPlainDeck = seg.type !== 'narrow' && seg.type !== 'fork' && seg.type !== 'loop' && seg.type !== 'ramp';
@@ -2382,7 +2267,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
 
     seg.narrowGroup.visible = seg.type === 'narrow';
     if (seg.narrowGroup.visible) {
-      displaceBeveledRibbon(seg.narrowRoad, RIBBON_STEPS, (t) => {
+      displaceBeveledRibbon(seg.narrowRoad, ribbonSteps, (t) => {
         const lz = L / 2 - t * L;
         const wz = centerZ + lz;
         const cx = getTrackCenterX(wz);
@@ -2395,21 +2280,21 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
 
     seg.forkGroup.visible = seg.type === 'fork';
     if (seg.forkGroup.visible) {
-      displaceBeveledRibbon(seg.forkLeftRoad, RIBBON_STEPS, (t) => {
+      displaceBeveledRibbon(seg.forkLeftRoad, ribbonSteps, (t) => {
         const lz = L / 2 - t * L;
         const wz = centerZ + lz;
         const cx = getTrackCenterX(wz);
         const fp = getForkProfile(t);
         return { lx: cx + fp.cxL - fp.hwL, rx: cx + fp.cxL + fp.hwL, y: getTrackHeight(wz) + fp.yOffL, z: lz };
       });
-      displaceBeveledRibbon(seg.forkRightRoad, RIBBON_STEPS, (t) => {
+      displaceBeveledRibbon(seg.forkRightRoad, ribbonSteps, (t) => {
         const lz = L / 2 - t * L;
         const wz = centerZ + lz;
         const cx = getTrackCenterX(wz);
         const fp = getForkProfile(t);
         return { lx: cx + fp.cxR - fp.hwR, rx: cx + fp.cxR + fp.hwR, y: getTrackHeight(wz) + fp.yOffR, z: lz };
       });
-      displaceRibbon(seg.forkLeftRailL, RIBBON_STEPS, (t) => {
+      displaceRibbon(seg.forkLeftRailL, ribbonSteps, (t) => {
         const lz = L / 2 - t * L;
         const wz = centerZ + lz;
         const cx = getTrackCenterX(wz);
@@ -2417,7 +2302,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
         const y = getTrackHeight(wz) + fp.yOffL + 0.42;
         return { lx: cx + fp.cxL - fp.hwL - 0.14, rx: cx + fp.cxL - fp.hwL + 0.12, y, z: lz };
       });
-      displaceRibbon(seg.forkLeftRailR, RIBBON_STEPS, (t) => {
+      displaceRibbon(seg.forkLeftRailR, ribbonSteps, (t) => {
         const lz = L / 2 - t * L;
         const wz = centerZ + lz;
         const cx = getTrackCenterX(wz);
@@ -2425,7 +2310,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
         const y = getTrackHeight(wz) + fp.yOffL + 0.42;
         return { lx: cx + fp.cxL + fp.hwL - 0.12, rx: cx + fp.cxL + fp.hwL + 0.14, y, z: lz };
       });
-      displaceRibbon(seg.forkRightRailL, RIBBON_STEPS, (t) => {
+      displaceRibbon(seg.forkRightRailL, ribbonSteps, (t) => {
         const lz = L / 2 - t * L;
         const wz = centerZ + lz;
         const cx = getTrackCenterX(wz);
@@ -2433,7 +2318,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
         const y = getTrackHeight(wz) + fp.yOffR + 0.42;
         return { lx: cx + fp.cxR - fp.hwR - 0.14, rx: cx + fp.cxR - fp.hwR + 0.12, y, z: lz };
       });
-      displaceRibbon(seg.forkRightRailR, RIBBON_STEPS, (t) => {
+      displaceRibbon(seg.forkRightRailR, ribbonSteps, (t) => {
         const lz = L / 2 - t * L;
         const wz = centerZ + lz;
         const cx = getTrackCenterX(wz);
@@ -2460,92 +2345,70 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       displaceLoop(seg, centerZ);
     }
 
-    const showShoulders = isPlainDeck;
-    for (const sh of seg.shoulders) {
-      sh.mesh.visible = showShoulders;
-      if (showShoulders) displaceShoulder(sh.mesh, sh.side, centerZ);
-    }
-    for (const sk of seg.skirts) {
-      sk.visible = isPlainDeck;
-      if (isPlainDeck) displaceSkirt(sk, centerZ);
-    }
-    for (const e of seg.edges) {
-      e.visible = isPlainDeck;
-      if (isPlainDeck) displace(e, centerZ, 0.02);
-    }
-    seg.dashes.forEach((d, k) => {
-      const lz = -L / 2 + 2 + k * 4;
-      d.visible = isPlainDeck || (showRampDeck && (lz > RAMP_GAP_START || lz < RAMP_GAP_END));
-      if (d.visible) {
-        const wz = centerZ + lz;
-        d.position.set(getTrackCenterX(wz), getTrackHeight(wz) + 0.03, lz);
-        d.rotation.order = 'YXZ';
-        d.rotation.set(Math.atan(-getTrackSlope(wz)), getTrackYaw(wz), getTrackBank(wz));
-      }
-    });
+    seg.shoulder.visible = isPlainDeck;
+    if (isPlainDeck) displaceShoulder(seg.shoulder, centerZ);
+    seg.skirt.visible = isPlainDeck;
+    if (isPlainDeck) displaceSkirt(seg.skirt, centerZ);
+    seg.edges.visible = isPlainDeck;
+    if (isPlainDeck) displace(seg.edges, centerZ, 0.02, 0, false);
 
+    const dl = seg.decorLayout;
+    dl.dashes.length = 0;
+    for (let k = 0; k < 6; k++) {
+      const lz = -L / 2 + 2 + k * 4;
+      if (isPlainDeck || (showRampDeck && (lz > RAMP_GAP_START || lz < RAMP_GAP_END))) {
+        const wz = centerZ + lz;
+        dl.dashes.push({
+          x: getTrackCenterX(wz), y: getTrackHeight(wz) + 0.03, lz,
+          pitch: Math.atan(-getTrackSlope(wz)), yaw: getTrackYaw(wz), bank: getTrackBank(wz),
+        });
+      }
+    }
+
+    /* Guardrail terinstansiasi (6/sisi di Normal, 3/sisi dengan scaleZ=2 di ECO) */
+    seg.guardLayout.posts.length = 0;
+    seg.guardLayout.beams.length = 0;
     const showGuards = isPlainDeck || showRampDeck;
-    for (const gp of seg.guardPosts) {
-      const lz = -L / 2 + 2 + gp.k * 4;
-      const inGapHere = showRampDeck && gp.side === rampSide && lz <= RAMP_GAP_START + 0.5 && lz >= RAMP_GAP_END - 0.5;
-      gp.mesh.visible = showGuards && !inGapHere;
-      if (gp.mesh.visible) {
-        const wz = centerZ + lz;
-        const lx = gp.side * (W / 2 + 0.32);
-        const y = getTrackHeight(wz) + lx * getTrackBank(wz);
-        gp.mesh.position.set(getTrackCenterX(wz) + lx, y + 0.44, lz);
-        gp.mesh.rotation.y = getTrackYaw(wz);
+    if (showGuards) {
+      const guardCount = isEco ? 3 : 6;
+      const guardStep = L / guardCount;
+      const scaleZ = isEco ? 2 : 1;
+      for (const side of [-1, 1]) {
+        for (let k = 0; k < guardCount; k++) {
+          const lz = -L / 2 + guardStep * 0.5 + k * guardStep;
+          const inGapHere = showRampDeck && side === rampSide && lz <= RAMP_GAP_START + 0.5 && lz >= RAMP_GAP_END - 0.5;
+          if (inGapHere) continue;
+          const wz = centerZ + lz;
+          const cx = getTrackCenterX(wz);
+          const h = getTrackHeight(wz);
+          const yaw = getTrackYaw(wz);
+          const bank = getTrackBank(wz);
+          const pitch = Math.atan(-getTrackSlope(wz));
+          const px = side * (W / 2 + 0.32);
+          seg.guardLayout.posts.push({ x: cx + px, y: h + px * bank + 0.44, lz, yaw });
+          const bx = side * (W / 2 + 0.14);
+          seg.guardLayout.beams.push({ x: cx + bx, y: h + bx * bank + 0.36, lz, pitch, yaw, bank, scaleZ });
+        }
       }
     }
-    for (const gb of seg.guardBeams) {
-      const lz = -L / 2 + 2 + gb.k * 4;
-      const inGapHere = showRampDeck && gb.side === rampSide && lz <= RAMP_GAP_START + 0.5 && lz >= RAMP_GAP_END - 0.5;
-      gb.mesh.visible = showGuards && !inGapHere;
-      if (gb.mesh.visible) {
-        const wz = centerZ + lz;
-        const lx = gb.side * (W / 2 + 0.14);
-        const y = getTrackHeight(wz) + lx * getTrackBank(wz);
-        gb.mesh.position.set(getTrackCenterX(wz) + lx, y + 0.28, lz);
-        gb.mesh.rotation.order = 'YXZ';
-        gb.mesh.rotation.set(Math.atan(-getTrackSlope(wz)), getTrackYaw(wz), getTrackBank(wz));
-      }
-    }
-    for (const ub of seg.guardUpperBeams) {
-      const lz = -L / 2 + 2 + ub.k * 4;
-      const inGapHere = showRampDeck && ub.side === rampSide && lz <= RAMP_GAP_START + 0.5 && lz >= RAMP_GAP_END - 0.5;
-      ub.mesh.visible = showGuards && !inGapHere;
-      if (ub.mesh.visible) {
-        const wz = centerZ + lz;
-        const lx = ub.side * (W / 2 + 0.16);
-        const y = getTrackHeight(wz) + lx * getTrackBank(wz);
-        ub.mesh.position.set(getTrackCenterX(wz) + lx, y + 0.72, lz);
-        ub.mesh.rotation.order = 'YXZ';
-        ub.mesh.rotation.set(Math.atan(-getTrackSlope(wz)), getTrackYaw(wz), getTrackBank(wz));
-      }
-    }
-    if (seg.connector) {
+
+    {
       const seamZ = L / 2;
       const wz = centerZ + seamZ;
-      seg.connector.position.set(getTrackCenterX(wz), getTrackHeight(wz), seamZ);
-      seg.connector.rotation.order = 'YXZ';
-      seg.connector.rotation.set(Math.atan(-getTrackSlope(wz)), getTrackYaw(wz), getTrackBank(wz));
+      dl.conn = {
+        x: getTrackCenterX(wz), y: getTrackHeight(wz), lz: seamZ,
+        pitch: Math.atan(-getTrackSlope(wz)), yaw: getTrackYaw(wz), bank: getTrackBank(wz),
+      };
     }
 
     const roadMidY = getTrackHeight(centerZ);
     const pierH = Math.max(2, roadMidY - FLOOR_Y);
+    dl.piers.length = 0;
     const showPiers = seg.type !== 'loop' && seg.type !== 'fork';
-    for (let pi = 0; pi < seg.piers.length; pi++) {
-      const p = seg.piers[pi];
-      const pc = seg.pierCollars[pi];
-      p.mesh.visible = showPiers;
-      pc.collar.visible = showPiers;
-      pc.base.visible = showPiers;
-      if (showPiers) {
-        const px = midCx + (seg.type === 'narrow' ? p.x * 0.32 : p.x);
-        p.mesh.scale.y = pierH;
-        p.mesh.position.set(px, FLOOR_Y + pierH / 2, 0);
-        pc.collar.position.set(px, FLOOR_Y + Math.min(pierH - 0.5, 2.2), 0);
-        pc.base.position.set(px, FLOOR_Y + 0.24, 0);
+    if (showPiers) {
+      for (const basePx of [-W / 2 + 1.8, W / 2 - 1.8]) {
+        const px = midCx + (seg.type === 'narrow' ? basePx * 0.32 : basePx);
+        dl.piers.push({ x: px, y: FLOOR_Y + pierH / 2, h: pierH });
       }
     }
 
@@ -2567,16 +2430,6 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       seg.boost.rotation.set(Math.atan(-getTrackSlope(wz)), getTrackYaw(wz), getTrackBank(wz));
     }
 
-    seg.bridge.visible = seg.type === 'bridge';
-    if (seg.bridge.visible) {
-      const h = Math.max(2, roadMidY - FLOOR_Y);
-      for (const p of seg.pillars) {
-        p.mesh.scale.y = h;
-        p.mesh.position.set(getTrackCenterX(centerZ + p.pz) + p.px, FLOOR_Y + h / 2, p.pz);
-        p.collar.position.set(getTrackCenterX(centerZ + p.pz) + p.px, FLOOR_Y + h * 0.58, p.pz);
-      }
-    }
-
     /* Milestone 500m / 1000m & Checkered FINISH ARCH 1500m */
     let milestoneDist = 0;
     if (i >= 0) {
@@ -2596,10 +2449,9 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       seg.milestoneArch.position.set(getTrackCenterX(wz), getTrackHeight(wz), lz);
       seg.milestoneArch.rotation.order = 'YXZ';
       seg.milestoneArch.rotation.set(0, getTrackYaw(wz), getTrackBank(wz));
-      const tex = isFinishHere ? finishBannerTex : (milestoneDist % 1000 === 0 ? milestone1000Tex : milestone500Tex);
-      seg.milestoneMat.map = tex;
-      seg.milestoneMat.emissiveMap = tex;
-      seg.milestoneMat.needsUpdate = true;
+      const mMat = isFinishHere ? matMilestoneFinish : (milestoneDist % 1000 === 0 ? matMilestone1000 : matMilestone500);
+      seg.mSignFront.material = mMat;
+      seg.mSignBack.material = mMat;
       seg.finishStripe.visible = isFinishHere;
       seg.finishStripe.rotation.x = -Math.PI / 2 - Math.atan(-getTrackSlope(wz));
       for (const fl of seg.finishFlags) fl.visible = isFinishHere;
@@ -2611,29 +2463,11 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       seg.arch.rotation.set(0, midYaw, midBank);
     }
 
-    /* Sky Loops di cakrawala atas Salatiga + Maskot / Monster Truck raksasa di taman luar */
-    seg.skyLoop.visible = i >= 1 && i % 3 === 0;
-    if (seg.skyLoop.visible) {
-      const side = i % 2 === 0 ? -1 : 1;
-      seg.skyLoop.position.set(side * 46, FLOOR_Y, 0);
-      seg.skyLoop.rotation.y = side * -0.52;
-    }
-    const showMascot = i >= 2 && i % 4 === 0 && seg.type !== 'loop';
-    const useMonster = (Math.floor(i / 4) % 2) === 1;
-    seg.mascot0.visible = showMascot && !useMonster;
-    seg.mascot1.visible = showMascot && useMonster;
-    if (showMascot) {
-      const side = i % 8 === 0 ? -1 : 1;
-      const mObj = useMonster ? seg.mascot1 : seg.mascot0;
-      mObj.position.set(side * 37.5, FLOOR_Y, -3.5);
-      mObj.rotation.y = side < 0 ? 0.55 : -0.55;
-    }
-
-    /* Smashable props (kerucut & tumpukan 3 barel abu-abu/kuning) + Penghalang tengkorak + Tanda Segitiga "!" */
+    /* Smashable props (kerucut & tumpukan barel) + Penghalang bahaya + Tanda Segitiga "!" */
     const LANE_W = W / TRACK.lanes;
     const propLaneIdx = Math.floor(hash(i * 37 + 11) * 3) % 3;
     const propLaneOff = (propLaneIdx - 1) * LANE_W;
-    const showProps = (seg.type === 'plain' || seg.type === 'boost') && i >= 2;
+    const showProps = (seg.type === 'plain' || seg.type === 'boost') && i >= 2 && (!isEco || i % 2 === 0);
     seg.smashProps.forEach((p, idx) => {
       p.hit = false;
       p.vx = 0; p.vy = 0; p.vz = 0; p.rvx = 0; p.rvz = 0;
@@ -2674,7 +2508,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       haz.mesh.rotation.y = getTrackYaw(wz);
     }
 
-    /* Papan Segitiga Merah "!" Mengambang di tepi trek, ~14 unit di depan rintangan pada sisi lajur terblokir */
+    /* Papan Segitiga Merah "!" Mengambang */
     const ws = seg.warnSign;
     const showWarn = showHazard || showProps;
     ws.active = showWarn;
@@ -2693,33 +2527,30 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       ws.mesh.rotation.y = getTrackYaw(wz);
     }
 
-    seg.decor.forEach((d, k) => {
-      if (d.kind === 'lamp') {
-        const side = d.sideIdx === 0 ? -1 : 1;
-        const lz = d.sideIdx === 0 ? -L * 0.25 : L * 0.25;
-        const wz = centerZ + lz;
-        const off = side * (W / 2 + 0.72);
-        const y = getTrackHeight(wz) + off * getTrackBank(wz);
-        d.obj.position.set(getTrackCenterX(wz) + off, y, lz);
-        d.obj.rotation.y = getTrackYaw(wz) + (side < 0 ? 0 : Math.PI);
-      } else if (d.kind === 'bush') {
-        const side = hash(i * 17 + k) > 0.5 ? 1 : -1;
-        const lz = -L / 2 + 2.5 + hash(i * 23 + k) * (L - 5);
-        const wz = centerZ + lz;
-        const off = side * (W / 2 + 1.45 + hash(i * 29 + k) * 1.1);
-        const y = getTrackHeight(wz) + off * getTrackBank(wz);
-        d.obj.position.set(getTrackCenterX(wz) + off, y - 0.14, lz);
-        d.obj.scale.setScalar(0.85 + hash(i * 31 + k) * 0.4);
-      } else {
-        const side = hash(i * 7 + k) > 0.5 ? 1 : -1;
-        const lz = -L / 2 + 3 + hash(i * 13 + k) * (L - 6);
-        const wz = centerZ + lz;
-        const off = side * (W / 2 + 1.9 + hash(i * 17 + k) * 1.3);
-        const y = getTrackHeight(wz) + off * getTrackBank(wz);
-        d.obj.position.set(getTrackCenterX(wz) + off, y - 0.14, lz);
-        d.obj.scale.setScalar(0.95 + hash(i * 23 + k) * 0.55);
-      }
-    });
+    {
+      const side = i % 2 === 0 ? -1 : 1;
+      const lz = side < 0 ? -L * 0.25 : L * 0.25;
+      const wz = centerZ + lz;
+      const off = side * (W / 2 + 0.72);
+      dl.lamp = {
+        x: getTrackCenterX(wz) + off,
+        y: getTrackHeight(wz) + off * getTrackBank(wz),
+        lz,
+        ry: getTrackYaw(wz) + (side < 0 ? 0 : Math.PI),
+      };
+    }
+    {
+      const side = hash(i * 17 + 1) > 0.5 ? 1 : -1;
+      const lz = -L / 2 + 3 + hash(i * 23 + 1) * (L - 6);
+      const off = side * (W / 2 + 19 + hash(i * 29 + 1) * 6);
+      dl.bush = { x: midCx + off, y: FLOOR_Y, lz, ry: hash(i * 41) * Math.PI, sc: 0.95 + hash(i * 31 + 1) * 0.45 };
+    }
+    {
+      const side = hash(i * 7) > 0.5 ? 1 : -1;
+      const lz = -L / 2 + 4 + hash(i * 13) * (L - 8);
+      const off = side * (W / 2 + 21 + hash(i * 17) * 8);
+      dl.tree = { x: midCx + off, y: FLOOR_Y, lz, ry: hash(i * 19) * Math.PI, sc: 1.05 + hash(i * 23) * 0.55 };
+    }
 
     assignFoliageInstances(seg, i, centerZ);
     assignCollectibles(seg, i, centerZ);
@@ -2728,6 +2559,51 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
   for (let s = 0; s < POOL_SIZE; s++) pool.push(buildSegment());
 
   let prevTrackT = null;
+  let lastCur = -999999;
+
+  function rebuildSegmentGeometries() {
+    for (const seg of pool) {
+      const replaceGeo = (mesh, newGeo, storeBase = false) => {
+        mesh.geometry.dispose();
+        mesh.geometry = newGeo;
+        if (storeBase) cacheBaseX(mesh);
+      };
+      replaceGeo(seg.road, makeRoadGeo(W, true, roadRows), true);
+      replaceGeo(seg.shoulder, makeShoulderBlendPairGeo(roadRows), true);
+      replaceGeo(seg.skirt, makeSkirtPairGeo(roadRows), true);
+      replaceGeo(seg.edges, makeEdgesPairGeo(roadRows), true);
+      replaceGeo(seg.narrowRoad, makeBeveledRibbonGeo(ribbonSteps));
+      replaceGeo(seg.forkLeftRoad, makeBeveledRibbonGeo(ribbonSteps));
+      replaceGeo(seg.forkRightRoad, makeBeveledRibbonGeo(ribbonSteps));
+      replaceGeo(seg.forkLeftRailL, makeRibbonGridGeo(ribbonSteps));
+      replaceGeo(seg.forkLeftRailR, makeRibbonGridGeo(ribbonSteps));
+      replaceGeo(seg.forkRightRailL, makeRibbonGridGeo(ribbonSteps));
+      replaceGeo(seg.forkRightRailR, makeRibbonGridGeo(ribbonSteps));
+      replaceGeo(seg.loopBypassRoad, makeBeveledRibbonGeo(ribbonSteps));
+      replaceGeo(seg.loopBypassRailL, makeRibbonGridGeo(ribbonSteps));
+      replaceGeo(seg.loopBypassRailR, makeRibbonGridGeo(ribbonSteps));
+    }
+  }
+
+  function setQuality(high) {
+    const nextEco = !high;
+    if (nextEco === isEco) return;
+    isEco = nextEco;
+    ribbonSteps = isEco ? RIBBON_STEPS_ECO : RIBBON_STEPS_HD;
+    roadRows = isEco ? 6 : 14;
+    guardPostInst.castShadow = !isEco;
+    guardBeamInst.castShadow = !isEco;
+    grassGlobalInst.visible = !isEco;
+    flowerGlobalInst.visible = !isEco;
+    for (const seg of pool) {
+      for (const blk of seg.blocks) blk.castShadow = !isEco;
+    }
+    rebuildSegmentGeometries();
+    for (const seg of pool) {
+      if (seg.index !== null) assign(seg, seg.index);
+    }
+    syncGuardrails();
+  }
 
   /* ---------- Daur ulang segmen + animasi angin & kolektibel ---------- */
   function updateTrack(playerZ, t = 0) {
@@ -2736,35 +2612,46 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     prevTrackT = t;
 
     const cur = Math.floor(-playerZ / L);
-    const min = cur - TRACK.segmentsBehind;
-    const max = cur + TRACK.segmentsAhead;
-    const needed = new Set();
-    for (let i = min; i <= max; i++) needed.add(i);
-
-    for (const seg of pool) if (seg.index !== null && !needed.has(seg.index)) seg.index = null;
-
-    const present = new Set(pool.filter((s) => s.index !== null).map((s) => s.index));
-    for (const i of needed) {
-      if (present.has(i)) continue;
-      const free = pool.find((s) => s.index === null);
-      if (free) { assign(free, i); present.add(i); }
+    if (cur !== lastCur) {
+      lastCur = cur;
+      const min = cur - TRACK.segmentsBehind;
+      const max = cur + TRACK.segmentsAhead;
+      for (const seg of pool) {
+        if (seg.index !== null && (seg.index < min || seg.index > max)) seg.index = null;
+      }
+      for (let i = min; i <= max; i++) {
+        let already = false;
+        for (const seg of pool) { if (seg.index === i) { already = true; break; } }
+        if (already) continue;
+        const free = pool.find((s) => s.index === null);
+        if (free) assign(free, i);
+      }
+      syncGuardrails();
     }
 
+    floorMesh.position.set(getTrackCenterX(playerZ), FLOOR_Y, playerZ - 110);
+
+    const gemHue = (t * 0.55) % 1;
+    matGemShared.color.setHSL(gemHue, 0.92, 0.62);
+    matGemShared.emissive.setHSL(gemHue, 0.95, 0.52);
+
+    const maxSegVis = cur + (isEco ? 5 : 8);
+    const maxColVis = cur + (isEco ? 3 : 5);
+
     for (const seg of pool) {
-      if (seg.index === null) continue;
-
-      for (const d of seg.decor) {
-        if (d.kind === 'tree') d.obj.rotation.z = Math.sin(t * 1.5 + d.phase) * 0.028;
-        else if (d.kind === 'bush') d.obj.rotation.z = Math.sin(t * 2.1 + d.phase) * 0.035;
-      }
-
-      if (seg.mascot0.visible && seg.mascot0.userData.armL) {
-        seg.mascot0.userData.armL.rotation.z = 0.55 + Math.sin(t * 4.4 + seg.index) * 0.35;
-        seg.mascot0.userData.armR.rotation.z = -0.55 - Math.cos(t * 4.4 + seg.index) * 0.35;
-      }
+      if (seg.index === null) { seg.group.visible = false; continue; }
+      const segVis = seg.index >= cur - 1 && seg.index <= maxSegVis;
+      seg.group.visible = segVis;
+      if (!segVis) continue;
+      const colVis = seg.index <= maxColVis;
 
       for (const p of seg.smashProps) {
-        if (!p.active || !p.hit || !p.mesh.visible) continue;
+        if (!p.active) continue;
+        if (!p.hit) {
+          p.mesh.visible = colVis;
+          continue;
+        }
+        if (!p.mesh.visible) continue;
         p.mesh.position.x += p.vx * dt;
         p.mesh.position.y += p.vy * dt;
         p.mesh.position.z += p.vz * dt;
@@ -2774,19 +2661,24 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
         if (p.mesh.position.y < FLOOR_Y - 6) p.mesh.visible = false;
       }
 
-      if (seg.hazard.active && seg.hazard.hit && seg.hazard.mesh.visible) {
+      if (seg.hazard.active) {
         const hz = seg.hazard;
-        hz.mesh.position.x += hz.vx * dt;
-        hz.mesh.position.y += hz.vy * dt;
-        hz.mesh.position.z += hz.vz * dt;
-        hz.vy -= 30 * dt;
-        hz.mesh.rotation.x += hz.rvx * dt;
-        hz.mesh.rotation.z += hz.rvz * dt;
-        if (hz.mesh.position.y < FLOOR_Y - 6) hz.mesh.visible = false;
+        if (!hz.hit) {
+          hz.mesh.visible = colVis;
+        } else if (hz.mesh.visible) {
+          hz.mesh.position.x += hz.vx * dt;
+          hz.mesh.position.y += hz.vy * dt;
+          hz.mesh.position.z += hz.vz * dt;
+          hz.vy -= 30 * dt;
+          hz.mesh.rotation.x += hz.rvx * dt;
+          hz.mesh.rotation.z += hz.rvz * dt;
+          if (hz.mesh.position.y < FLOOR_Y - 6) hz.mesh.visible = false;
+        }
       }
 
       if (seg.warnSign?.active) {
-        seg.warnSign.mesh.position.y = seg.warnSign.baseY + Math.sin(t * 5.2 + seg.warnSign.phase) * 0.18;
+        seg.warnSign.mesh.visible = colVis;
+        if (colVis) seg.warnSign.mesh.position.y = seg.warnSign.baseY + Math.sin(t * 5.2 + seg.warnSign.phase) * 0.18;
       }
 
       if (seg.boost.visible) {
@@ -2796,25 +2688,28 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       }
 
       for (const item of seg.collectibles) {
-        if (!item.active || item.collected) continue;
+        if (!item.active || item.collected) {
+          item.obj.visible = false;
+          item.groundRing.visible = false;
+          continue;
+        }
+        item.obj.visible = colVis;
+        item.groundRing.visible = colVis && !isEco && (item.kind === 'fruit' || item.kind === 'gem');
+        if (!colVis) continue;
         item.obj.position.y = item.baseY + Math.sin(t * 3.6 + item.phase) * 0.18;
-        if (item.kind === 'coin') {
+        if (item.kind === 'coin' && item.coinMesh) {
           item.coinMesh.rotation.y = t * 3.4 + item.phase;
-        } else if (item.kind === 'gem') {
+        } else if (item.kind === 'gem' && item.gemMesh) {
           item.gemMesh.rotation.y = t * 2.8 + item.phase;
           item.gemMesh.rotation.z = Math.sin(t * 2.2 + item.phase) * 0.22;
-          const gm = item.gemMesh.userData.gemMat;
-          const hue = (t * 0.55 + item.phase * 0.15) % 1;
-          gm.color.setHSL(hue, 0.92, 0.62);
-          gm.emissive.setHSL(hue, 0.95, 0.52);
-          item.groundRing.scale.setScalar(0.92 + Math.sin(t * 4.5 + item.phase) * 0.14);
-        } else if (item.kind === 'ring') {
-          item.fireRingMesh.rotation.z = t * 3.2 + item.phase;
-          item.fireRingMesh.rotation.y = Math.sin(t * 1.6 + item.phase) * 0.18;
-        } else {
+          if (!isEco) item.groundRing.scale.setScalar(0.92 + Math.sin(t * 4.5 + item.phase) * 0.14);
+        } else if (item.kind === 'ring' && item.starRingMesh) {
+          item.starRingMesh.rotation.z = t * 3.2 + item.phase;
+          item.starRingMesh.rotation.y = Math.sin(t * 1.6 + item.phase) * 0.18;
+        } else if (item.fruitMesh) {
           item.fruitMesh.rotation.y = t * 2.4 + item.phase;
           item.fruitMesh.rotation.z = Math.sin(t * 1.9 + item.phase) * 0.1;
-          item.groundRing.scale.setScalar(0.95 + Math.sin(t * 4.2 + item.phase) * 0.16);
+          if (!isEco) item.groundRing.scale.setScalar(0.95 + Math.sin(t * 4.2 + item.phase) * 0.16);
         }
       }
     }
@@ -2825,7 +2720,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
     matBeaconBlue.emissiveIntensity = 1.0 - Math.sin(t * 12) * 0.7;
   }
 
-  /* ---------- Deteksi pengambilan koin, buah, permata & Fire Ring (zero-GC) ---------- */
+  /* ---------- Deteksi pengambilan koin, buah, permata & Star Ring (zero-GC) ---------- */
   const _collected = [];
   function collectNearby(pos) {
     _collected.length = 0;
@@ -2932,7 +2827,7 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
         if (item.active) {
           item.collected = false;
           item.obj.visible = true;
-          item.groundRing.visible = item.kind === 'fruit' || item.kind === 'gem';
+          item.groundRing.visible = !isEco && (item.kind === 'fruit' || item.kind === 'gem');
         }
       }
       for (const p of seg.smashProps) {
@@ -2972,6 +2867,11 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
   }
 
   function dispose() {
+    [
+      floorMesh, guardPostInst, guardBeamInst, dashInst, connectorInst,
+      pierInst, treeInst, bushInst, lampInst, lampHeadInst,
+      grassGlobalInst, flowerGlobalInst,
+    ].forEach((m) => { scene.remove(m); if (m.dispose) m.dispose(); });
     for (const seg of pool) {
       scene.remove(seg.group);
       seg.road.geometry.dispose();
@@ -2990,55 +2890,54 @@ export function createTrackGenerator(scene, { maxAnisotropy = 8 } = {}) {
       seg.loopBypassRoad.geometry.dispose();
       seg.loopBypassRailL.geometry.dispose();
       seg.loopBypassRailR.geometry.dispose();
-      seg.milestoneMat.dispose();
-      for (const sh of seg.shoulders) sh.mesh.geometry.dispose();
-      for (const sk of seg.skirts) sk.geometry.dispose();
-      for (const e of seg.edges) e.geometry.dispose();
-      seg.grassInst.dispose();
-      seg.flowerInst.dispose();
-      for (const item of seg.collectibles) item.gemMesh.userData.gemMat.dispose();
+      seg.shoulder.geometry.dispose();
+      seg.skirt.geometry.dispose();
+      seg.edges.geometry.dispose();
     }
     [
       geoDash, geoRamp, geoRampRail, geoRampStripe, geoRampLipHazard, geoBoost, geoChevron,
       geoBoosterHousing, geoBoosterWheel, geoBoosterHub, geoBoosterRing, geoConnectorBar, geoConnectorEar,
-      geoFireRingTorus, geoFireFlame, geoSkyLoop, geoConeBody, geoConeBase, geoConeCollar,
-      geoBarrelBody, geoBarrelBand, geoHazardBody, geoHazardSign, geoHazardBeacon,
-      geoMascotPlinth, geoMascotHead, geoMascotBody, geoMascotArm, geoMonsterWheel, geoMonsterCabin,
+      geoConnectorMerged, geoStarRingTorus, geoStarPoint, geoStarRingMerged, geoConeBody, geoConeBase, geoConeCollar, geoConeMerged,
+      geoBarrelBody, geoBarrelBand, geoBarrelStackMerged, geoHazardBody, geoHazardSign, geoHazardBeacon, geoHazardFrameMerged,
       geoGapCap, geoLoopStrut, geoForkSignPost, geoForkSignBoard, geoLoopArrow, geoLoopSignBoard,
-      geoPillar, geoPillarCollar, geoPillarBase, geoGuardPost, geoGuardBeam, geoGuardUpperBeam,
-      geoTrunk, geoCanopy, geoBushLobe, geoBerry,
+      geoPillar, geoGuardPost, geoGuardBeam,
+      geoTrunk, geoCanopy, geoTreeMerged, geoBushLobe, geoBushMerged, geoBerry,
       geoPlantShadow, geoGrassTuft, geoFlower, geoLampBase, geoLampPole,
-      geoLampArm, geoLampHead, geoFloor, geoSideStreet, geoSideWalk, geoStreetDash,
-      geoBlock, geoFencePost, geoFenceRail,
+      geoLampArm, geoLampHead, geoLampPoleMerged, geoFloor, geoBlock,
       geoArchPillar, geoArchLightBar, geoArchBeam, geoArchSign, geoArchBulb, geoBunting,
       geoFinishStripe, geoFinishFlagPole, geoFinishFlagCloth, geoWarnPost, geoWarnBoard,
-      geoCoinBody, geoCoinRim, geoCoinCore, geoGemStar, geoGemRing, geoGlowRing,
+      geoCoinBody, geoCoinRim, geoCoinCore, geoCoinMerged, geoGemStar, geoGemStarMerged, geoGemRing, geoGlowRing,
+      geoRampRailsMerged, geoRampStripesMerged, geoBoostChevronsMerged, geoBoostHousingsMerged,
+      geoBoostRingsMerged, geoBoosterWheelMerged, geoArchFrameMerged, geoArchLightBarsMerged,
+      geoArchBulbsMerged, geoArchSignsMerged, geoMilestoneFrameMerged, geoFinishFlagPolesMerged,
+      geoFinishFlagClothsMerged, geoHazardSignsMerged, geoLoopSignPostsMerged,
     ].forEach((g) => g.dispose());
     [
       matAsphalt, matForkLeft, matLoopSurface, matGapCap, matForkSign, matHazardStripe,
-      matFireRing, matFireFlame, matConeOrange, matConeWhite, matBarrelRed, matBarrelGrey, matBarrelYellow,
-      matSkullSign, matWarnSign, matBeaconRed, matBeaconBlue,
+      matStarRing, matConeOrange, matConeWhite, matBarrelRed, matBarrelGrey, matBarrelYellow,
+      matHazardBarrierSign, matWarnSign, matBeaconRed, matBeaconBlue,
       matShoulderBlend, matDeckSide, matCurb, matLine, matConnectorBlue,
       matRamp, matRampStripe, matBoost, matChevron, matBoosterWheel, matBoosterHub,
-      matPillar, matPillarGlow, matSideStreet, matSideWalk, matStreetLine,
-      ...matRailColors, matRailGlow, matLoopArrow, matLoopSign,
+      matPillar, matPillarGlow,
+      matRailOrange, matRailGlow, matLoopArrow, matLoopSign,
       matTrunk, matLeaf1, matLeaf2, matLeaf3, matBushEmerald, matBushPurple,
       matBerry, matGrassTuft, matFlower, matPlantShadow, matLampPole,
-      matLampCollar, matLampHead, ...floorMats, ...blockMats, matArchBanner, matCheckeredStripe,
-      matArchBlue, matArchGold, matFenceRed, matFenceWhite, matCoinGold,
-      matCoinRim, matGemHalo, ...Object.values(ringMats),
+      matLampCollar, matLampHead, matFloor, ...blockMats, matArchBanner,
+      matMilestone500, matMilestone1000, matMilestoneFinish, matCheckeredStripe,
+      matArchBlue, matArchGold, matCoinGold,
+      matCoinRim, matCoinMerged, matDecorVertex, matPropsVertex, matGemShared, matGemHalo, ...Object.values(ringMats),
     ].forEach((m) => m.dispose());
     [
-      roadTex.map, roadTex.normalMap, plantShadowTex, glowRingTex, forkSignTex,
-      loopArrowTex, loopSignTex, hazardStripeTex, skullSignTex, warnTriangleTex, rampChevronTex,
-      ...floorTextures, ...blockTextures, archBannerTex, milestone500Tex, milestone1000Tex, finishBannerTex, checkeredStripeTex,
-    ].forEach((t) => t.dispose());
+      matAsphalt.map, plantShadowTex, glowRingTex, forkSignTex,
+      loopArrowTex, loopSignTex, hazardStripeTex, warnBarrierTex, warnTriangleTex, rampChevronTex,
+      ...blockTextures, archBannerTex, milestone500Tex, milestone1000Tex, finishBannerTex, checkeredStripeTex,
+    ].forEach((t) => t?.dispose());
     pool.length = 0;
   }
 
   return {
     updateTrack, collectNearby, checkPropSmash, checkHazardCollision, getUpcomingHazards,
-    getCollectibleTargets, resetCollectibles, dispose,
+    getCollectibleTargets, resetCollectibles, setQuality, dispose,
     getTrackHeight, getTrackSlope, getTrackCenterX, getTrackYaw, getTrackBank, getRampSide,
     getTrackSurfaceAt, evalLoopPose, checkRampCollision, checkBoostCollision, getSegmentType,
     get segmentCount() { return pool.length; },
