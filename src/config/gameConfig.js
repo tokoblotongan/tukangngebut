@@ -23,7 +23,8 @@ export const PALETTE = Object.freeze({
   cream: '#fff3e0', paper: '#fff8eb', warmWhite: '#f7f0e3', ink: '#3b2f2f',
   toyRed: '#e63946', toyYellow: '#ffbe0b', toyGreen: '#38b000',
   toyBlue: '#3a86ff', toyOrange: '#fb5607', toyPurple: '#8338ec',
-  angkotGreen: '#2b9348', angkotGreenDark: '#1b6b33', angkotYellow: '#ffbe0b',
+  angkotGreen: '#2b9348', angkotGreenDark: '#1b6b33',
+  angkotBlue: '#0ea5e9', angkotBlueDark: '#0284c7', angkotYellow: '#ffbe0b',
   bemoOrange: '#fb5607', bemoOrangeDark: '#d9480f', bemoCream: '#fff4e0',
   l300White: '#f4ede0', ojolGreen: '#00a844', ojolGreenDark: '#007a30',
   wood: '#b0793f', woodDark: '#8a5a2b',
@@ -129,6 +130,7 @@ export const SCORE = Object.freeze({
 
 /* ---------- Pipeline aset dual-mode ---------- */
 export const ASSETS = Object.freeze({
+  useGLB: false,
   basePath: `${import.meta.env?.BASE_URL || '/'}assets/`,
   dracoPath: 'https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/libs/draco/gltf/',
 });
@@ -141,9 +143,9 @@ export const VEHICLES = Object.freeze({
   angkot: {
     id: 'angkot', label: 'Angkot', glbName: 'angkot',
     tagline: 'Si Raja Ngetem',
-    desc: 'Minibus hijau-kuning legendaris trayek Salatiga. Badan tebal, suspensi membal, dan kebiasaan berhenti mendadak yang bikin deg-degan.',
+    desc: 'Minibus biru-kuning legendaris trayek Salatiga. Badan tebal, suspensi membal, dan gaya balap penuh kejutan.',
     targetSize: { x: 2.48, y: 3.36, z: 5.61 }, wheelRadius: 0.34,
-    colors: { body: PALETTE.angkotGreen, roof: PALETTE.angkotYellow, stripe: PALETTE.angkotYellow, cabin: PALETTE.cream },
+    colors: { body: PALETTE.angkotBlue, roof: PALETTE.angkotYellow, stripe: PALETTE.angkotYellow, cabin: PALETTE.cream },
     stats: { speed: 6, accel: 5, grip: 7, weight: 8 },
     perf: { speedMul: 0.95, accelMul: 0.9, steerMul: 0.95 },
   },

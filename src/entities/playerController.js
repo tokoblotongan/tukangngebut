@@ -269,12 +269,12 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
     if (!flames?.group) return;
     flames.group.visible = active;
     if (active) {
-      flamePhase += dt * 44;
+      flamePhase += dt * 16;
       for (let i = 0; i < flames.jets.length; i++) {
         const jet = flames.jets[i];
-        const flicker = 0.85 + 0.45 * Math.abs(Math.sin(flamePhase + i * 1.7));
-        const stretch = 1.05 + 0.55 * Math.sin(flamePhase * 1.37 + i * 2.1);
-        jet.scale.set(flicker, flicker, Math.max(0.75, stretch));
+        const pulse = 0.92 + 0.12 * Math.sin(flamePhase + i * 1.4);
+        const stretch = 0.92 + 0.13 * Math.sin(flamePhase * 1.15 + i * 1.9);
+        jet.scale.set(pulse, pulse, stretch);
       }
     }
   }
@@ -503,6 +503,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
             rollAngle, totalStunt, inLoop: false, loopCenterZ: 0, falling: true, respawning: false,
           };
         }
+        const landVy = Math.abs(vy);
         pos.y = surf.groundY;
         airborne = false;
         vy = 0;
@@ -523,7 +524,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
           rollDecayTimer = Math.abs(rem) > 0.001 ? 0.25 : 0;
         }
         rolling = false;
-        suspVel = -7 - Math.min(4, Math.abs(vy) * 0.1);
+        suspVel = -7 - Math.min(4, landVy * 0.1);
       }
     }
 
@@ -535,9 +536,10 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
     pos.x = _spPos.x;
     pos.z = _spPos.z;
 
-    const extraSlope = surf.slope - forwardVec.y;
-    const targetPitch = airborne ? pitch * 0.4 : Math.atan(extraSlope);
-    pitch += (targetPitch - pitch) * (1 - Math.exp(-8 * dt));
+    const basePitch = Math.asin(THREE.MathUtils.clamp(forwardVec.y, -0.999, 0.999));
+    const extraPitch = Math.atan(surf.slope) - basePitch;
+    const targetPitch = airborne ? pitch * 0.4 : extraPitch;
+    pitch = THREE.MathUtils.clamp(pitch + (targetPitch - pitch) * (1 - Math.exp(-8 * dt)), -0.32, 0.32);
 
     if (group) {
       group.position.set(pos.x, pos.y + suspOffset, pos.z);
@@ -834,6 +836,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
             inLoop: false, loopCenterZ: 0, falling: true, respawning: false, rightVec,
           };
         }
+        const landVy = Math.abs(vy);
         pos.y = surf.groundY;
         airborne = false;
         vy = 0;
@@ -854,7 +857,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
           rollDecayTimer = Math.abs(rem) > 0.001 ? 0.25 : 0;
         }
         rolling = false;
-        suspVel = -7 - Math.min(4, Math.abs(vy) * 0.1);
+        suspVel = -7 - Math.min(4, landVy * 0.1);
       }
     }
 
@@ -866,7 +869,7 @@ export function createPlayerController({ scene, vehicle, type = 'angkot', callba
     /* Pitch mengikuti kemiringan trek; di udara melandai */
     const slope = S(pos.z);
     const targetPitch = airborne ? pitch * 0.4 : Math.atan(-slope);
-    pitch += (targetPitch - pitch) * (1 - Math.exp(-8 * dt));
+    pitch = THREE.MathUtils.clamp(pitch + (targetPitch - pitch) * (1 - Math.exp(-8 * dt)), -0.32, 0.32);
 
     /* Terapkan transform visual mengikuti S-curve yaw & bank */
     if (group) {

@@ -102,17 +102,81 @@ export function getTrackBank(z) {
   return (c.bankGain ?? 0.055) * fade * smoothstep(c.startZ, c.rampZ, dist) * Math.sin(dist * c.freq);
 }
 
-export function getTrackHeight(z) {
+function isFlatSegmentType(st) {
+  return st === 'loop' || st === 'ramp' || st === 'fork' || st === 'narrow';
+}
+function isFlatSegmentIdx(k) {
+  return k >= 0 && isFlatSegmentType(getSegmentType(k));
+}
+function rawHillHeight(dist) {
   const { amp1, freq1, amp2, freq2 } = TRACK.hill;
-  let h = HILL_OFFSET + amp1 * Math.sin(z * freq1) + amp2 * Math.sin(z * freq2 + 1.7);
+  return HILL_OFFSET + amp1 * Math.sin(-dist * freq1) + amp2 * Math.sin(-dist * freq2 + 1.7);
+}
+function getFlatCluster(k) {
+  let k0 = k;
+  let k1 = k;
+  while (isFlatSegmentIdx(k0 - 1)) k0--;
+  while (isFlatSegmentIdx(k1 + 1)) k1++;
+  const a = k0 * L;
+  const b = (k1 + 1) * L;
+  // Jika diapit/bersebelahan dengan jembatan (m=4), pakai elevasi pusat jembatan agar lereng gabungan <= 0.12
+  if (k0 === k1 && k0 >= 1 && getSegmentType(k0 - 1) === 'bridge') {
+    const prevA = (k0 - 2) * L;
+    return { a, b, h: rawHillHeight((prevA + b) * 0.5) };
+  }
+  if (k0 === k1 && getSegmentType(k1 + 1) === 'bridge') {
+    const nextB = (k1 + 3) * L;
+    return { a, b, h: rawHillHeight((a + nextB) * 0.5) };
+  }
+  return { a, b, h: rawHillHeight((a + b) * 0.5) };
+}
+
+export function getTrackHeight(z) {
   const dist = Math.max(0, -z);
-  const iCenter = Math.floor(dist / L);
-  for (let k = iCenter - 1; k <= iCenter + 1; k++) {
+  const kCenter = Math.floor(dist / L);
+  let h;
+
+  if (isFlatSegmentIdx(kCenter)) {
+    h = getFlatCluster(kCenter).h;
+  } else {
+    let prevCluster = null;
+    for (let k = kCenter - 1; k >= Math.max(0, kCenter - 2); k--) {
+      if (isFlatSegmentIdx(k)) { prevCluster = getFlatCluster(k); break; }
+    }
+    let nextCluster = null;
+    for (let k = kCenter + 1; k <= kCenter + 2; k++) {
+      if (isFlatSegmentIdx(k)) { nextCluster = getFlatCluster(k); break; }
+    }
+
+    const pad = 0.5;
+    if (prevCluster && nextCluster && (nextCluster.a - prevCluster.b) <= 30) {
+      // Celah 1 segmen (24 m): pakai rentang penuh antar pad (23 m) agar maxSlope <= 0.12
+      const t0 = prevCluster.b + pad;
+      const t1 = nextCluster.a - pad;
+      const w = smoothstep(t0, t1, dist);
+      h = prevCluster.h + (nextCluster.h - prevCluster.h) * w;
+    } else if (prevCluster && dist <= prevCluster.b + pad) {
+      h = prevCluster.h;
+    } else if (nextCluster && dist >= nextCluster.a - pad) {
+      h = nextCluster.h;
+    } else {
+      h = rawHillHeight(dist);
+      if (prevCluster && dist < prevCluster.b + pad + 20) {
+        const w = 1 - smoothstep(prevCluster.b + pad, prevCluster.b + pad + 20, dist);
+        h = h + (prevCluster.h - h) * w;
+      } else if (nextCluster && dist > nextCluster.a - pad - 20) {
+        const w = smoothstep(nextCluster.a - pad - 20, nextCluster.a - pad, dist);
+        h = h + (nextCluster.h - h) * w;
+      }
+    }
+  }
+
+  for (let k = kCenter - 1; k <= kCenter + 1; k++) {
     if (k < 0 || getSegmentType(k) !== 'bridge') continue;
-    const bStart = k * L - 1.5;
-    const bEnd = (k + 1) * L + 1.5;
+    const bStart = k * L + 1.0;
+    const bEnd = (k + 1) * L - 1.0;
     if (dist > bStart && dist < bEnd) {
-      const u = (dist - bStart) / BRIDGE_SPAN;
+      const u = (dist - bStart) / (bEnd - bStart);
       const s = Math.sin(Math.PI * u);
       h += BRIDGE_H * s * s;
     }

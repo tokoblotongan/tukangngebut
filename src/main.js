@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import { createSceneContext } from './core/sceneSetup.js';
 import { createGameLoop } from './core/gameLoop.js';
-import { preloadAll, loadVehicle, setVehicleUnderglow } from './entities/assetFactory.js';
+import { preloadAll, loadVehicle, attachPlayerMarker } from './entities/assetFactory.js';
 import { createPlayerController } from './entities/playerController.js';
 import { createTrafficManager } from './entities/trafficManager.js';
 import { createTrackGenerator } from './world/trackGenerator.js';
@@ -66,6 +66,7 @@ async function init() {
       track?.setQuality?.(high);
       skywayTrack?.setQuality?.(high);
       mandalikaTrack?.setQuality?.(high);
+      traffic?.setQuality?.(high);
     },
     onKidModeChange: ({ noGameOver }) => loop?.setNoGameOver?.(noGameOver),
     onHelp: () => howto?.open(),
@@ -159,13 +160,14 @@ async function init() {
   /* ---------- 6. Lalu lintas & jaringan ---------- */
   hud.setLoading(0.96, 'Memanggil angkot, bemo, L300 & ojol…');
   traffic = await createTrafficManager(ctx.scene);
+  traffic?.setQuality?.(!initEco);
   network = createMultiplayerHook({
     scene: ctx.scene,
     room: hud.room,
     onStatusChange: ({ status, room, onlineCount }) => hud.setNetworkStatus(status, room, onlineCount),
     onLobbyChange: (counts) => hud.setLobbyCounts(counts),
   });
-  setVehicleUnderglow(vehicle, SLOT_COLORS[0]);
+  attachPlayerMarker(vehicle, VEHICLES[type]?.targetSize);
   ctx.refineSceneTextures?.(ctx.scene);
   hud.setPlayerName(network.identity.name);
   hud.setActiveRoom(network.room);
@@ -205,7 +207,7 @@ async function init() {
     try {
       const g = await loadVehicle(key);
       if (token !== vehicleSwapToken) return;
-      setVehicleUnderglow(g, SLOT_COLORS[0]);
+      attachPlayerMarker(g, VEHICLES[key]?.targetSize);
       ctx.refineSceneTextures?.(g);
       player.setVehicle(g, key);
       hud.toast(`${VEHICLES[key].label} siap di garis start! ${VEHICLES[key].tagline}`, 'good');

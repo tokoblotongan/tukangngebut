@@ -87,22 +87,20 @@ export function wrapS(s) {
   return r < 0 ? r + TOTAL_LEN : r;
 }
 
-// Profil elevasi periodik tertutup 16 titik (flat-tangent monotone cubic Hermite, total slope <= 12%)
+// Profil elevasi periodik tertutup (flat-tangent monotone cubic Hermite, total slope <= 12%)
+// Zona fork (250..442), ramp (456..488 & 1266..1298), dan loop (740..764) datar sempurna dengan transisi >= 20 m.
 const ELEV_KEYS = [
   [0, 0.0],
-  [140, 0.0],
-  [260, 4.5],
-  [340, 6.0],
-  [440, 3.0],
-  [495, 3.0],
-  [600, -1.5],
-  [690, 0.0],
-  [790, 0.0],
+  [130, 0.0],
+  [230, 4.0],
+  [508, 4.0],
+  [610, -1.5],
+  [720, 0.0],
+  [784, 0.0],
   [960, 7.0],
-  [1000, 7.0],
   [1100, 7.0],
-  [1185, 1.0],
-  [1300, 1.0],
+  [1246, 1.0],
+  [1318, 1.0],
   [1420, 0.0],
   [1500, 0.0],
 ];

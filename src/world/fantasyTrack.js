@@ -156,13 +156,37 @@ export function getTrackBank(z) {
   return bankGain * fade * smoothstep(72, 144, dist) * curve;
 }
 
+function isSkywayFlatSeg(k) {
+  if (k < 0) return false;
+  const st = getSegmentType(k);
+  return st === 'loop' || st === 'ramp' || st === 'fork' || st === 'narrow';
+}
+
+function getSkywayWaveMask(dist) {
+  const k = Math.floor(dist / L);
+  const pad = 0.5;
+  let mask = 1;
+  for (let seg = k - 1; seg <= k + 1; seg++) {
+    if (!isSkywayFlatSeg(seg)) continue;
+    const a = seg * L - pad;
+    const b = (seg + 1) * L + pad;
+    if (dist >= a && dist <= b) return 0;
+    if (dist >= a - 20 && dist < a) {
+      mask = Math.min(mask, 1 - smootherstep(a - 20, a, dist));
+    } else if (dist > b && dist <= b + 20) {
+      mask = Math.min(mask, smootherstep(b, b + 20, dist));
+    }
+  }
+  return mask;
+}
+
 export function getTrackHeight(z) {
   const dist = Math.max(0, -z);
   const sp = getElevationSpanAtDist(dist);
   const a = sp.start * L;
-  const b = (sp.end + 1) * L;
+  const b = sp.y0 === sp.y1 ? (sp.end + 1) * L : ((sp.end + 1) * L - 0.5);
   const base = sp.y0 === sp.y1 ? sp.y0 : sp.y0 + (sp.y1 - sp.y0) * smootherstep(a, b, dist);
-  const wave = WAVE_AMP * Math.sin(dist * 0.022) * smootherstep(48, 96, dist);
+  const wave = WAVE_AMP * Math.sin(dist * 0.022) * smootherstep(48, 96, dist) * getSkywayWaveMask(dist);
   return base + wave;
 }
 

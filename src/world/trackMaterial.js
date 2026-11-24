@@ -5,11 +5,38 @@
    ===================================================================== */
 import * as THREE from 'three';
 
-export function whenFontsReady(cb) {
+export function awaitFontsReady(timeoutMs = 1500) {
+  if (typeof document === 'undefined' || !document.fonts?.ready) {
+    return Promise.resolve();
+  }
+  let timer = null;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(resolve, timeoutMs);
+  });
+  return Promise.race([
+    document.fonts.ready.catch(() => {}),
+    timeout,
+  ]).finally(() => {
+    if (timer !== null) clearTimeout(timer);
+  });
+}
+
+export function whenFontsReady(cb, timeoutMs = 1500) {
   if (typeof document === 'undefined' || !document.fonts?.ready) return;
-  document.fonts.ready.then(() => {
+  let done = false;
+  const fire = () => {
+    if (done) return;
+    done = true;
     try { cb(); } catch {}
-  }).catch(() => {});
+  };
+  const timer = setTimeout(fire, timeoutMs);
+  document.fonts.ready.then(() => {
+    clearTimeout(timer);
+    fire();
+  }).catch(() => {
+    clearTimeout(timer);
+    fire();
+  });
 }
 
 export function createCleanOrangeTrackTexture(maxAnisotropy = 4) {

@@ -21,79 +21,74 @@ import {
   LOOP_ARC_LEN, LOOP_HALF_W, LOOP_CENTER_X, BYPASS_CENTER_X,
 } from '../world/activeTrack.js';
 
-const rand = (a, b) => a + Math.random() * (b - a);
-const LANE_W = TRACK.width / TRACK.lanes;
-const LANES = [-LANE_W, 0, LANE_W];
 const AI_LANE_PREFS = [-4.2, 0, 4.2];
-const WEIGHTS = [['angkot', 0.3], ['bemo', 0.2], ['l300', 0.25], ['ojol', 0.25]];
 const AI_NAMES = {
   angkot: 'AI • Kang Angkot',
   bemo: 'AI • Mang Bemo',
   l300: 'AI • Juragan L300',
   ojol: 'AI • Bang Ojol',
 };
-const AI_EMOJIS = { angkot: '🚐', bemo: '🛺', l300: '🛻', ojol: '🏍️' };
+const AI_INITIALS = { angkot: 'A', bemo: 'B', l300: 'L', ojol: 'O' };
 const TWO_PI = Math.PI * 2;
 
-function pickType() {
-  let r = Math.random(), acc = 0;
-  for (const [t, w] of WEIGHTS) { acc += w; if (r <= acc) return t; }
-  return 'angkot';
+function countActivePeers(remotePlayers) {
+  if (!remotePlayers || !remotePlayers.length) return 0;
+  let count = 0;
+  for (let i = 0; i < remotePlayers.length; i++) {
+    const st = remotePlayers[i]?.state;
+    if (st === 'PLAYING' || st === 'PAUSED') count++;
+  }
+  return count;
 }
 
 function makeAINameplate(name, colorHex, vehicleType) {
   const c = document.createElement('canvas');
-  c.width = 360;
-  c.height = 84;
+  c.width = 144;
+  c.height = 80;
   const g = c.getContext('2d');
   g.clearRect(0, 0, c.width, c.height);
 
   g.fillStyle = 'rgba(26, 20, 28, 0.88)';
   g.beginPath();
-  g.roundRect(8, 12, 344, 58, 26);
+  g.roundRect(10, 10, 124, 60, 28);
   g.fill();
 
-  g.strokeStyle = colorHex || '#ffbe0b';
-  g.lineWidth = 4.5;
+  const col = colorHex || '#ffbe0b';
+  g.strokeStyle = col;
+  g.lineWidth = 4;
   g.beginPath();
-  g.roundRect(8, 12, 344, 58, 26);
+  g.roundRect(10, 10, 124, 60, 28);
   g.stroke();
 
-  const em = AI_EMOJIS[vehicleType] || '🚐';
+  // Lingkaran warna slot
+  g.fillStyle = col;
+  g.beginPath();
+  g.arc(44, 40, 16, 0, Math.PI * 2);
+  g.fill();
+
+  // Inisial 1 huruf jenis kendaraan (tanpa emoji)
+  const initial = AI_INITIALS[vehicleType] || String(name || 'A').charAt(0).toUpperCase();
   g.fillStyle = '#fff8eb';
-  g.font = '700 24px Fredoka, "Plus Jakarta Sans", system-ui, sans-serif';
+  g.font = '700 32px Fredoka, "Plus Jakarta Sans", system-ui, sans-serif';
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  g.fillText(`${em} ${String(name).slice(0, 18)}`, 180, 42);
+  g.fillText(initial, 94, 42);
 
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
   const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(3.9, 0.92, 1);
+  sprite.scale.set(1.9, 1.06, 1);
   sprite.renderOrder = 6;
   sprite.userData = { tex, mat };
   return sprite;
 }
 
 export async function createTrafficManager(scene) {
-  /* 1) Preload pool lalu lintas ambient: 4 instance per tipe */
-  const freeByType = {};
-  const allGroups = [];
-  for (const type of VEHICLE_TYPES) {
-    freeByType[type] = [];
-    for (let k = 0; k < 4; k++) {
-      const g = await loadVehicle(type);
-      setVehicleUnderglow(g, null);
-      g.visible = false;
-      scene.add(g);
-      freeByType[type].push(g);
-      allGroups.push(g);
-    }
-  }
+  let highQuality = true;
 
-  /* 2) Preload 1 instance khusus per tipe untuk Pembalap AI (4 armada lengkap) */
+  /* Preload 1 instance khusus per tipe untuk Pembalap AI (4 armada lengkap) */
   const aiRigs = {};
   for (const type of VEHICLE_TYPES) {
     const mesh = await loadVehicle(type);
@@ -154,7 +149,21 @@ export async function createTrafficManager(scene) {
   const _spMat = new THREE.Matrix4();
   const _spEuler = new THREE.Euler(0, 0, 0, 'YXZ');
   const _spQ = new THREE.Quaternion();
+  const _plPos = new THREE.Vector3();
   const _targetsBuf = [];
+
+  function updateNameplateFade(plate, dx, dz) {
+    if (!plate) return;
+    const dist = Math.hypot(dx, dz);
+    if (dist > 70) {
+      plate.visible = false;
+    } else {
+      plate.visible = true;
+      if (plate.material) {
+        plate.material.opacity = dist <= 40 ? 1 : Math.max(0, 1 - (dist - 40) / 30);
+      }
+    }
+  }
 
   function bindSlotRig(slot, vType) {
     if (slot.rig && slot.rig.root) {
@@ -246,112 +255,14 @@ export async function createTrafficManager(scene) {
     }
   }
 
-  /* 3) Lalu lintas ambient */
-  const active = [];
-  let spawnTimer = 0.6;
-  let nearMisses = 0;
-
-  function spawn(playerZ) {
-    if (active.length >= TRAFFIC.poolSize) return;
-    const type = pickType();
-    const group = freeByType[type].pop();
-    if (!group) return;
-
-    const def = getVehicleDef(type);
-    const lane = Math.floor(Math.random() * 3);
-    const z = playerZ - TRAFFIC.safeSpawnAhead - rand(0, 30);
-    const segType = getSegmentType(Math.floor(-z / TRACK.segmentLength));
-    if (segType === 'loop' || segType === 'ramp' || segType === 'narrow' || segType === 'fork' || segType === 'skullTunnel') {
-      freeByType[type].push(group);
-      return;
-    }
-    for (const e of active) {
-      if (Math.abs(e.z - z) < 9 && e.lane === lane) {
-        freeByType[type].push(group);
-        return;
-      }
-    }
-
-    const cx = getTrackCenterX(z);
-    const surf = getTrackSurfaceAt(cx + LANES[lane], z);
-    const initX = surf.onTrack ? (cx + LANES[lane]) : surf.safeCenterX;
-    const baseSpeed = PHYSICS.baseSpeed * TRAFFIC.speedFactor[type];
-    const e = {
-      group, type, def, lane,
-      x: initX, targetX: initX, z, s: -z, latX: LANES[lane],
-      speed: baseSpeed, baseSpeed,
-      state: 'cruise',
-      willNgetem: type === 'angkot' && Math.random() < TRAFFIC.ngetem.chance,
-      ngetemAt: z - rand(20, 55),
-      ngetemTimer: 0,
-      phase: Math.random() * Math.PI * 2,
-      passed: false,
-      halfX: def.targetSize.x / 2, halfZ: def.targetSize.z / 2,
-    };
-    group.visible = true;
-    if (!group.parent) scene.add(group);
-    group.position.set(e.x, getTrackHeight(z), e.z);
-    active.push(e);
-  }
-
-  function spawnSpline(playerS, track) {
-    if (active.length >= 8) return;
-    const type = pickType();
-    const group = freeByType[type].pop();
-    if (!group) return;
-
-    const def = getVehicleDef(type);
-    const lane = Math.floor(Math.random() * 3);
-    const s = playerS + TRAFFIC.safeSpawnAhead + rand(0, 36);
-    const surf = track.getTrackSurfaceAt(s, LANES[lane]);
-    if (!surf.onTrack || surf.type === 'loop' || surf.type === 'ramp' || surf.type === 'fork') {
-      freeByType[type].push(group);
-      return;
-    }
-    for (const e of active) {
-      if (Math.abs((e.s ?? 0) - s) < 11 && e.lane === lane) {
-        freeByType[type].push(group);
-        return;
-      }
-    }
-
-    const initLat = LANES[lane];
-    evalCircuitPose(s, initLat, _spPos, _spFwd, _spRight, _spUp);
-    const baseSpeed = PHYSICS.baseSpeed * TRAFFIC.speedFactor[type];
-    const e = {
-      group, type, def, lane,
-      s, latX: initLat, targetLatX: initLat,
-      x: _spPos.x, z: _spPos.z,
-      speed: baseSpeed, baseSpeed,
-      state: 'cruise',
-      willNgetem: type === 'angkot' && Math.random() < TRAFFIC.ngetem.chance,
-      ngetemAtS: s + rand(22, 56),
-      ngetemTimer: 0,
-      phase: Math.random() * Math.PI * 2,
-      passed: false,
-      halfX: def.targetSize.x / 2, halfZ: def.targetSize.z / 2,
-    };
-    group.visible = true;
-    if (!group.parent) scene.add(group);
-    group.position.set(e.x, surf.groundY, e.z);
-    active.push(e);
-  }
-
-  function despawn(idx) {
-    const e = active[idx];
-    e.group.visible = false;
-    freeByType[e.type].push(e.group);
-    active.splice(idx, 1);
-  }
-
   /* ==================== Update 3 AI Racers pada Closed-Spline Mandalika ==================== */
   function updateSplineAIRacers(rawDt, playerS, t, playerType, remotePlayers, track, playerLatX = 0, lapGoal = 1500) {
     if (playerType && aiSlots[0]?.type === playerType) {
       assignAIRacers(playerType, false);
     }
     const totalLen = track.TOTAL_LEN || 1500;
-    const activePeers = (remotePlayers || []).filter((p) => p.state === 'PLAYING' || p.state === 'PAUSED');
-    const peerCount = activePeers.length;
+    const peerCount = countActivePeers(remotePlayers);
+    track.evalCircuitPose(playerS, playerLatX, _plPos);
 
     if (track?.getCollectibleTargets) {
       track.getCollectibleTargets(playerS - 30, playerS + 140, _targetsBuf);
@@ -372,7 +283,7 @@ export async function createTrafficManager(scene) {
       }
 
       ai.rig.root.visible = true;
-      ai.ribbon.setVisible(true);
+      ai.ribbon.setVisible(highQuality);
       const def = ai.rig.def;
       const wr = def.wheelRadius || 0.34;
       if (ai.turboTimer > 0) ai.turboTimer = Math.max(0, ai.turboTimer - rawDt);
@@ -394,22 +305,26 @@ export async function createTrafficManager(scene) {
         ai.rig.root.position.copy(_lpPos);
         ai.rig.mesh.quaternion.copy(_lpQuat);
         ai.score += loopSpd * rawDt;
+        updateNameplateFade(ai.rig.plate, ai.x - _plPos.x, ai.z - _plPos.z);
 
         for (const w of ai.rig.mesh.userData.wheels || []) w.rotation.x -= (loopSpd / wr) * rawDt;
         const fl = ai.rig.mesh.userData.flames;
         if (fl?.group) {
           fl.group.visible = true;
-          ai.flamePhase += rawDt * 42;
+          ai.flamePhase += rawDt * 16;
           for (let j = 0; j < fl.jets.length; j++) {
-            const s = 0.9 + 0.4 * Math.abs(Math.sin(ai.flamePhase + j * 1.7));
-            fl.jets[j].scale.set(s, s, 1.15);
+            const p = 0.92 + 0.12 * Math.sin(ai.flamePhase + j * 1.4);
+            const s = 0.92 + 0.13 * Math.sin(ai.flamePhase * 1.15 + j * 1.9);
+            fl.jets[j].scale.set(p, p, s);
           }
         }
-        ai.ribbon.setBoostMode(true);
-        ai.ribbon.update(
-          ai.x - ai.forwardVec.x * 1.1, ai.y + 0.32, ai.z - ai.forwardVec.z * 1.1,
-          ai.rightVec.x, ai.rightVec.y, ai.rightVec.z
-        );
+        if (highQuality) {
+          ai.ribbon.setBoostMode(true);
+          ai.ribbon.update(
+            ai.x - ai.forwardVec.x * 1.1, ai.y + 0.32, ai.z - ai.forwardVec.z * 1.1,
+            ai.rightVec.x, ai.rightVec.y, ai.rightVec.z
+          );
+        }
 
         if (ai.loopState.u >= 1) {
           ai.lastLoopLap = ai.loopState.lapIdx;
@@ -493,13 +408,6 @@ export async function createTrafficManager(scene) {
         const hz = hazards[0];
         if (Math.abs(hz.laneX - desiredLat) < 2.6) {
           desiredLat = hz.laneX >= 0 ? Math.max(-6.4, hz.laneX - 4.4) : Math.min(6.4, hz.laneX + 4.4);
-        }
-      }
-      for (const e of active) {
-        const ds = (e.s ?? 0) - ai.s;
-        if (ds > 1 && ds < 14 && Math.abs((e.latX ?? 0) - ai.latX) < 2.6) {
-          desiredLat = (e.latX ?? 0) >= 0 ? Math.max(-6.4, (e.latX ?? 0) - 3.8) : Math.min(6.4, (e.latX ?? 0) + 3.8);
-          break;
         }
       }
 
@@ -593,12 +501,14 @@ export async function createTrafficManager(scene) {
       ai.forwardVec.copy(_spFwd);
 
       ai.rig.root.position.set(ai.x, ai.y, ai.z);
+      updateNameplateFade(ai.rig.plate, ai.x - _plPos.x, ai.z - _plPos.z);
       _spZAxis.copy(_spFwd).negate();
       _spMat.makeBasis(_spRight, _spUp, _spZAxis);
       ai.rig.mesh.quaternion.setFromRotationMatrix(_spMat);
-      const extraSlope = surfNow.slope - _spFwd.y;
+      const basePitch = Math.asin(THREE.MathUtils.clamp(_spFwd.y, -0.999, 0.999));
+      const extraPitch = THREE.MathUtils.clamp(Math.atan(surfNow.slope) - basePitch, -0.32, 0.32);
       _spEuler.set(
-        ai.airborne ? 0 : Math.atan(extraSlope),
+        ai.airborne ? 0 : extraPitch,
         ai.airborne ? 0 : THREE.MathUtils.clamp(-ai.latVel * 0.016, -0.22, 0.22),
         ai.airborne ? ai.rollAngle : (surfNow.bank ?? meta.bank)
       );
@@ -612,19 +522,22 @@ export async function createTrafficManager(scene) {
         const on = ai.turboTimer > 0;
         fl.group.visible = on;
         if (on) {
-          ai.flamePhase += rawDt * 42;
+          ai.flamePhase += rawDt * 16;
           for (let j = 0; j < fl.jets.length; j++) {
-            const s = 0.85 + 0.42 * Math.abs(Math.sin(ai.flamePhase + j * 1.7));
-            fl.jets[j].scale.set(s, s, 1.05 + 0.45 * Math.sin(ai.flamePhase * 1.3 + j));
+            const p = 0.92 + 0.12 * Math.sin(ai.flamePhase + j * 1.4);
+            const s = 0.92 + 0.13 * Math.sin(ai.flamePhase * 1.15 + j * 1.9);
+            fl.jets[j].scale.set(p, p, s);
           }
         }
       }
 
-      ai.ribbon.setBoostMode(ai.turboTimer > 0 || ai.airborne);
-      ai.ribbon.update(
-        ai.x - _spFwd.x * 1.3, ai.y + 0.34, ai.z - _spFwd.z * 1.3,
-        ai.rightVec.x, ai.rightVec.y, ai.rightVec.z
-      );
+      if (highQuality) {
+        ai.ribbon.setBoostMode(ai.turboTimer > 0 || ai.airborne);
+        ai.ribbon.update(
+          ai.x - _spFwd.x * 1.3, ai.y + 0.34, ai.z - _spFwd.z * 1.3,
+          ai.rightVec.x, ai.rightVec.y, ai.rightVec.z
+        );
+      }
     }
   }
 
@@ -632,8 +545,7 @@ export async function createTrafficManager(scene) {
     if (playerType && aiSlots[0]?.type === playerType) {
       assignAIRacers(playerType, false);
     }
-    const activePeers = (remotePlayers || []).filter((p) => p.state === 'PLAYING' || p.state === 'PAUSED');
-    const peerCount = activePeers.length;
+    const peerCount = countActivePeers(remotePlayers);
 
     if (track?.getCollectibleTargets) {
       track.getCollectibleTargets(playerZ - 140, playerZ + 40, _targetsBuf);
@@ -654,7 +566,7 @@ export async function createTrafficManager(scene) {
       }
 
       ai.rig.root.visible = true;
-      ai.ribbon.setVisible(true);
+      ai.ribbon.setVisible(highQuality);
 
       const def = ai.rig.def;
       const wr = def.wheelRadius || 0.34;
@@ -678,19 +590,23 @@ export async function createTrafficManager(scene) {
         ai.rig.root.position.copy(_lpPos);
         ai.rig.mesh.quaternion.copy(_lpQuat);
         ai.score += loopSpd * rawDt;
+        updateNameplateFade(ai.rig.plate, ai.x - playerX, ai.z - playerZ);
 
         for (const w of ai.rig.mesh.userData.wheels || []) w.rotation.x -= (loopSpd / wr) * rawDt;
         const fl = ai.rig.mesh.userData.flames;
         if (fl?.group) {
           fl.group.visible = true;
-          ai.flamePhase += rawDt * 42;
+          ai.flamePhase += rawDt * 16;
           for (let j = 0; j < fl.jets.length; j++) {
-            const s = 0.9 + 0.4 * Math.abs(Math.sin(ai.flamePhase + j * 1.7));
-            fl.jets[j].scale.set(s, s, 1.15);
+            const p = 0.92 + 0.12 * Math.sin(ai.flamePhase + j * 1.4);
+            const s = 0.92 + 0.13 * Math.sin(ai.flamePhase * 1.15 + j * 1.9);
+            fl.jets[j].scale.set(p, p, s);
           }
         }
-        ai.ribbon.setBoostMode(true);
-        ai.ribbon.update(ai.x, ai.y + 0.32, ai.z + 1.1, ai.rightVec.x, ai.rightVec.y, ai.rightVec.z);
+        if (highQuality) {
+          ai.ribbon.setBoostMode(true);
+          ai.ribbon.update(ai.x, ai.y + 0.32, ai.z + 1.1, ai.rightVec.x, ai.rightVec.y, ai.rightVec.z);
+        }
 
         if (ai.loopState.u >= 1) {
           ai.lastLoopSeg = ai.loopState.segIndex;
@@ -794,13 +710,6 @@ export async function createTrafficManager(scene) {
           desiredX = hz.laneX >= cxNow ? Math.max(cxNow - 6.2, hz.laneX - 4.4) : Math.min(cxNow + 6.2, hz.laneX + 4.4);
         }
       }
-      for (const e of active) {
-        const dz = ai.z - e.z;
-        if (dz > 1 && dz < 13 && Math.abs(e.x - ai.x) < 2.6) {
-          desiredX = e.x >= cxNow ? Math.max(cxNow - 6.2, e.x - 3.8) : Math.min(cxNow + 6.2, e.x + 3.8);
-          break;
-        }
-      }
 
       for (let j = 0; j < aiSlots.length; j++) {
         if (j === i) continue;
@@ -900,8 +809,9 @@ export async function createTrafficManager(scene) {
       const trackYaw = getTrackYaw(ai.z);
       const trackBank = getTrackBank(ai.z);
       ai.rig.root.position.set(ai.x, ai.y, ai.z);
+      updateNameplateFade(ai.rig.plate, ai.x - playerX, ai.z - playerZ);
       ai.rig.mesh.rotation.order = 'YXZ';
-      ai.rig.mesh.rotation.x = ai.airborne ? 0 : Math.atan(-slope);
+      ai.rig.mesh.rotation.x = ai.airborne ? 0 : THREE.MathUtils.clamp(Math.atan(-slope), -0.32, 0.32);
       ai.rig.mesh.rotation.z = ai.airborne ? ai.rollAngle : trackBank;
       ai.rig.mesh.rotation.y = trackYaw + (ai.airborne ? 0 : THREE.MathUtils.clamp(-ai.latVel * 0.016, -0.22, 0.22));
 
@@ -913,196 +823,51 @@ export async function createTrafficManager(scene) {
         const on = ai.turboTimer > 0;
         fl.group.visible = on;
         if (on) {
-          ai.flamePhase += rawDt * 42;
+          ai.flamePhase += rawDt * 16;
           for (let j = 0; j < fl.jets.length; j++) {
-            const s = 0.85 + 0.42 * Math.abs(Math.sin(ai.flamePhase + j * 1.7));
-            fl.jets[j].scale.set(s, s, 1.05 + 0.45 * Math.sin(ai.flamePhase * 1.3 + j));
+            const p = 0.92 + 0.12 * Math.sin(ai.flamePhase + j * 1.4);
+            const s = 0.92 + 0.13 * Math.sin(ai.flamePhase * 1.15 + j * 1.9);
+            fl.jets[j].scale.set(p, p, s);
           }
         }
       }
 
-      ai.ribbon.setBoostMode(ai.turboTimer > 0 || ai.airborne);
-      ai.ribbon.update(ai.x, ai.y + 0.34, ai.z + 1.3, ai.rightVec.x, ai.rightVec.y, ai.rightVec.z);
+      if (highQuality) {
+        ai.ribbon.setBoostMode(ai.turboTimer > 0 || ai.airborne);
+        ai.ribbon.update(ai.x, ai.y + 0.34, ai.z + 1.3, ai.rightVec.x, ai.rightVec.y, ai.rightVec.z);
+      }
     }
   }
 
   function update(dt, playerZ, t = 0, playerX = 0, opts = {}) {
+    if (opts.raceActive === false) return;
+    const rawDt = opts.rawDt ?? dt;
     if (opts.track?.isSplineCircuit) {
-      const track = opts.track;
-      const playerS = opts.playerS ?? 0;
-      const playerLatX = opts.playerLatX ?? 0;
-      spawnTimer -= dt;
-      if (spawnTimer <= 0) {
-        spawnSpline(playerS, track);
-        spawnTimer = rand(1.1, 2.0);
-      }
-
-      for (let i = active.length - 1; i >= 0; i--) {
-        const e = active[i];
-        if (e.type === 'angkot') {
-          if (e.state === 'cruise' && e.willNgetem && e.s >= e.ngetemAtS) {
-            e.state = 'ngetem';
-            e.ngetemTimer = rand(TRAFFIC.ngetem.duration[0], TRAFFIC.ngetem.duration[1]);
-            e.targetLatX = LANES[0];
-          }
-          if (e.state === 'ngetem') {
-            e.ngetemTimer -= dt;
-            e.speed += (0 - e.speed) * (1 - Math.exp(-6 * dt));
-            if (e.ngetemTimer <= 0) { e.state = 'cruise'; e.willNgetem = false; e.targetLatX = LANES[e.lane]; }
-          } else {
-            e.speed += (e.baseSpeed - e.speed) * (1 - Math.exp(-2 * dt));
-            e.targetLatX = LANES[e.lane];
-          }
-        } else if (e.type === 'ojol') {
-          e.speed = e.baseSpeed;
-          e.targetLatX = LANES[e.lane] + Math.sin(t * TRAFFIC.ojolWeave.freq + e.phase) * TRAFFIC.ojolWeave.amp;
-        } else if (e.type === 'bemo') {
-          e.speed = e.baseSpeed;
-          e.targetLatX = LANES[e.lane] + Math.sin(t * 0.6 + e.phase) * 0.25;
-        } else {
-          e.speed = e.baseSpeed;
-          e.targetLatX = LANES[e.lane];
-        }
-
-        e.s += e.speed * dt;
-        const surf = track.getTrackSurfaceAt(e.s, e.latX);
-        if (surf.type === 'loop' || surf.inGap || surf.type === 'fork') {
-          despawn(i);
-          continue;
-        }
-        const limMin = surf.safeCenterX - Math.max(0.6, surf.safeHalfW - 0.9);
-        const limMax = surf.safeCenterX + Math.max(0.6, surf.safeHalfW - 0.9);
-        const clampedTarget = THREE.MathUtils.clamp(e.targetLatX, limMin, limMax);
-        e.latX += (clampedTarget - e.latX) * (1 - Math.exp(-5 * dt));
-        e.latX = THREE.MathUtils.clamp(e.latX, limMin, limMax);
-
-        const meta = track.evalCircuitPose(e.s, e.latX, _spPos, _spFwd, _spRight, _spUp);
-        e.x = _spPos.x; e.z = _spPos.z;
-        e.group.position.set(e.x, surf.groundY, e.z);
-        _spZAxis.copy(_spFwd).negate();
-        _spMat.makeBasis(_spRight, _spUp, _spZAxis);
-        e.group.quaternion.setFromRotationMatrix(_spMat);
-        _spEuler.set(0, (clampedTarget - e.latX) * -0.02, surf.bank ?? meta.bank);
-        _spQ.setFromEuler(_spEuler);
-        e.group.quaternion.multiply(_spQ);
-
-        const wr = e.def.wheelRadius || 0.34;
-        for (const w of e.group.userData.wheels || []) w.rotation.x -= (e.speed / wr) * dt;
-        const blink = Math.sin(t * 10) > 0;
-        const hazard = e.state === 'ngetem';
-        for (const ind of e.group.userData.indicators || []) ind.material.emissiveIntensity = hazard && blink ? 1.8 : 0;
-        for (const br of e.group.userData.brakes || []) br.material.emissiveIntensity = hazard ? 1.6 : 0.7;
-
-        if (!e.passed && e.s < playerS) {
-          e.passed = true;
-          if (Math.abs(e.latX - playerLatX) < 2.3) nearMisses++;
-        }
-        if (playerS - e.s > TRAFFIC.despawnBehind) despawn(i);
-      }
-
-      if (opts.raceActive !== false) {
-        const rawDt = opts.rawDt ?? dt;
-        updateSplineAIRacers(rawDt, playerS, t, opts.playerType, opts.remotePlayers, track, playerLatX, opts.lapGoal || TRACK.lapDistance);
-      }
+      updateSplineAIRacers(
+        rawDt,
+        opts.playerS ?? 0,
+        t,
+        opts.playerType,
+        opts.remotePlayers,
+        opts.track,
+        opts.playerLatX ?? 0,
+        opts.lapGoal || TRACK.lapDistance
+      );
       return;
     }
-
-    spawnTimer -= dt;
-    if (spawnTimer <= 0) {
-      spawn(playerZ);
-      spawnTimer = rand(TRAFFIC.spawnInterval[0], TRAFFIC.spawnInterval[1]);
-    }
-
-    for (let i = active.length - 1; i >= 0; i--) {
-      const e = active[i];
-      const cxCur = getTrackCenterX(e.z);
-
-      /* ---- AI lalu lintas ambient per tipe ---- */
-      if (e.type === 'angkot') {
-        if (e.state === 'cruise' && e.willNgetem && e.z <= e.ngetemAt) {
-          e.state = 'ngetem';
-          e.ngetemTimer = rand(TRAFFIC.ngetem.duration[0], TRAFFIC.ngetem.duration[1]);
-          e.targetX = cxCur + LANES[0];
-        }
-        if (e.state === 'ngetem') {
-          e.ngetemTimer -= dt;
-          e.speed += (0 - e.speed) * (1 - Math.exp(-6 * dt));
-          if (e.ngetemTimer <= 0) { e.state = 'cruise'; e.willNgetem = false; e.targetX = cxCur + LANES[e.lane]; }
-        } else {
-          e.speed += (e.baseSpeed - e.speed) * (1 - Math.exp(-2 * dt));
-          e.targetX = cxCur + LANES[e.lane];
-        }
-      } else if (e.type === 'ojol') {
-        e.speed = e.baseSpeed;
-        e.targetX = cxCur + LANES[e.lane] + Math.sin(t * TRAFFIC.ojolWeave.freq + e.phase) * TRAFFIC.ojolWeave.amp;
-      } else if (e.type === 'bemo') {
-        e.speed = e.baseSpeed;
-        e.targetX = cxCur + LANES[e.lane] + Math.sin(t * 0.6 + e.phase) * 0.25;
-      } else {
-        e.speed = e.baseSpeed;
-        e.targetX = cxCur + LANES[e.lane];
-      }
-
-      e.z -= e.speed * dt;
-      e.s = -e.z;
-      const cxNext = getTrackCenterX(e.z);
-      e.x += cxNext - cxCur;
-      e.targetX += cxNext - cxCur;
-
-      const surf = getTrackSurfaceAt(e.x, e.z);
-      if (surf.type === 'loop' || surf.inGap) {
-        despawn(i);
-        continue;
-      }
-      const limMin = surf.safeCenterX - Math.max(0.6, surf.safeHalfW - 0.9);
-      const limMax = surf.safeCenterX + Math.max(0.6, surf.safeHalfW - 0.9);
-      const clampedTarget = THREE.MathUtils.clamp(e.targetX, limMin, limMax);
-
-      e.x += (clampedTarget - e.x) * (1 - Math.exp(-5 * dt));
-      e.x = THREE.MathUtils.clamp(e.x, limMin, limMax);
-
-      const y = surf.groundY;
-      const slope = surf.slope;
-      e.group.position.set(e.x, y, e.z);
-      e.group.rotation.order = 'YXZ';
-      e.group.rotation.x = Math.atan(-slope);
-      e.group.rotation.y = getTrackYaw(e.z) + (clampedTarget - e.x) * -0.02;
-      e.group.rotation.z = getTrackBank(e.z);
-
-      const wr = e.def.wheelRadius || 0.34;
-      for (const w of e.group.userData.wheels || []) w.rotation.x -= (e.speed / wr) * dt;
-
-      /* Sein & rem saat ngetem */
-      const blink = Math.sin(t * 10) > 0;
-      const hazard = e.state === 'ngetem';
-      for (const ind of e.group.userData.indicators || []) ind.material.emissiveIntensity = hazard && blink ? 1.8 : 0;
-      for (const br of e.group.userData.brakes || []) br.material.emissiveIntensity = hazard ? 1.6 : 0.7;
-
-      /* Near-miss: tersalip ketat tanpa tabrakan */
-      if (!e.passed && e.z > playerZ) {
-        e.passed = true;
-        if (Math.abs(e.x - playerX) < 2.3) nearMisses++;
-      }
-
-      if (e.z - playerZ > TRAFFIC.despawnBehind) despawn(i);
-    }
-
-    /* Update 3 Pembalap AI kompetitif jika berada di mode balapan */
-    if (opts.raceActive !== false) {
-      const rawDt = opts.rawDt ?? dt;
-      updateAIRacers(rawDt, playerZ, t, opts.playerType, opts.remotePlayers, opts.track, playerX, opts.lapGoal || TRACK.lapDistance);
-    }
+    updateAIRacers(
+      rawDt,
+      playerZ,
+      t,
+      opts.playerType,
+      opts.remotePlayers,
+      opts.track,
+      playerX,
+      opts.lapGoal || TRACK.lapDistance
+    );
   }
 
-  /* AABB sederhana player vs lalu lintas */
-  function checkCollision(pos, half = { x: 1.0, z: 2.2 }) {
-    for (const e of active) {
-      if (Math.abs(pos.x - e.x) < half.x + e.halfX &&
-          Math.abs(pos.z - e.z) < half.z + e.halfZ &&
-          Math.abs(pos.y - e.group.position.y) < 2.6) {
-        return e;
-      }
-    }
+  function checkCollision() {
     return null;
   }
 
@@ -1133,20 +898,24 @@ export async function createTrafficManager(scene) {
     return dst;
   }
 
-  function consumeNearMisses() { const n = nearMisses; nearMisses = 0; return n; }
+  function consumeNearMisses() { return 0; }
+
+  function setQuality(high) {
+    highQuality = !!high;
+    if (!highQuality) {
+      for (let i = 0; i < aiSlots.length; i++) {
+        aiSlots[i].ribbon.setVisible(false);
+      }
+    }
+  }
 
   function reset(playerType = 'angkot') {
-    for (let i = active.length - 1; i >= 0; i--) despawn(i);
-    spawnTimer = 0.6; nearMisses = 0;
     for (const rig of Object.values(aiRigs)) rig.root.visible = false;
     for (const slot of aiSlots) slot.ribbon.setVisible(false);
     assignAIRacers(playerType, true);
   }
 
   function dispose() {
-    for (let i = active.length - 1; i >= 0; i--) despawn(i);
-    for (const g of allGroups) scene.remove(g);
-    for (const type of VEHICLE_TYPES) freeByType[type].length = 0;
     for (const slot of aiSlots) slot.ribbon.dispose();
     for (const rig of Object.values(aiRigs)) {
       scene.remove(rig.root);
@@ -1156,7 +925,7 @@ export async function createTrafficManager(scene) {
   }
 
   return {
-    update, checkCollision, consumeNearMisses, getAIRacersSnapshot, reset, dispose,
-    get activeCount() { return active.length; },
+    update, checkCollision, consumeNearMisses, getAIRacersSnapshot, setQuality, reset, dispose,
+    get activeCount() { return 0; },
   };
 }

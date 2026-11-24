@@ -5,6 +5,8 @@
    hangat (~1100 Hz, Q ~ 3) dengan 3 pola melodi ceria & flourish stunt.
    ===================================================================== */
 
+export const HORN_VOLUME = 0.16;
+
 /** @typedef {{ freq: number, dur: number, gap?: number }} TeloletNote */
 
 /**
@@ -175,7 +177,7 @@ export function createTeloletSynthesizer({ ensureContext, getMaster, isMuted }) 
     const seq = TELOLET_PATTERNS[idx];
     let t = ac.currentTime + 0.01;
     for (const note of seq) {
-      playAirHornNote(ac, master, t, note.freq, note.dur, 0.21, 1100);
+      playAirHornNote(ac, master, t, note.freq, note.dur, HORN_VOLUME, 1100);
       t += note.dur + (note.gap ?? 0.025);
     }
     return true;
@@ -194,7 +196,7 @@ export function createTeloletSynthesizer({ ensureContext, getMaster, isMuted }) 
     stopActiveVoices();
     let t = ac.currentTime + 0.01;
     for (const note of FLOURISH_NOTES) {
-      playAirHornNote(ac, master, t, note.freq, note.dur, 0.23, 1380);
+      playAirHornNote(ac, master, t, note.freq, note.dur, HORN_VOLUME, 1380);
       t += note.dur + (note.gap ?? 0.02);
     }
     return true;
@@ -227,8 +229,8 @@ export function createTeloletSynthesizer({ ensureContext, getMaster, isMuted }) 
     g2.gain.setValueAtTime(0.32, now);
 
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.26, now + 0.03);
-    gain.gain.setValueAtTime(0.22, now + dur * 0.65);
+    gain.gain.exponentialRampToValueAtTime(0.20, now + 0.03);
+    gain.gain.setValueAtTime(0.165, now + dur * 0.65);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + dur + 0.04);
 
     osc.connect(gain);
@@ -256,7 +258,7 @@ export function createTeloletSynthesizer({ ensureContext, getMaster, isMuted }) 
     const notes = [523.25, 659.25, 783.99, 1046.5];
     let t = ac.currentTime + 0.01;
     for (const freq of notes) {
-      playAirHornNote(ac, master, t, freq, 0.095, 0.19, 1450);
+      playAirHornNote(ac, master, t, freq, 0.095, 0.15, 1450);
       t += 0.075;
     }
     return true;
@@ -276,7 +278,7 @@ export function createTeloletSynthesizer({ ensureContext, getMaster, isMuted }) 
     const notes = [587.33, 880.0, 1174.66, 1567.98];
     let t = now;
     for (const freq of notes) {
-      playAirHornNote(ac, master, t, freq, 0.08, 0.18, 1750);
+      playAirHornNote(ac, master, t, freq, 0.08, 0.14, 1750);
       t += 0.055;
     }
     return true;
@@ -304,7 +306,7 @@ export function createTeloletSynthesizer({ ensureContext, getMaster, isMuted }) 
     osc2.frequency.exponentialRampToValueAtTime(210, now + 0.14);
 
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.26, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.20, now + 0.01);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
 
     osc.connect(gain);
@@ -335,7 +337,7 @@ export function createTeloletSynthesizer({ ensureContext, getMaster, isMuted }) 
     ];
     let t = ac.currentTime + 0.01;
     for (const n of notes) {
-      playAirHornNote(ac, master, t, n.freq, n.dur, 0.24, 1550);
+      playAirHornNote(ac, master, t, n.freq, n.dur, 0.18, 1550);
       t += n.dur + n.gap;
     }
     return true;

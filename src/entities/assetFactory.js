@@ -19,7 +19,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { whenFontsReady } from '../world/trackMaterial.js';
+import { awaitFontsReady, whenFontsReady } from '../world/trackMaterial.js';
 import {
   ASSETS, PALETTE as P, VEHICLES, LANDMARKS,
   VEHICLE_TYPES, LANDMARK_TYPES, getVehicleDef, getLandmarkDef,
@@ -191,33 +191,30 @@ function bakeColorGeo(srcGeo, matrix, colorObj) {
 }
 
 function wheel(r, w, name) {
-  const g = new THREE.Group(); g.name = name;
-  const key = `wh|${r}|${w}`;
-  if (!geoCache.has(`${key}|rub`)) {
-    const tGeo = cylGeo(r, r, w, 20).clone(); tGeo.rotateZ(Math.PI / 2);
+  const key = `wh14|${r}|${w}`;
+  if (!geoCache.has(key)) {
+    const tGeo = cylGeo(r, r, w, 14).clone(); tGeo.rotateZ(Math.PI / 2);
     const lGeo = cylGeo(r * 0.4, r * 0.4, w + 0.032, 10).clone(); lGeo.rotateZ(Math.PI / 2);
-    const rubGeo = mergeGeometries([
+    const rGeo = cylGeo(r * 0.58, r * 0.58, w + 0.025, 14).clone(); rGeo.rotateZ(Math.PI / 2);
+    const hGeo = cylGeo(r * 0.26, r * 0.26, w + 0.045, 10).clone(); hGeo.rotateZ(Math.PI / 2);
+    const merged = mergeGeometries([
       bakeColorGeo(tGeo, null, new THREE.Color(P.tire)),
       bakeColorGeo(lGeo, null, new THREE.Color(P.asphaltDark)),
+      bakeColorGeo(rGeo, null, new THREE.Color(P.chrome || '#eef2f7')),
+      bakeColorGeo(hGeo, null, new THREE.Color('#cbd5e1')),
     ], false);
-    tGeo.dispose(); lGeo.dispose();
-    geoCache.set(`${key}|rub`, rubGeo);
-
-    const rGeo = cylGeo(r * 0.58, r * 0.58, w + 0.025, 16).clone(); rGeo.rotateZ(Math.PI / 2);
-    const hGeo = cylGeo(r * 0.26, r * 0.26, w + 0.045, 10).clone(); hGeo.rotateZ(Math.PI / 2);
-    const chmGeo = mergeGeometries([rGeo.toNonIndexed(), hGeo.toNonIndexed()], false);
-    rGeo.dispose(); hGeo.dispose();
-    geoCache.set(`${key}|chm`, chmGeo);
+    tGeo.dispose(); lGeo.dispose(); rGeo.dispose(); hGeo.dispose();
+    geoCache.set(key, merged);
   }
-  if (!matCache.has('wh|rub')) {
-    matCache.set('wh|rub', new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78, metalness: 0.06 }));
+  if (!matCache.has('wh|vcol')) {
+    matCache.set('wh|vcol', new THREE.MeshStandardMaterial({
+      vertexColors: true, roughness: 0.52, metalness: 0.22,
+    }));
   }
-  const tireMesh = new THREE.Mesh(geoCache.get(`${key}|rub`), matCache.get('wh|rub'));
-  tireMesh.castShadow = true;
-  const rimMesh = new THREE.Mesh(geoCache.get(`${key}|chm`), getChromeMat());
-  rimMesh.castShadow = true;
-  g.add(tireMesh, rimMesh);
-  return g;
+  const m = new THREE.Mesh(geoCache.get(key), matCache.get('wh|vcol'));
+  m.name = name;
+  m.castShadow = true;
+  return m;
 }
 
 /* Label teks kanvas (papan trayek, plang landmark, plat nomor) */
@@ -252,11 +249,15 @@ function label(text, worldW, worldH, o = {}) {
   const key = `pl|${worldW}|${worldH}`;
   if (!geoCache.has(key)) geoCache.set(key, new THREE.PlaneGeometry(worldW, worldH));
   const tex = labelTexture(text, o);
-  const m = new THREE.Mesh(geoCache.get(key), new THREE.MeshStandardMaterial({
-    map: tex, transparent: true, alphaTest: 0.08, roughness: 0.6,
-    emissive: '#ffffff', emissiveMap: tex, emissiveIntensity: o.glow ?? 0.22,
-    polygonOffset: true, polygonOffsetFactor: -1,
-  }));
+  const matKey = `lbmat|${text}|${JSON.stringify(o)}`;
+  if (!matCache.has(matKey)) {
+    matCache.set(matKey, new THREE.MeshStandardMaterial({
+      map: tex, transparent: true, alphaTest: 0.08, roughness: 0.6,
+      emissive: '#ffffff', emissiveMap: tex, emissiveIntensity: o.glow ?? 0.22,
+      polygonOffset: true, polygonOffsetFactor: -1,
+    }));
+  }
+  const m = new THREE.Mesh(geoCache.get(key), matCache.get(matKey));
   m.castShadow = false;
   return m;
 }
@@ -362,80 +363,135 @@ function mergeLandmarkStaticMeshes(root) {
 function mergeVehicleStaticMeshes(root) {
   root.updateMatrixWorld(true);
   const dynamicKeep = [];
-  const buckets = new Map();
-  const isRuntimeNode = (obj) => {
-    let cur = obj;
-    while (cur && cur !== root) {
-      const n = (cur.name || '').toLowerCase();
-      if (n.startsWith('wheel_') || n.startsWith('indicator_') || n.startsWith('brake_') || n.startsWith('headlight_')) return true;
-      cur = cur.parent;
-    }
-    return false;
-  };
+  const glassGeos = [];
+  const emissiveGeos = [];
+  const bodyGeos = [];
+  const brakeGeos = [];
+  const indicatorGeos = [];
+
   for (const ch of root.children) {
     const n = (ch.name || '').toLowerCase();
-    if (n.startsWith('wheel_') || n.startsWith('indicator_') || n.startsWith('brake_') || n.startsWith('headlight_')) {
-      dynamicKeep.push(ch);
-    }
+    if (n.startsWith('wheel_')) dynamicKeep.push(ch);
   }
+
   root.traverse((obj) => {
     if (!obj.isMesh || !obj.geometry || !obj.material) return;
-    if (isRuntimeNode(obj)) return;
+    const n = (obj.name || '').toLowerCase();
+    if (n.startsWith('wheel_')) return;
+
     const mat = obj.material;
-    if (mat.transparent || mat.map || (mat.emissiveIntensity && mat.emissiveIntensity > 0.25)) {
-      if (!dynamicKeep.includes(obj)) {
-        obj.updateMatrixWorld(true);
-        const cl = new THREE.Mesh(obj.geometry, mat);
-        cl.applyMatrix4(obj.matrixWorld);
-        cl.castShadow = obj.castShadow;
-        cl.receiveShadow = obj.receiveShadow;
-        cl.name = obj.name;
-        dynamicKeep.push(cl);
-      }
+    if (n.startsWith('brake_')) {
+      const g = obj.geometry.index ? obj.geometry.toNonIndexed() : obj.geometry.clone();
+      g.applyMatrix4(obj.matrixWorld);
+      brakeGeos.push(g);
       return;
     }
-    const kind = (mat.metalness ?? 0) >= 0.6
-      ? 'chrome'
-      : ((mat.clearcoat ?? 0) > 0.2 || (mat.roughness ?? 0.6) <= 0.35) ? 'gloss' : 'matte';
-    const key = `${kind}|${obj.castShadow ? 1 : 0}|${obj.receiveShadow ? 1 : 0}`;
-    let entry = buckets.get(key);
-    if (!entry) {
-      entry = { kind, cast: obj.castShadow, receive: obj.receiveShadow, geos: [] };
-      buckets.set(key, entry);
+    if (n.startsWith('indicator_')) {
+      const g = obj.geometry.index ? obj.geometry.toNonIndexed() : obj.geometry.clone();
+      g.applyMatrix4(obj.matrixWorld);
+      indicatorGeos.push(g);
+      return;
     }
-    entry.geos.push(bakeColorGeo(obj.geometry, obj.matrixWorld, mat.color || new THREE.Color('#ffffff')));
+    if (mat.map) {
+      obj.updateMatrixWorld(true);
+      const cl = new THREE.Mesh(obj.geometry, mat);
+      cl.applyMatrix4(obj.matrixWorld);
+      cl.castShadow = obj.castShadow;
+      cl.receiveShadow = obj.receiveShadow;
+      cl.name = obj.name;
+      dynamicKeep.push(cl);
+      return;
+    }
+    if (mat.transparent) {
+      glassGeos.push(bakeColorGeo(obj.geometry, obj.matrixWorld, mat.color || new THREE.Color(P.glass)));
+      return;
+    }
+    if (n.startsWith('headlight_') || (mat.emissiveIntensity && mat.emissiveIntensity > 0.25)) {
+      const col = mat.emissive || mat.color || new THREE.Color(P.headlight);
+      emissiveGeos.push(bakeColorGeo(obj.geometry, obj.matrixWorld, col));
+      return;
+    }
+    bodyGeos.push(bakeColorGeo(obj.geometry, obj.matrixWorld, mat.color || new THREE.Color('#ffffff')));
   });
 
   const merged = new THREE.Group();
   merged.name = root.name;
   for (const ch of dynamicKeep) merged.add(ch);
 
-  const getBucketMat = (kind) => {
-    const mk = `veh_vcol|${kind}`;
-    if (!matCache.has(mk)) {
-      if (kind === 'chrome') {
-        matCache.set(mk, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.14, metalness: 0.85 }));
-      } else if (kind === 'gloss') {
-        matCache.set(mk, new THREE.MeshPhysicalMaterial({
-          vertexColors: true, roughness: 0.20, metalness: 0.12, clearcoat: 0.72, clearcoatRoughness: 0.16,
+  if (bodyGeos.length > 0) {
+    const geo = mergeGeometries(bodyGeos, false);
+    for (const g of bodyGeos) g.dispose();
+    if (geo) {
+      extraBackdropGeos.push(geo);
+      if (!matCache.has('veh_vcol|body')) {
+        matCache.set('veh_vcol|body', new THREE.MeshPhysicalMaterial({
+          vertexColors: true, roughness: 0.28, metalness: 0.14, clearcoat: 0.62, clearcoatRoughness: 0.16,
         }));
-      } else {
-        matCache.set(mk, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.56, metalness: 0.08 }));
       }
+      const m = new THREE.Mesh(geo, matCache.get('veh_vcol|body'));
+      m.castShadow = true;
+      m.receiveShadow = true;
+      merged.add(m);
     }
-    return matCache.get(mk);
-  };
-
-  for (const entry of buckets.values()) {
-    const geo = mergeGeometries(entry.geos, false);
-    for (const g of entry.geos) g.dispose();
-    if (!geo) continue;
-    extraBackdropGeos.push(geo);
-    const m = new THREE.Mesh(geo, getBucketMat(entry.kind));
-    m.castShadow = entry.cast;
-    m.receiveShadow = entry.receive;
-    merged.add(m);
   }
+
+  if (emissiveGeos.length > 0) {
+    const geo = mergeGeometries(emissiveGeos, false);
+    for (const g of emissiveGeos) g.dispose();
+    if (geo) {
+      extraBackdropGeos.push(geo);
+      if (!matCache.has('veh_vcol|emissive')) {
+        matCache.set('veh_vcol|emissive', new THREE.MeshBasicMaterial({ vertexColors: true }));
+      }
+      const m = new THREE.Mesh(geo, matCache.get('veh_vcol|emissive'));
+      m.castShadow = false;
+      m.name = 'headlight_all';
+      merged.add(m);
+    }
+  }
+
+  if (glassGeos.length > 0) {
+    const geo = mergeGeometries(glassGeos, false);
+    for (const g of glassGeos) g.dispose();
+    if (geo) {
+      extraBackdropGeos.push(geo);
+      if (!matCache.has('veh_vcol|glass')) {
+        matCache.set('veh_vcol|glass', new THREE.MeshStandardMaterial({
+          vertexColors: true, roughness: 0.35, metalness: 0.1,
+          transparent: true, opacity: 0.55, depthWrite: false,
+        }));
+      }
+      const m = new THREE.Mesh(geo, matCache.get('veh_vcol|glass'));
+      m.castShadow = false;
+      m.name = 'glass_all';
+      merged.add(m);
+    }
+  }
+
+  if (brakeGeos.length > 0) {
+    const geo = mergeGeometries(brakeGeos, false);
+    for (const g of brakeGeos) g.dispose();
+    if (geo) {
+      extraBackdropGeos.push(geo);
+      const m = new THREE.Mesh(geo, getMat(P.tail, 0.35, { emissive: P.tail, ei: 1.45 }));
+      m.castShadow = false;
+      m.name = 'brake_all';
+      merged.add(m);
+    }
+  }
+
+  if (indicatorGeos.length > 0) {
+    const geo = mergeGeometries(indicatorGeos, false);
+    for (const g of indicatorGeos) g.dispose();
+    if (geo) {
+      extraBackdropGeos.push(geo);
+      const m = new THREE.Mesh(geo, getMat(P.indicator, 0.4, { emissive: P.indicator, ei: 0 }));
+      m.castShadow = false;
+      m.name = 'indicator_all';
+      merged.add(m);
+    }
+  }
+
   return merged;
 }
 
@@ -500,27 +556,29 @@ function attachTwinExhaustFlames(wrapper, type, target) {
   flames.position.set(0, 0.38, target.z * 0.5 + 0.04);
   flames.visible = false;
 
+  const outerLen = 1.35 * 0.7;
+  const innerLen = 0.9 * 0.7;
   if (!geoCache.has('flame|outer')) {
-    const g = new THREE.ConeGeometry(0.19, 1.35, 10);
+    const g = new THREE.ConeGeometry(0.16, outerLen, 10);
     g.rotateX(Math.PI / 2);
-    g.translate(0, 0, 0.68);
+    g.translate(0, 0, outerLen * 0.5);
     geoCache.set('flame|outer', g);
   }
   if (!geoCache.has('flame|inner')) {
-    const g = new THREE.ConeGeometry(0.1, 0.9, 8);
+    const g = new THREE.ConeGeometry(0.085, innerLen, 8);
     g.rotateX(Math.PI / 2);
-    g.translate(0, 0, 0.45);
+    g.translate(0, 0, innerLen * 0.5);
     geoCache.set('flame|inner', g);
   }
   if (!matCache.has('flame|outer')) {
     matCache.set('flame|outer', new THREE.MeshBasicMaterial({
-      color: '#ff5500', transparent: true, opacity: 0.92,
+      color: '#fef08a', transparent: true, opacity: 0.78,
       blending: THREE.AdditiveBlending, depthWrite: false,
     }));
   }
   if (!matCache.has('flame|inner')) {
     matCache.set('flame|inner', new THREE.MeshBasicMaterial({
-      color: '#ffd60a', transparent: true, opacity: 0.96,
+      color: '#fffbeb', transparent: true, opacity: 0.9,
       blending: THREE.AdditiveBlending, depthWrite: false,
     }));
   }
@@ -540,8 +598,62 @@ function attachTwinExhaustFlames(wrapper, type, target) {
   wrapper.add(flames);
 }
 
+/** Penanda pemain bersih (K3b): 1 cincin oranye tipis di bawah + 1 panah kecil di atas, tanpa glow */
+export function attachPlayerMarker(wrapper, target = null) {
+  if (!wrapper) return;
+  const glow = wrapper.userData?.underglow;
+  if (glow) {
+    glow.visible = false;
+    glow.parent?.remove(glow);
+    wrapper.userData.underglow = null;
+  }
+  if (wrapper.getObjectByName('player_marker_ring')) return;
+
+  const sz = target || wrapper.userData?.size || { x: 2.2, y: 2.8, z: 4.5 };
+  const outerR = Math.max(1.05, Math.max(sz.x, sz.z * 0.52) * 0.58);
+  const innerR = Math.max(0.88, outerR - 0.14);
+  const ringKey = `pm_ring|${innerR.toFixed(2)}|${outerR.toFixed(2)}`;
+  if (!geoCache.has(ringKey)) {
+    const g = new THREE.RingGeometry(innerR, outerR, 28);
+    g.rotateX(-Math.PI / 2);
+    geoCache.set(ringKey, g);
+  }
+  if (!matCache.has('pm|orange')) {
+    matCache.set('pm|orange', new THREE.MeshBasicMaterial({
+      color: '#ff6b00',
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.NormalBlending,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }));
+  }
+  if (!geoCache.has('pm_arrow')) {
+    const g = new THREE.ConeGeometry(0.24, 0.42, 4);
+    g.rotateX(Math.PI);
+    geoCache.set('pm_arrow', g);
+  }
+  if (!matCache.has('pm|arrow')) {
+    matCache.set('pm|arrow', new THREE.MeshBasicMaterial({
+      color: '#ff6b00',
+      blending: THREE.NormalBlending,
+    }));
+  }
+
+  const ring = new THREE.Mesh(geoCache.get(ringKey), matCache.get('pm|orange'));
+  ring.name = 'player_marker_ring';
+  ring.position.set(0, 0.045, 0);
+  ring.renderOrder = 2;
+
+  const arrow = new THREE.Mesh(geoCache.get('pm_arrow'), matCache.get('pm|arrow'));
+  arrow.name = 'player_marker_arrow';
+  arrow.position.set(0, (sz.y || 2.8) + 0.55, 0);
+
+  wrapper.add(ring, arrow);
+}
+
 /** Pindai node bernama & siapkan referensi runtime per-instance.
-    Material lampu & underglow dikloning agar per kendaraan independen. */
+    Material lampu mutable & underglow dikloning agar per kendaraan independen. */
 function bindRuntimeRefs(group) {
   const wheels = [], indicators = [], brakes = [], headlights = [], jets = [];
   let underglow = null, flameGroup = null;
@@ -551,7 +663,7 @@ function bindRuntimeRefs(group) {
     if (n.startsWith('wheel_') || /wheel|roda/.test(n)) wheels.push(o);
     if (n.startsWith('indicator_')) { o.material = o.material.clone(); indicators.push(o); }
     if (n.startsWith('brake_')) { o.material = o.material.clone(); brakes.push(o); }
-    if (n.startsWith('headlight_')) { o.material = o.material.clone(); headlights.push(o); }
+    if (n.startsWith('headlight_')) { headlights.push(o); }
     if (n === 'slot_underglow') { o.material = o.material.clone(); underglow = o; }
     if (n === 'exhaust_flames') flameGroup = o;
     if (n.startsWith('flame_jet_')) jets.push(o);
@@ -589,6 +701,7 @@ function getGLTFLoader() {
 }
 
 async function tryLoadGLB(glbName, target) {
+  if (ASSETS.useGLB !== true) return null;
   const url = `${ASSETS.basePath}${glbName}.glb`;
   const gltf = await getGLTFLoader().loadAsync(url);
   if (!gltf.scene || gltf.scene.children.length === 0) throw new Error('GLB kosong');
@@ -632,7 +745,7 @@ function buildAngkot(def) {
     add(g, rbox(0.06, 0.44, 0.92, 0.02, P.glass, 0.4, { mat: glassMat(), cast: false }), sx, 1.94, wz);
   add(g, rbox(1.5, 0.44, 0.06, 0.02, P.glass, 0.4, { mat: glassMat(), cast: false }), 0, 1.94, 2.06);
 
-  add(g, rbox(0.05, 1.05, 0.85, 0.02, P.angkotGreenDark, 0.2, { mat: getDieCastMat(P.angkotGreenDark) }), -0.965, 1.15, 0.55);
+  add(g, rbox(0.05, 1.05, 0.85, 0.02, P.angkotBlueDark, 0.2, { mat: getDieCastMat(P.angkotBlueDark) }), -0.965, 1.15, 0.55);
   add(g, rbox(0.03, 0.05, 0.18, 0.01, P.chrome || '#eef2f7', 0.15, { mat: getChromeMat() }), -0.99, 1.35, 0.25);
 
   add(g, rbox(0.32, 0.20, 0.09, 0.03, P.headlight, 0.35, { emissive: P.headlight, ei: 1.75 }), -0.62, 0.98, -2.18, { name: 'headlight_L' });
@@ -1005,10 +1118,10 @@ function buildMonas(def) {
   add(g, lbox(2.26, 0.14, 2.26, C.gold, 0.35, { metal: 0.6 }), 0, 15.05, 0);
   add(g, lbox(1.55, 0.7, 1.55, C.stone, 0.56), 0, 15.42, 0);
 
-  /* Puncak mahkota emas bersih (tanpa lidah api) */
-  const goldMat = getMat(C.gold, 0.32, { metal: 0.75, emissive: C.gold, ei: 0.55 });
-  add(g, cyl(0.5, 0.38, 0.42, C.gold, 0.32, 8, { mat: goldMat }), 0, 15.95, 0);
-  add(g, cyl(0.06, 0.42, 1.45, C.gold, 0.32, 8, { mat: goldMat }), 0, 16.88, 0);
+  /* Puncak kerucut emas mulus tanpa emissive (K4g) */
+  const goldMat = getMat(C.gold, 0.32, { metal: 0.75 });
+  add(g, cyl(0.5, 0.38, 0.42, C.gold, 0.32, 12, { mat: goldMat }), 0, 15.95, 0);
+  add(g, cyl(0.02, 0.42, 1.45, C.gold, 0.32, 12, { mat: goldMat }), 0, 16.88, 0);
 
   for (const [px, pz] of [[-2.9,-2.9],[2.9,-2.9],[-2.9,2.9],[2.9,2.9],[0,-2.9],[0,2.9],[-2.9,0],[2.9,0]]) {
     add(g, cyl(0.06, 0.07, 0.65, P.warmWhite, 0.58, 6), px, 0.92, pz);
@@ -1257,8 +1370,11 @@ function getPrototype(kind, type) {
       let wrapper = null;
       try {
         wrapper = await tryLoadGLB(def.glbName, def.targetSize);
-      } catch (err) {
-        console.warn(`[assetFactory] ${def.glbName}.glb gagal dimuat — memakai model prosedural ${def.label}.`, err?.message || err);
+      } catch {
+        wrapper = null;
+      }
+      if (!wrapper) {
+        await awaitFontsReady(1500);
         const builder = isV ? VEHICLE_BUILDERS[type] : LANDMARK_BUILDERS[type];
         let built = (builder || (isV ? buildAngkot : buildKoperasi))(def);
         if (isV) built = mergeVehicleStaticMeshes(built);
@@ -1323,7 +1439,7 @@ export function disposeAssetCache() {
 
 /** Pita neon 3D zero-GC di belakang kendaraan (untuk P1-P4), menyala api oranye-emas saat boost/roll */
 export function createNeonRibbonTrail(scene, hexColor = '#ff2a4b', halfWidth = 0.56) {
-  const N = 22;
+  const N = 14;
   const positions = new Float32Array(N * 2 * 3);
   const colors = new Float32Array(N * 2 * 3);
   const histPos = new Float32Array(N * 3);
@@ -1342,7 +1458,7 @@ export function createNeonRibbonTrail(scene, hexColor = '#ff2a4b', halfWidth = 0
   const mat = new THREE.MeshBasicMaterial({
     vertexColors: true,
     transparent: true,
-    opacity: 0.78,
+    opacity: 0.34,
     blending: THREE.AdditiveBlending,
     side: THREE.DoubleSide,
     depthWrite: false,
@@ -1354,9 +1470,9 @@ export function createNeonRibbonTrail(scene, hexColor = '#ff2a4b', halfWidth = 0
   scene.add(mesh);
 
   const baseCol = new THREE.Color(hexColor);
-  const fireHead = new THREE.Color('#fff3b0');
-  const fireMid = new THREE.Color('#ffbe0b');
-  const fireTail = new THREE.Color('#ff4800');
+  const fireHead = new THREE.Color('#fffbeb');
+  const fireMid = new THREE.Color('#fef08a');
+  const fireTail = new THREE.Color('#fde047');
   const _tmpCol = new THREE.Color();
   let boostMode = false;
   let initialized = false;
@@ -1378,7 +1494,7 @@ export function createNeonRibbonTrail(scene, hexColor = '#ff2a4b', halfWidth = 0
       colors[cIdx + 3] = r; colors[cIdx + 4] = g; colors[cIdx + 5] = b;
     }
     geo.attributes.color.needsUpdate = true;
-    mat.opacity = boostMode ? 0.92 : 0.75;
+    mat.opacity = boostMode ? 0.45 : 0.34;
   }
   applyColor();
 
